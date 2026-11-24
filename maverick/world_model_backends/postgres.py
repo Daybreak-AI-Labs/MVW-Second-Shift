@@ -44,6 +44,7 @@ from ..event_admission import (
     execution_binding_lock,
 )
 from ..goal_mutations import SCHEMA as _GOAL_MUTATION_SCHEMA
+from ..learning_store_pg_schema import LEARNING_TENANT_MIGRATION
 from ..metadata_history import POSTGRES_INDEXES as _HISTORY_INDEXES
 from ..personal_alert_revisions import POSTGRES_MIGRATION as _PERSONAL_ALERT_MIGRATION
 from ..safety.dual_control import distinct_people, person_key
@@ -786,7 +787,7 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
         "ON goals(id DESC) WHERE parent_id IS NULL",
     ]),
     (38, [_ATTACHMENT_SUBMISSION_SCHEMA]),
-    (39, []),  # reserved
+    (39, LEARNING_TENANT_MIGRATION),
     (40, [_EVENT_ADMISSION_SCHEMA]),
     (41, [
         "ALTER TABLE event_goal_admissions ADD COLUMN IF NOT EXISTS request_digest TEXT",
