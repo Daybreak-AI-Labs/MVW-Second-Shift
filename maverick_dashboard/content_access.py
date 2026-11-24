@@ -135,10 +135,14 @@ def _governance_request(approval) -> bool:
 
 def _people_with_a_role() -> set[str]:
     """Everyone given a role here; callers keep those who may decide."""
+    from maverick import entra_directory
+
     from . import rbac
 
     try:
-        return set(rbac.list_users())
+        # With the Entra directory on, people whose role comes only from an
+        # app role count too (nobody when it is off or cannot be read).
+        return set(rbac.list_users()) | entra_directory.principals_with_role()
     except Exception:  # noqa: BLE001 -- an unreadable roster names nobody
         return set()
 

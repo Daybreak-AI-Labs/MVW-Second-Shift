@@ -128,7 +128,9 @@ Second Shift uses the first of these that applies:
 1. An administrator named in settings (`[dashboard] admins`) is always an
    administrator.
 2. A role already stored for that person in Second Shift's own role list.
-3. The role from their sign-in, as set up on this page.
+3. The role from their sign-in, as set up on this page. For Teams cards and
+   the other-approver rule, where there is no sign-in, the role from the
+   Entra directory takes its place when those lookups are on.
 4. The default role (`[dashboard] default_role`; Viewer unless you change it).
 
 A person gets one role. If they hold several app roles, they get the one
@@ -164,7 +166,11 @@ first and then the name that sorts first.
   call.
 - The role from sign-in applies to that person's own requests only. Where
   Second Shift checks the role of someone other than the person making the
-  request, it uses their stored role or the default role.
+  request, it uses their stored role or the default role, unless the
+  [Entra directory lookups](entra-directory.md) are on. With them on, Teams
+  cards and the "is another approver available" rule read the person's
+  current app roles from Entra (through this same table) before falling back
+  to the default role. They are off by default.
 
 ## Sources
 

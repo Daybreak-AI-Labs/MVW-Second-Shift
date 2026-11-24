@@ -959,6 +959,7 @@ async def external_agent_enroll(request: Request, payload: ExternalAgentIn) -> d
             payload.platform,
             description=payload.description,
             owner=payload.owner,
+            owner_object_id=payload.owner_object_id,
             department=payload.department,
             allow_tools=payload.allow_tools,
             deny_tools=payload.deny_tools,
