@@ -34,13 +34,16 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import re
 import threading
 import time
 from collections import deque
+from dataclasses import dataclass
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 
 log = logging.getLogger("maverick.dashboard.external_gateway")
 
@@ -172,80 +175,108 @@ def _looks_like_jwt(token: str) -> bool:
         return False
 
 
-async def _require_agent(request: Request) -> str:
-    """Dependency: resolve the caller to its enrolled agent id — solved
-    BEFORE the body model, so an unauthenticated caller gets 401, never a
-    422 that leaks the request schema.
+@dataclass(frozen=True)
+class AgentCredential:
+    scheme: str
+    value: str
+    agent_id: str = ""
+    timestamp: str = ""
+    nonce: str = ""
+    version: str = ""
 
-    Resolution order: the Ed25519 request envelope (agent-id + timestamp +
-    nonce + signature headers), the webhook-format HMAC (agent-id +
-    timestamp + signature), a platform JWT on the Authorization header, then
-    the minted per-agent ``rest`` bearer. The credential is the identity: no
-    session, no CSRF surface, no fallback to the dashboard credential. Every
-    refusal is the same generic 401 (so a rotated credential reads as
-    "re-authenticate" and the reply never says whether the id exists or
-    which stage refused); the precise rule goes to the server log only."""
-    _gate()
-    from maverick import external_identity
-    from maverick.agent_trust import AgentTrustError, agent_for_token, load_trust_state
-    try:
-        # ONE trust snapshot per request (the grpc server pattern), so a
-        # registry edit mid-request cannot split the auth decision.
-        _, registry = load_trust_state()
-    except AgentTrustError as e:
-        log.warning("external gateway: trust state unreadable (fail-closed)")
-        raise HTTPException(status_code=401,
-                            detail="invalid credentials") from e
-    agent_hdr = request.headers.get("x-second-shift-agent-id", "")
+    @property
+    def needs_body(self) -> bool:
+        return self.scheme in {"envelope", "hmac"}
+
+
+def agent_credential(request: Request) -> AgentCredential:
+    """Find a credential of a supported form without reading the body."""
     from maverick.webhooks import read_signature_headers
 
+    headers = request.headers
     try:
-        hmac_sig, ts = read_signature_headers(request.headers)
+        hmac_sig, ts = read_signature_headers(headers)
     except ValueError as exc:
-        raise HTTPException(status_code=401,
-                            detail="conflicting webhook authentication headers") from exc
-    nonce = request.headers.get("x-second-shift-nonce", "")
-    envelope_sig = request.headers.get("x-second-shift-request-signature", "")
-    if agent_hdr and ts and nonce and envelope_sig:
-        scheme = "envelope"
-        # Starlette caches the body, so the endpoint model still parses it.
-        body = await request.body()
-        agent, rule = external_identity.verify_agent_envelope(
-            agent_hdr, body, ts, nonce, envelope_sig, registry=registry)
-    elif agent_hdr and ts and hmac_sig:
-        scheme = "hmac"
-        body = await request.body()
-        agent, rule = external_identity.verify_agent_hmac(
-            agent_hdr, body, ts, hmac_sig, registry=registry)
-    else:
-        auth = request.headers.get("authorization", "")
-        token = auth[7:].strip() if auth.startswith("Bearer ") else ""
-        if not token:
-            raise HTTPException(status_code=401,
-                                detail="missing credentials")
-        if _looks_like_jwt(token):
-            scheme = "jwt"
-            agent, rule = external_identity.verify_agent_jwt(
-                token, registry=registry)
+        raise HTTPException(401, "invalid credentials") from exc
+    agent_id = headers.get("x-second-shift-agent-id", "")
+    nonce = headers.get("x-second-shift-nonce", "")
+    envelope = headers.get("x-second-shift-request-signature", "")
+    versions = headers.getlist("x-second-shift-signature-version")
+    version = versions[0] if len(versions) == 1 else "1" if not versions else ""
+    if hmac_sig or ts or nonce or envelope or versions or agent_id:
+        if (not agent_id or not ts or len(ts) > 64 or
+                version not in {"1", "2"} or len(nonce.encode("utf-8")) > 128):
+            raise HTTPException(401, "invalid credentials")
+        if envelope and not hmac_sig and nonce and re.fullmatch(r"[0-9a-fA-F]{128}", envelope):
+            return AgentCredential("envelope", envelope, agent_id, ts, nonce, version)
+        if not envelope and re.fullmatch(r"sha256=[0-9a-f]{64}", hmac_sig) and (version == "1" or nonce):
+            return AgentCredential("hmac", hmac_sig, agent_id, ts, nonce, version)
+        raise HTTPException(401, "invalid credentials")
+    auth = headers.get("authorization", "")
+    if auth.startswith("Bearer ") and re.fullmatch(r"[A-Za-z0-9._~+/=-]+", auth[7:]):
+        return AgentCredential("bearer", auth[7:])
+    raise HTTPException(401, "missing credentials")
+
+
+def authenticate_agent(request: Request, credential: AgentCredential, body: bytes = b"") -> str:
+    from maverick import external_identity
+    from maverick.agent_trust import AgentTrustError, agent_for_token, load_trust_state
+    from maverick.config import get_external_agents
+
+    try:
+        _, registry = load_trust_state()
+    except AgentTrustError as exc:
+        log.warning("external gateway: trust state unreadable (fail-closed)")
+        raise HTTPException(401, "invalid credentials") from exc
+
+    scheme = credential.scheme
+    value = credential.value
+    if credential.needs_body:
+        target = None
+        if credential.version == "2":
+            from .request_origin import signing_origin
+
+            raw_path = request.scope.get("raw_path")
+            try:
+                origin = signing_origin()
+            except (OSError, TypeError, ValueError):
+                origin = None
+            if not origin or not isinstance(raw_path, bytes):
+                raise HTTPException(401, "invalid credentials")
+            target = external_identity.SignedTarget(request.method, raw_path, request.scope["query_string"], origin)
+        if scheme == "envelope":
+            agent, rule = external_identity.verify_agent_envelope(
+                credential.agent_id, body, credential.timestamp, credential.nonce, value,
+                registry=registry, target=target)
         else:
-            scheme = "bearer"
-            agent = agent_for_token(token, "rest", registry=registry)
-            rule = "ok" if agent is not None else "invalid_token"
-            if agent is not None and (agent.pubkey or agent.jwt_issuer
-                                      or agent.hmac_secret_ref):
-                # [external_agents] require_signed: an agent enrolled with a
-                # strong credential must present it — its bearer alone no
-                # longer authenticates. Token-only agents are unaffected.
-                from maverick.config import get_external_agents
-                if get_external_agents().get("require_signed"):
-                    agent, rule = None, "require_signed"
+            agent, rule = external_identity.verify_agent_hmac(
+                credential.agent_id, body, credential.timestamp, value,
+                registry=registry, target=target, nonce=credential.nonce)
+    elif _looks_like_jwt(value):
+        scheme = "jwt"
+        agent, rule = external_identity.verify_agent_jwt(value, registry=registry)
+    else:
+        agent = agent_for_token(value, "rest", registry=registry)
+        rule = "ok" if agent is not None else "invalid_token"
+        if (agent is not None and (agent.pubkey or agent.jwt_issuer or agent.hmac_secret_ref)
+                and get_external_agents().get("require_signed")):
+            agent, rule = None, "require_signed"
     if agent is None:
         log.info("external gateway: %s auth refused (%s)", scheme, rule)
-        raise HTTPException(status_code=401, detail="invalid credentials")
-    from maverick import external_agents as xa
-    path = request.url.path
-    xa.note_seen(agent.id, "screen" if path.endswith("/screen") else "run" if "/runs" in path else "call")
+        raise HTTPException(401, "invalid credentials")
     return agent.id
+
+
+async def _require_agent(request: Request) -> str:
+    _gate()
+    agent_id = getattr(request.state, "external_agent_id", None)
+    if not agent_id:
+        raise HTTPException(401, "invalid credentials")
+    from maverick import external_agents as xa
+
+    path = request.url.path
+    await run_in_threadpool(xa.note_seen, agent_id, "screen" if path.endswith("/screen") else "run" if "/runs" in path else "call")
+    return agent_id
 
 
 def _shield():

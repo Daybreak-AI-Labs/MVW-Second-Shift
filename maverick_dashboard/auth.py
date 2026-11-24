@@ -884,34 +884,28 @@ _break_glass_last_audit: list[float | None] = [None]
 
 
 def _audit_break_glass(connection) -> None:
-    """Record that the static dashboard token authenticated a request.
-
-    The token is the break-glass credential: it has no person behind it and
-    no scopes, so its use is audited. One row per process per hour keeps the
-    record useful (a script using the token would otherwise write a row per
-    call); the row names the path and client of the first use in the window.
-    An audit refusal propagates, and a write that was not made (``audit_event``
-    returns False) is refused too: a request that cannot be recorded fails.
-    """
+    """Require an audit record for every write and sample read-only requests."""
     import time as _time
 
     now = _time.monotonic()
     last = _break_glass_last_audit[0]
-    if last is not None and now - last < _BREAK_GLASS_AUDIT_INTERVAL:
+    sampled_read = getattr(connection, "method", None) in {"GET", "HEAD", "OPTIONS"}
+    if sampled_read and last is not None and now - last < _BREAK_GLASS_AUDIT_INTERVAL:
         return
     from maverick.audit import EventKind, audit_event
 
     client = connection.client.host if getattr(connection, "client", None) else ""
     path = str(getattr(getattr(connection, "url", None), "path", "") or "")
     if not audit_event(EventKind.BREAK_GLASS_TOKEN_USED, agent="static-dashboard-operator",
-                       path=path, client=client or ""):
+                       path=path, client=client or "", method=getattr(connection, "method", "WEBSOCKET")):
         raise HTTPException(
             status_code=503,
             detail="The activity record is unavailable, so the dashboard token cannot be used right now.",
         )
     # Start the window only once a row exists: a refused audit leaves it open so
     # the next request is refused too instead of being admitted unrecorded.
-    _break_glass_last_audit[0] = now
+    if sampled_read:
+        _break_glass_last_audit[0] = now
 
 
 def _api_key_bearer(connection) -> str:
@@ -1035,7 +1029,10 @@ def _resolve_principal_now(request, websocket) -> VerifiedPrincipal | None:
     # Self-authenticated routes keep their own credential contract. A valid
     # static dashboard bearer has local-operator semantics; any other bearer
     # must verify as OIDC or fail instead of falling back to ambient identity.
-    self_authenticated = _self_authenticated_path(route_path(request))
+    path = route_path(request)
+    self_authenticated = _self_authenticated_path(path)
+    if path.startswith("/api/v1/external/"):
+        return None  # Gateway credentials are independent of browser workspace selection.
     authorization = request.headers.get("authorization", "")
     if not self_authenticated and authorization:
         if _dashboard_token_authenticated(request):

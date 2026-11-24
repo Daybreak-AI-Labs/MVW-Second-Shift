@@ -20,7 +20,7 @@ import time
 import weakref
 from contextlib import asynccontextmanager
 from pathlib import Path
-from urllib.parse import unquote, urlparse
+from urllib.parse import unquote
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
@@ -843,19 +843,25 @@ _AUTH_EXEMPT = {
     "/consent/webhook",
 }
 _EXTERNAL_BODY_SLOTS = 32
+_EXTERNAL_UNSIGNED_BODY_SLOTS = 4
 _EXTERNAL_BODY_TIMEOUT_SECONDS = 10.0
 _external_body_limiters: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 _external_body_limiter_lock = threading.Lock()
 
 
-def _external_body_limiter() -> asyncio.Semaphore:
+def _external_body_limiter(needs_body_to_authenticate: bool) -> asyncio.Semaphore:
     loop = asyncio.get_running_loop()
     with _external_body_limiter_lock:
-        limiter = _external_body_limiters.get(loop)
-        if limiter is None:
-            limiter = asyncio.Semaphore(_EXTERNAL_BODY_SLOTS)
-            _external_body_limiters[loop] = limiter
-        return limiter
+        limiters = _external_body_limiters.get(loop)
+        if limiters is None:
+            limiters = {
+                True: asyncio.Semaphore(_EXTERNAL_UNSIGNED_BODY_SLOTS),
+                False: asyncio.Semaphore(_EXTERNAL_BODY_SLOTS),
+            }
+            _external_body_limiters[loop] = limiters
+        return limiters[needs_body_to_authenticate]
+
+
 _EVIDENCE_GATEWAY_PREFIX = "/api/v1/security/assurance/gateway/"
 # Owner passphrase and authenticator-code steps: their bodies hold both secrets, so a 422 names
 # the field and never echoes the value.
@@ -899,63 +905,64 @@ async def _read_limited_request_body(
     return bytes(body)
 
 
-def _external_body_max(path: str) -> int:
-    return 256 * 1024
+async def _bounded_external_body(request: Request) -> bytes:
+    try:
+        return await asyncio.wait_for(
+            _read_limited_request_body(request, max_bytes=256 * 1024,
+                                       too_large_detail="external request body too large"),
+            timeout=_EXTERNAL_BODY_TIMEOUT_SECONDS,
+        )
+    except TimeoutError as exc:
+        raise HTTPException(408, "external request body timed out") from exc
+
+
+async def _take_external_body_slot(needs_body_to_authenticate: bool) -> asyncio.Semaphore:
+    limiter = _external_body_limiter(needs_body_to_authenticate)
+    try:
+        await asyncio.wait_for(limiter.acquire(), timeout=1.0)
+    except TimeoutError as exc:
+        raise HTTPException(503, "external request capacity is busy") from exc
+    return limiter
 
 
 @app.middleware("http")
 async def bound_public_governance_body(request: Request, call_next):
-    """Cap machine-facing API request bodies before authentication and model parsing."""
-
+    """Authenticate bearers first and bound body reads for signed integrations."""
     path = route_path(request)
-    if request.method not in {"POST", "PUT", "PATCH"} and not path.startswith("/api/v1/external/"):
+    if not path.startswith("/api/v1/external/") or path == "/api/v1/external/openapi.json":
         return await call_next(request)
-    if path.startswith("/api/v1/external/"):
-        maximum = _external_body_max(path)
-        detail = "external request body too large"
-    else:
-        return await call_next(request)
-    limiter = _external_body_limiter() if path.startswith("/api/v1/external/") else None
-    acquired = False
+
+    from .external_gateway import _gate, agent_credential, authenticate_agent
+
     try:
-        if limiter is not None:
+        credential = None
+        if path.startswith("/api/v1/external/ekko/"):
+            from .ekko_handover_api import _known_key
+
+            await run_in_threadpool(_known_key, request)
+        else:
+            _gate()
+            credential = agent_credential(request)
+            if not credential.needs_body:
+                request.state.external_agent_id = await run_in_threadpool(authenticate_agent, request, credential)
+        body = None
+        if credential and credential.needs_body:
+            pending = await _take_external_body_slot(True)
             try:
-                await asyncio.wait_for(limiter.acquire(), timeout=1.0)
-            except TimeoutError:
-                return JSONResponse({"detail": "external request capacity is busy"}, status_code=503)
-            acquired = True
-        reader = _read_limited_request_body(request, max_bytes=maximum, too_large_detail=detail)
+                body = await _bounded_external_body(request)
+                request.state.external_agent_id = await run_in_threadpool(authenticate_agent, request, credential, body)
+                admitted = await _take_external_body_slot(False)
+            finally:
+                pending.release()
+        else:
+            admitted = await _take_external_body_slot(False)
         try:
-            body = await asyncio.wait_for(reader, timeout=_EXTERNAL_BODY_TIMEOUT_SECONDS) if limiter else await reader
-        except TimeoutError:
-            if acquired:
-                limiter.release()
-            return JSONResponse({"detail": "external request body timed out"}, status_code=408)
+            request._body = body if body is not None else await _bounded_external_body(request)  # noqa: SLF001
+            return await call_next(request)
+        finally:
+            admitted.release()
     except HTTPException as exc:
-        if acquired:
-            limiter.release()
-        return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
-    except BaseException:
-        if acquired:
-            limiter.release()
-        raise
-
-    delivered = False
-
-    async def replay_receive():
-        nonlocal delivered
-        if not delivered:
-            delivered = True
-            return {"type": "http.request", "body": body, "more_body": False}
-        return {"type": "http.disconnect"}
-
-    request._body = body  # noqa: SLF001 - bounded ASGI body replay
-    request._receive = replay_receive  # noqa: SLF001 - bounded ASGI body replay
-    try:
-        return await call_next(request)
-    finally:
-        if acquired:
-            limiter.release()
+        return JSONResponse({"detail": exc.detail}, status_code=exc.status_code, headers=exc.headers)
 
 
 # Safe methods skip the CSRF check (browsers send Origin/Referer
@@ -964,27 +971,9 @@ _CSRF_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
 
 def _is_same_origin(request: Request) -> bool:
-    """Allow only same-origin browser submissions for mutating form POSTs.
+    from .request_origin import same_origin
 
-    Fails closed when no Origin or Referer is present on a mutating
-    request. The previous fail-open branch ("Non-browser/API clients
-    commonly omit both headers") was a soft-CSRF: any tab on the same
-    machine could fire a no-cors fetch with both headers stripped and
-    have it accepted. Real API clients send Authorization headers and
-    are exempted by the bearer-auth middleware before they reach here.
-    """
-    if request.method in _CSRF_SAFE_METHODS:
-        return True
-    expected = request.url.netloc
-    for header in ("origin", "referer"):
-        value = request.headers.get(header)
-        if not value:
-            continue
-        parsed = urlparse(value)
-        if parsed.netloc == expected:
-            return True
-        return False
-    return False
+    return request.method in _CSRF_SAFE_METHODS or same_origin(request)
 
 
 def _require_same_origin(request: Request) -> None:
@@ -1411,6 +1400,12 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException):
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     """422 for browser nav becomes 400 with the branded error page."""
+    path = route_path(request)
+    if path == "/webhook/teams" or path.startswith(("/api/v1/external/", "/copilot-studio/", "/api/v1/teams/")):
+        from .request_validation import fixed_validation_errors
+
+        return JSONResponse({"detail": fixed_validation_errors(exc)}, status_code=422,
+                            headers={"Cache-Control": "no-store"})
     if _wants_html(request):
         return templates.TemplateResponse(
             request,

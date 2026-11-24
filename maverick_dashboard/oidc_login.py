@@ -61,6 +61,7 @@ from maverick.oidc import (
 from maverick.web_session import sign_session, verify_session
 
 from . import sign_in_roles
+from .request_origin import same_origin as _is_same_origin_logout
 
 log = logging.getLogger(__name__)
 
@@ -72,7 +73,6 @@ SESSION_COOKIE = "ss_session"     # the authenticated browser session
 
 # Lifetimes (seconds).
 _TX_TTL = 600                      # 10 min to complete the round-trip
-_SESSION_TTL = 12 * 3600          # 12 h authenticated session
 
 # Per-process replay guard for transaction cookies. The signed cookie remains
 # the source of transaction data, but the opaque tx id must be consumed exactly
@@ -382,7 +382,7 @@ def session_claims(payload: dict, request: Request, *, via: str) -> dict | None:
         try:
             if idle_minutes():
                 return None  # Legacy cookies cannot establish current activity.
-            if via == "session" and _now() >= float(payload["iat"]) + company_ttl(_SESSION_TTL):
+            if via == "session" and _now() >= float(payload["iat"]) + company_ttl():
                 return None
         except (KeyError, TypeError, ValueError, OSError):
             return None
@@ -713,7 +713,7 @@ async def auth_callback(request: Request):
     try:
         from .session_policy import company_ttl
 
-        ttl = company_ttl(_SESSION_TTL)
+        ttl = company_ttl()
         session_cookie = mint_browser_session(
             request, sub=principal.sub, secret=cfg.session_secret, via="session",
             mfa=mfa, ttl=ttl, mfa_at=auth_time,
@@ -778,44 +778,6 @@ def _csrf_reject():
     _clear_cookie(out, TX_COOKIE)
     _clear_cookie(out, SESSION_COOKIE)
     return out
-
-
-def _logout_origin(value: str) -> tuple[str, str, int] | None:
-    try:
-        parsed = urlparse(value)
-        scheme = parsed.scheme.lower()
-        if (scheme not in {"http", "https"} or not parsed.hostname
-                or parsed.username is not None or parsed.password is not None):
-            return None
-        port = parsed.port if parsed.port is not None else (443 if scheme == "https" else 80)
-        return scheme, parsed.hostname.lower().rstrip("."), port
-    except ValueError:
-        return None
-
-
-def _is_same_origin_logout(request: Request) -> bool:
-    """Compare full public origins; never trust unverified forwarding headers."""
-    public = os.environ.get("MAVERICK_PUBLIC_URL", "").strip()
-    if not public:
-        try:
-            from maverick.config import load_config
-
-            public = str((load_config().get("dashboard") or {}).get("public_url") or "").strip()
-        except Exception:
-            return False
-    if not public and login_enabled():
-        try:
-            public = str(getattr(load_oidc_config(), "redirect_uri", "") or "").strip()
-        except Exception:
-            return False
-    expected = _logout_origin(public or str(request.base_url))
-    if expected is None:
-        return False
-    for header in ("origin", "referer"):
-        value = request.headers.get(header)
-        if value:
-            return _logout_origin(value) == expected
-    return False
 
 
 def _post_logout_redirect(cfg) -> str:

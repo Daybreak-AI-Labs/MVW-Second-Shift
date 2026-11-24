@@ -409,7 +409,7 @@ def test_a_value_longer_than_the_limit_is_not_looked_at(installation):
 
 def test_sign_in_maps_the_app_role_into_the_signed_session(mapped, client, monkeypatch, token):
     session = _sign_in(client, monkeypatch, token, roles=["SecondShift.Operator"])
-    assert session["sub"] == "alice" and session["claim_role"] == "operator"
+    assert session["sub"] == "alice" and session["oidc_role_values"] == {"name": "roles", "values": ["SecondShift.Operator"]}
     assert _may(client) == {"view", "operate"}
 
 
@@ -464,7 +464,7 @@ def test_a_token_the_provider_did_not_sign_grants_nothing(mapped, client, monkey
 def test_a_stored_role_beats_the_claim(mapped, client, monkeypatch, token):
     _store_role("user:alice", "viewer")
     session = _sign_in(client, monkeypatch, token, roles=["SecondShift.Admin"])
-    assert session["claim_role"] == "admin"  # the token said so; the stored role still decides
+    assert session["oidc_role_values"]["values"] == ["SecondShift.Admin"]  # stored role still decides
     assert _may(client) == {"view"}
 
     _store_role("user:alice", "operator")
@@ -669,13 +669,13 @@ def test_only_a_provider_sign_in_session_carries_the_role():
     from maverick_dashboard import oidc_login, sign_in_roles
 
     now = time.time()
-    signed_in = oidc_login.session_claims({"sub": "alice", "iat": now, "claim_role": "operator"}, None, via="session")
-    assert type(signed_in["claim_role"]) is sign_in_roles.ClaimRole and signed_in["claim_role"] == "operator"
-    invited = oidc_login.session_claims({"sub": "alice", "iat": now, "claim_role": "operator"}, None, via="invite")
+    payload = {"sub": "alice", "iat": now, "oidc_role_values": {"name": "roles", "values": ["SecondShift.Operator"]}}
+    signed_in = oidc_login.session_claims(payload, None, via="session")
+    assert signed_in["claim_role"] == sign_in_roles.SessionRoleClaims("roles", ("SecondShift.Operator",))
+    invited = oidc_login.session_claims(payload, None, via="invite")
     assert "claim_role" not in invited
-    for value in ("", None, 7, ["admin"], {"role": "admin"}):
-        claims = oidc_login.session_claims({"sub": "alice", "iat": now, "claim_role": value}, None, via="session")
-        assert "claim_role" not in claims
+    old = oidc_login.session_claims({"sub": "alice", "iat": now, "claim_role": "operator"}, None, via="session")
+    assert "claim_role" not in old
 
 
 def test_the_explanation_follows_the_same_order(mapped, token, monkeypatch):
@@ -817,3 +817,10 @@ def test_a_caller_without_a_claim_role_is_looked_up_by_principal_alone(mapped, m
     lead = _carrying("bob", "governance_lead")
     assert auth.caller_role(lead) == "auditor"
     assert asked == [(("user:bob",), {"request": lead})]
+
+
+def test_original_role_mapping_changes_apply_to_the_current_session(mapped, client, monkeypatch, token):
+    _sign_in(client, monkeypatch, token, roles=["SecondShift.Admin"])
+    assert "admin" in _may(client)
+    _configure(mapped, '[auth.oidc.role_map]\n"SecondShift.Other" = "admin"\n"SecondShift.Admin" = "operator"\n')
+    assert _may(client) == {"view", "operate"}

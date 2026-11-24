@@ -258,6 +258,7 @@ class TrustedAgent:
     not_before: float | None = None
     expires_at: float | None = None
     revoked: bool = False
+    allow_legacy_signatures: bool = True
 
     def permits_inbound(self) -> bool:
         return self.direction in ("inbound", "both")
@@ -517,6 +518,10 @@ def _agent_from_entry(entry: dict) -> TrustedAgent | None:
     if not isinstance(revoked, bool):
         log.warning("[agent_trust] agent %r: malformed revoked flag; dropping entry", agent_id)
         return None
+    legacy = entry.get("allow_legacy_signatures", True)
+    if not isinstance(legacy, bool):
+        log.warning("[agent_trust] malformed legacy signing setting; dropping entry")
+        return None
     return TrustedAgent(
         id=agent_id,
         pubkey=pubkey,
@@ -538,6 +543,7 @@ def _agent_from_entry(entry: dict) -> TrustedAgent | None:
         not_before=not_before,  # type: ignore[arg-type]  # float|None (not _INVALID)
         expires_at=expires_at,  # type: ignore[arg-type]
         revoked=revoked,
+        allow_legacy_signatures=legacy,
     )
 
 
@@ -923,6 +929,10 @@ def put_agent(entry: dict, *, preserve_existing_identity: bool = False,
         prior = next((e for e in loaded if str(e.get("id") or "") == agent.id), None)
         clean = {k: v for k, v in entry.items() if v not in (None, "", [], {})}
         clean["id"] = agent.id
+        if prior is None:
+            clean.setdefault("allow_legacy_signatures", False)
+        else:
+            clean.setdefault("allow_legacy_signatures", prior.get("allow_legacy_signatures", True))
         if preserve_existing_identity and prior is not None:
             # Re-enrollment edits reach, never identity or lifecycle. Merge
             # under the same lock as revocation and token rotation so an edit
@@ -930,7 +940,7 @@ def put_agent(entry: dict, *, preserve_existing_identity: bool = False,
             for field in (
                 "pubkey", "a2a_token", "grpc_token", "mcp_token", "rest_token",
                 "jwt_issuer", "jwt_audience", "jwks_file", "hmac_secret_ref",
-                "not_before", "expires_at", "revoked",
+                "not_before", "expires_at", "revoked", "allow_legacy_signatures",
             ):
                 if field in prior:
                     clean[field] = prior[field]

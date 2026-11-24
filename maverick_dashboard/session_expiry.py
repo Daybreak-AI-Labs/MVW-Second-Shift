@@ -63,7 +63,7 @@ def _ends(payload: dict) -> int | None:
         elif idle_minutes():
             return None
         else:
-            value = min(value, float(payload["iat"]) + company_ttl(12 * 3600))
+            value = min(value, float(payload["iat"]) + company_ttl())
         return int(value) if value > time.time() else None
     except (KeyError, TypeError, ValueError, OSError):
         return None
