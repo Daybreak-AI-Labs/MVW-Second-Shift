@@ -22,8 +22,10 @@ listed:
 
 What it does not do. It only reads: a watcher makes a fixed set of GET calls
 (plus the sign-in), and nothing a caller passes in can change an address, a
-query or a method. It never changes, disables or deletes anything on a
-platform, and it does not contain or alert; a changed fingerprint becomes a
+query or a method. A check never changes, disables or deletes anything on a
+platform (the one guarded write, switching an agent off, lives in
+``agent_watch_switch`` and is never part of a check), and it does not contain
+or alert; a changed fingerprint becomes a
 drift finding through ``agent_drift``, which decides what happens next. It
 keeps names, states, version labels and fingerprints, never a platform's raw
 answer, and no token or secret is stored, logged or put in a message. It sees

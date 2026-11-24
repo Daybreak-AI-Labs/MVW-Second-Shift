@@ -18,7 +18,10 @@ NAMES are in the settings (``tenant_id_env``, ``client_id_env``,
 ``client_secret_env``). A secret typed into the settings is refused.
 
 What it does not do. It only reads, and only the fixed calls each class names
-in its docstring: nothing is created, changed, disabled or deleted. It does
+in its docstring: nothing is created, changed, disabled or deleted. The one
+exception is ``EntraAgentIdWatcher.switch``, which an administrator may turn on
+for Entra Agent ID alone with ``allow_switch_off = true`` (see
+``agent_watch_switch``); it is never called by a check. It does
 not use the Microsoft Agent 365 registry (the Graph "packages" API), which
 needs an Agent 365 licence, and it does not read what an agent did, only what
 it is. It covers the Microsoft public cloud only: the sign-in, Graph, Foundry
@@ -177,6 +180,7 @@ def _sha256(text: str) -> str:
 #: https://learn.microsoft.com/en-us/graph/api/agentidentity-list?view=graph-rest-1.0
 _GRAPH_AGENT_IDENTITIES = "https://graph.microsoft.com/v1.0/servicePrincipals/microsoft.graph.agentIdentity"
 _GRAPH_SCOPE = "https://graph.microsoft.com/.default"
+_GRAPH_AGENT_IDENTITY_BASE = "https://graph.microsoft.com/v1.0/servicePrincipals"
 #: https://learn.microsoft.com/en-us/graph/api/resources/agentidentity?view=graph-rest-1.0
 _IDENTITY_TEXT_FIELDS = ("displayName", "agentIdentityBlueprintId", "disabledByMicrosoftStatus",
                          "servicePrincipalType")
@@ -187,7 +191,9 @@ class EntraAgentIdWatcher:
 
     Settings, ``[agent_watch.entra_agent_id]``: ``tenant_id_env``,
     ``client_id_env`` and ``client_secret_env``, each the name of an
-    environment variable.
+    environment variable; and optionally ``allow_switch_off`` (true or false,
+    default false), which lets an administrator disable and re-enable an
+    identity from Second Shift through ``switch`` (see below).
 
     Calls: ``GET https://graph.microsoft.com/v1.0/servicePrincipals/
     microsoft.graph.agentIdentity`` with no query options, then each
@@ -207,7 +213,44 @@ class EntraAgentIdWatcher:
     name = "entra_agent_id"
 
     def __init__(self, settings: dict) -> None:
-        self._credentials = _credentials(settings, f"[agent_watch.{self.name}]")
+        section = f"[agent_watch.{self.name}]"
+        self._credentials = _credentials(settings, section, also=("allow_switch_off",))
+        allowed = settings.get("allow_switch_off", False)
+        if not isinstance(allowed, bool):
+            raise WatchConfigError(f"allow_switch_off in {section} must be true or false.")
+        self.allow_switch_off = allowed
+
+    def switch(self, external_id: str, *, enabled: bool) -> None:
+        """Disable (``enabled=False``) or re-enable one agent identity: ``PATCH
+        https://graph.microsoft.com/v1.0/servicePrincipals/{id}/microsoft.graph.agentIdentity``
+        with ``{"accountEnabled": <bool>}``, answered ``204 No Content``
+        (https://learn.microsoft.com/en-us/graph/api/agentidentity-update?view=graph-rest-1.0).
+        ``accountEnabled`` is the documented property: when false no one can
+        sign in to the identity
+        (https://learn.microsoft.com/en-us/graph/api/resources/agentidentity?view=graph-rest-1.0).
+        The application permission is ``AgentIdentity.EnableDisable.All``
+        ("Enable or disable agent identities", admin consent required;
+        https://learn.microsoft.com/en-us/graph/permissions-reference).
+
+        One request, never retried. ``external_id`` must be an identity id
+        (a GUID): it is the only part of the address that varies. Raises
+        :class:`WatchError`, worded without anything from Microsoft's answer,
+        when the request is not accepted."""
+        if not self.allow_switch_off:
+            raise WatchError("Switching agents off is not allowed in this check's settings.")
+        if not isinstance(external_id, str) or not _GUID.fullmatch(external_id):
+            raise WatchError("The platform id kept for this agent is not an agent identity id.")
+        token = self._credentials.token(_GRAPH_SCOPE)
+        status, _body = agent_watch._request(
+            "PATCH", f"{_GRAPH_AGENT_IDENTITY_BASE}/{external_id.lower()}/microsoft.graph.agentIdentity",
+            headers={"Accept": "application/json", "Authorization": f"Bearer {token}"},
+            timeout=agent_watch.limits().timeout_seconds, max_bytes=64 * 1024,
+            json_body={"accountEnabled": enabled}, ok=(200, 204))
+        if status in (200, 204):
+            return
+        if status == 401:
+            agent_watch._forget_token(token)
+        raise WatchError(_switch_refusal(status))
 
     def list_agents(self) -> list[ObservedAgent]:
         token = self._credentials.token(_GRAPH_SCOPE)
@@ -228,6 +271,25 @@ class EntraAgentIdWatcher:
                 "blueprint": parts["agentIdentityBlueprintId"],
                 "disabled_by_microsoft": parts["disabledByMicrosoftStatus"],
                 "identity_type": parts["servicePrincipalType"]}))
+
+
+def _switch_refusal(status: int) -> str:
+    """Why Microsoft did not take a switch-off or switch-on, in plain words."""
+    if status == 401:
+        return ("Microsoft did not accept this check's sign-in (HTTP 401). Check the client id and "
+                "secret, and that the secret has not expired.")
+    if status == 403:
+        return ("Microsoft refused the change (HTTP 403). The app registration probably has not been "
+                "granted the Microsoft Graph application permission AgentIdentity.EnableDisable.All "
+                "with administrator consent.")
+    if status == 404:
+        return ("Microsoft says this agent identity does not exist (HTTP 404). It may have been "
+                "deleted, or the platform link on this agent is wrong.")
+    if status == 429:
+        return "Microsoft is limiting requests at the moment (HTTP 429). Try again in a few minutes."
+    if 300 <= status < 400:
+        return f"Microsoft answered with a redirect (HTTP {status}), which is not followed."
+    return f"Microsoft answered with HTTP {status}, which was not expected."
 
 
 #: https://learn.microsoft.com/en-us/azure/foundry/agents/quickstarts/prompt-agent
