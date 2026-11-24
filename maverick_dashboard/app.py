@@ -668,6 +668,13 @@ app.include_router(ekko_router)
 # flow isn't fully configured, so including the router unconditionally is inert
 # off by default. See maverick_dashboard.oidc_login.
 app.include_router(oidc_login_router)
+# The sign-in timer's three reads (/auth/session/status, /activity, /renew) and
+# the shell's `page_session` global that tells each page when sign-in ends.
+from .session_expiry import page_session as _page_session  # noqa: E402
+from .session_expiry import router as session_expiry_router  # noqa: E402
+
+app.include_router(session_expiry_router)
+templates.env.globals["page_session"] = _page_session
 # Self-authenticating external integrations (/api/v1/external/...): agents on
 # other platforms, signed discovery sensors, and invited vendor respondents use
 # route-specific credentials instead of a dashboard session. Individual route
@@ -1429,11 +1436,11 @@ from maverick.world_model import WorldBackendUnreadable as _WorldBackendUnreadab
 async def world_backend_refused_handler(request: Request, exc: _WorldBackendUnreadable):
     """The records database was refused (Postgres was last used and the
     settings no longer choose it): a plain 503, never a generic 500. The
-    details, which name files, stay in the log and in ``maverick doctor``."""
+    details, which name files, stay in the server log."""
     log.error("records database refused on %s: %s", request.url.path, exc)
     detail = ("Second Shift will not open a local records database, because it last used "
               "its Postgres database and the settings no longer choose one. "
-              "An administrator can run maverick doctor to see what to fix.")
+              "An administrator can find the fault by checking the readiness address (/readyz) and the server log.")
     if _wants_html(request):
         return templates.TemplateResponse(request, "error.html", {
             "status": 503, "title": "Records database unavailable", "message": detail,
@@ -1459,7 +1466,7 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
 
     # A write refused by a read-only database says what broke, that
     # saved work is safe and what to do, never the database error itself.
-    # A database setup refusal shows the fix maverick doctor prints.
+    # A database setup refusal names the fix in the server log.
     read_only = is_read_only_error(exc)
     database_error = database_refusal(exc)
     status = 503 if read_only or database_error else 500
@@ -1477,7 +1484,7 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
                 '<!doctype html><html lang="en"><meta charset="utf-8"><title>Second Shift needs attention</title>'
                 '<h1>Something went wrong</h1><p>Check the current state before repeating a change.</p>'
                 f'<p>Support reference: {reference}</p><p>Time: {occurred_at}</p>'
-                f'<a href="/help?failure={reference}">Open Help</a></html>',
+                f'<a href="/">Back to home</a></html>',
                 status_code=500, headers=headers,
             )
     detail = READ_ONLY_REFUSAL if read_only else database_error or (
@@ -1634,8 +1641,6 @@ async def external_agents_page(request: Request) -> HTMLResponse:
         {
             "enabled": enabled,
             "external_agents_can_manage": enabled and has_permission(request, "admin"),
-            # turned on in the deployment settings, never from this page
-            "external_agents_can_activate": False,
             "status": xa.status(),
             "agents": agents,
             "platforms": xa.PLATFORMS,

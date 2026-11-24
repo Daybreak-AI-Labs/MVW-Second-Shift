@@ -1,8 +1,7 @@
 /* Sign-in timer (WCAG 2.2.1 Timing Adjustable).
  *
  * Two minutes before this browser's sign-in ends, ask whether to stay signed
- * in. A local sign-in is kept going in place (POST /auth/session/renew); a
- * company sign-in signs in again with the identity provider. When the sign-in
+ * in. A company sign-in signs in again with the identity provider. When the sign-in
  * has ended, say so, keep what was typed on this page (this tab only, never
  * passwords, files or secret-looking fields) and come back here after
  * signing in again, with the typed values put back.
@@ -23,7 +22,7 @@
   }
   var here = window.location.pathname + window.location.search;
   var KEY = 'second-shift.session-kept:' + here;
-  var signIn = meta('second-shift-session-sign-in') || '/auth/local-login';
+  var signIn = meta('second-shift-session-sign-in') || '/auth/login';
   var renews = meta('second-shift-session-renew') === 'renew';
   var ends = parseInt(meta('second-shift-session-expires'), 10) || 0;
   var idleMinutes = parseInt(meta('second-shift-session-idle-minutes'), 10) || 0;
