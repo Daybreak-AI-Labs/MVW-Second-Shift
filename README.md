@@ -44,9 +44,14 @@ Early. What works today:
 Not here yet: the agent factory, the AI asset inventory, the Ekko pages, and
 platform checks for ServiceNow and Workday.
 
-Not yet proven outside this repository's tests: nothing has been run against a
-live Microsoft tenant, a real Teams channel, a real mail server or a Postgres
-server.
+Proven against a live PostgreSQL 16 server: the Postgres tests, the whole suite
+with the database connected, and the app itself (start, enroll, run report,
+parked request, approval). Not yet proven outside this repository's tests:
+nothing has been run against a live Microsoft tenant, a real Teams channel or
+a real mail server.
+
+Enrollment, drift and platform-check records are files in the data folder, not
+database rows: run one instance of the app, on storage that persists.
 
 ## Run
 
@@ -73,6 +78,21 @@ start.
 ```bash
 .venv/bin/python -m pytest -q -n auto --dist loadfile
 ```
+
+The same command with `MAVERICK_TEST_SECURE_DEFAULT=1` runs the suite in the
+production security posture. With `MAVERICK_PG_DSN` set to a PostgreSQL login
+that may create databases (and roles, for the isolation test), the Postgres
+tests run too; each uses a database it creates and removes.
+
+```bash
+.venv/bin/python -m ruff check .
+```
+
+## Database
+
+SQLite in the data folder by default. For PostgreSQL set
+`MAVERICK_WORLD_BACKEND=postgres` and `MAVERICK_PG_DSN`; the schema is created
+and migrated at start. `MAVERICK_PG_RLS=1` adds database-level isolation.
 
 ## Settings
 
