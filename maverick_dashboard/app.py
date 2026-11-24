@@ -469,6 +469,7 @@ async def _lifespan(app: FastAPI):
     from maverick.control_plane_lease import acquire as _acquire_control_plane
     from maverick.control_plane_lease import current, release
     from maverick.postgres_transactions import close_postgres_pools, open_postgres_pools
+    from maverick.servicenow_incidents import delivery_loop
 
     owns_lease = current() is None
     _acquire_control_plane(role="dashboard")
@@ -488,7 +489,8 @@ async def _lifespan(app: FastAPI):
         except Exception:  # pragma: no cover -- a warning must never block startup
             pass
         timers = [asyncio.create_task(_drift_check_loop()), asyncio.create_task(_platform_check_loop()),
-                  asyncio.create_task(_expiry_reminder_loop()), asyncio.create_task(_owner_note_loop())]
+                  asyncio.create_task(_expiry_reminder_loop()), asyncio.create_task(_owner_note_loop()),
+                  asyncio.create_task(delivery_loop())]
         try:
             yield
         finally:

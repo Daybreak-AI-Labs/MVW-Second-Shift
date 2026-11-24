@@ -1726,6 +1726,10 @@ def _deny_and_count(agent_id: str, tool: str, rule: str, reason: str) -> dict:
                 meta["contained"] = True
                 contained_now = True
             _save_sidecar(sidecar)
+    if meta is not None:
+        from .ops_alert import incident
+
+        incident("blocked", agent_id, cause=rule)
     if contained_now:
         from .audit import EventKind, audit_event
         audit_event(EventKind.EXTERNAL_AGENT_CONTAINED,
@@ -1792,6 +1796,9 @@ def release(agent_id: str, *, released_by: str = "") -> bool:
     from .audit import EventKind, audit_event
     audit_event(EventKind.EXTERNAL_AGENT_RELEASED, agent="external_agents",
                 external_agent=agent_id, released_by=released_by)
+    from .ops_alert import incident
+
+    incident("blocked", agent_id, resolve=True)
     return True
 
 
