@@ -1622,8 +1622,21 @@ async def external_agents_page(request: Request) -> HTMLResponse:
             "outside_agent_tabs": None,
             "platform_checks": await run_in_threadpool(_platform_checks_view, claimed) if enabled else None,
             "platform_checks_shown": enabled,
+            "alert_delivery": await run_in_threadpool(_alert_delivery_view),
         },
     )
+
+
+def _alert_delivery_view() -> dict | None:
+    """How alerts are delivered, for the roster page. None when the settings
+    cannot be read: the page says so instead of failing."""
+    try:
+        from maverick import ops_alert
+
+        return ops_alert.delivery_status()
+    except Exception:
+        log.warning("alert delivery settings unavailable", exc_info=True)
+        return None
 
 
 def _platform_checks_view(claimed: frozenset[str]) -> dict | None:

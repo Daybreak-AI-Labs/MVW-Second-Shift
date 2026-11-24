@@ -1,0 +1,42 @@
+{#- How alerts reach people, and a test for administrators. `alert_delivery`
+    is what ops_alert.delivery_status() returns, or none when the settings
+    could not be read. A webhook address is never part of it. -#}
+{% set _CHANNEL = {'teams': 'Teams', 'email': 'email'} %}
+<div class="panel" id="alert-delivery">
+  <p style="margin: 0;">
+    {% if alert_delivery is none %}<span class="badge failure">Alert settings could not be read</span>
+    {% elif not alert_delivery.enabled %}<span class="badge failure">Alerts are off</span>
+    {% elif not alert_delivery.channels %}<span class="badge failure">Alerts are on but have nowhere to go</span>
+    {% else %}{% for c in alert_delivery.channels %}<span class="badge {{ 'active' if c.ready else 'failure' }}">Alerts by {{ _CHANNEL.get(c.channel, c.channel) }}: {{ 'ready' if c.ready else 'not ready' }}</span>
+    {% endfor %}{% endif %}
+    {% if external_agents_can_manage %}<button type="button" class="btn btn--ghost" id="alert-test">Send a test alert</button>{% endif %}
+  </p>
+  {% if alert_delivery is not none %}
+  {% if not alert_delivery.enabled %}<p class="muted" style="margin: var(--space-2) 0 0; font-size: var(--text-sm);">A blocked agent or a drift finding is still recorded and shown here, but nobody is told when it happens. An administrator turns alerts on in the settings.</p>{% endif %}
+  {% for c in alert_delivery.channels if c.problem %}<p class="muted" style="margin: var(--space-2) 0 0; font-size: var(--text-sm);">{{ _CHANNEL.get(c.channel, c.channel) | capitalize }}: {{ c.problem }}</p>{% endfor %}
+  {% if alert_delivery.ignored %}<p class="muted" style="margin: var(--space-2) 0 0; font-size: var(--text-sm);">Not used, because alerts go to Teams or email only: {{ alert_delivery.ignored | join(', ') }}.</p>{% endif %}
+  {% endif %}
+  <p class="muted" role="status" aria-live="polite" id="alert-test-result" style="margin: var(--space-2) 0 0; font-size: var(--text-sm);"></p>
+</div>
+<script nonce="{{ csp_script_nonce }}">
+(function () {
+  var button = document.getElementById("alert-test"), result = document.getElementById("alert-test-result");
+  if (!button || !result) return;
+  button.addEventListener("click", async function () {
+    button.disabled = true;
+    result.textContent = "Sending a test alert…";
+    try {
+      var answer = await window.mvFetchJSON("/api/v1/alerts/test", { method: "POST" }, "send the test alert");
+      var lines = [answer.message || ""];
+      Object.keys(answer.results || {}).forEach(function (channel) {
+        if (answer.results[channel] !== "sent") lines.push(channel + ": " + answer.results[channel]);
+      });
+      result.textContent = lines.filter(Boolean).join(" ");
+    } catch (failure) {
+      result.textContent = window.mvErrorText ? window.mvErrorText(failure, "send the test alert") : "The test alert could not be sent.";
+    } finally {
+      button.disabled = false;
+    }
+  });
+})();
+</script>
