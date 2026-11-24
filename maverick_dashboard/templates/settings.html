@@ -1,0 +1,217 @@
+{% extends "base.html" %}
+{% block title %}Settings · Second Shift{% endblock %}
+{% block content %}
+  {#- Only administrators open this page. Every label, value and explanation is escaped by the template
+      engine. A credential setting shows a variable NAME and whether that variable is set, never a value. -#}
+  <h1 class="page-title">Settings</h1>
+  <p class="page-subtitle">The everyday settings of Second Shift. A change is confirmed, written to the audit log and applies at once unless a line says otherwise. A setting your deployment controls is shown here but can only be changed there.</p>
+
+  {% if layer_problem %}
+  <div class="panel" role="alert"><p style="margin: 0;"><span class="badge failure">Settings not applied</span> {{ layer_problem }}</p></div>
+  {% endif %}
+
+  <nav class="panel" aria-label="Sections of this page">
+    <p style="margin: 0;">
+      {% for section in sections %}<a href="#section-{{ section.id }}">{{ section.title }}</a>{% if not loop.last %} · {% endif %}{% endfor %}
+    </p>
+  </nav>
+
+  {% for section in sections %}
+  <section class="panel" id="section-{{ section.id }}" aria-labelledby="heading-{{ section.id }}">
+    <h2 id="heading-{{ section.id }}" style="margin-top: 0;">{{ section.title }}</h2>
+    <p class="muted">{{ section.about }}</p>
+
+    {% if not section.installed %}
+    <p role="status"><span class="badge pending">Not installed</span> {{ section.not_installed }}</p>
+    {% else %}
+
+    {% if section.tests %}
+    <div style="display: flex; flex-wrap: wrap; gap: var(--space-2); margin-bottom: var(--space-3);">
+      {% for test in section.tests %}
+      <button type="button" class="btn" data-settings-test="{{ test.url }}" data-result="result-{{ section.id }}-{{ loop.index }}" title="{{ test.what }}">{{ test.label }}</button>
+      {% endfor %}
+    </div>
+    {% for test in section.tests %}<p class="muted" id="result-{{ section.id }}-{{ loop.index }}" role="status" aria-live="polite" hidden></p>{% endfor %}
+    {% endif %}
+
+    {% if section.secrets %}
+    <table>
+      <caption class="sr-only">Secrets for {{ section.title }}</caption>
+      <thead><tr><th scope="col">Secret</th><th scope="col">Held in the environment variable</th><th scope="col">Is it set?</th></tr></thead>
+      <tbody>
+        {% for secret in section.secrets %}
+        <tr><td>{{ secret.what }}</td><td><code>{{ secret.variable }}</code></td><td>{% if secret.set %}<span class="badge active">Yes, set</span>{% else %}<span class="badge pending">No, not set</span>{% endif %}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <p class="muted">Secrets are set in your deployment. They are never typed, shown or saved here.</p>
+    {% endif %}
+
+    {% for s in section.settings %}
+    <form class="settings-row" data-key="{{ s.key }}" data-kind="{{ s.kind }}" data-label="{{ s.label }}" autocomplete="off"
+          style="border-top: 1px solid var(--border, rgba(127,127,127,.25)); padding: var(--space-3) 0; display: grid; gap: var(--space-2);">
+      {% set fid = 'f-' ~ loop.index ~ '-' ~ section.id %}
+      <div>
+        {% if s.kind == 'list_choice' %}<strong id="{{ fid }}-label">{{ s.label }}</strong>
+        {% else %}<label for="{{ fid }}"><strong>{{ s.label }}</strong></label>{% endif %}
+        <span class="muted"> — {{ s.help }}{% if s.unit %} ({{ s.unit }}){% endif %}</span>
+      </div>
+      <div style="display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: flex-start;">
+        {% if s.kind == 'bool' %}
+          <select class="input" id="{{ fid }}" name="value" {% if s.locked %}disabled{% endif %}>
+            <option value="true" {% if s.value %}selected{% endif %}>On</option>
+            <option value="false" {% if not s.value %}selected{% endif %}>Off</option>
+          </select>
+        {% elif s.kind in ('int', 'float') %}
+          <input class="input" id="{{ fid }}" name="value" type="number" inputmode="decimal"
+                 {% if s.minimum is not none %}min="{{ s.minimum }}"{% endif %} {% if s.maximum is not none %}max="{{ s.maximum }}"{% endif %}
+                 step="{{ 'any' if s.kind == 'float' else 1 }}" value="{{ s.value }}" {% if s.locked %}disabled{% endif %}>
+        {% elif s.kind == 'choice' %}
+          <select class="input" id="{{ fid }}" name="value" {% if s.locked %}disabled{% endif %}>
+            {% if s.value not in (s.choices | map(attribute='value') | list) %}<option value="" selected>Not chosen</option>{% endif %}
+            {% for c in s.choices %}<option value="{{ c.value }}" {% if c.value == s.value %}selected{% endif %}>{{ c.label }}</option>{% endfor %}
+          </select>
+        {% elif s.kind == 'list_choice' %}
+          <fieldset aria-labelledby="{{ fid }}-label" style="border: 0; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: var(--space-3);" {% if s.locked %}disabled{% endif %}>
+            {% for c in s.choices %}<label><input type="checkbox" name="value" value="{{ c.value }}" {% if c.value in s.value %}checked{% endif %}> {{ c.label }}</label>{% endfor %}
+          </fieldset>
+        {% elif s.kind in ('list_guid', 'list_text') %}
+          <textarea class="input" id="{{ fid }}" name="value" rows="3" cols="46" spellcheck="false" aria-describedby="{{ fid }}-hint" {% if s.locked %}disabled{% endif %}>{{ s.value | join('\n') }}</textarea>
+          <span class="muted" id="{{ fid }}-hint">One per line.</span>
+        {% elif s.kind == 'map' %}
+          <textarea class="input" id="{{ fid }}" name="value" rows="3" cols="60" spellcheck="false" aria-describedby="{{ fid }}-hint" {% if s.locked %}disabled{% endif %}>{{ s.value_text }}</textarea>
+          <span class="muted" id="{{ fid }}-hint">One per line: environment id = host.</span>
+        {% else %}
+          <input class="input" id="{{ fid }}" name="value" type="text" spellcheck="false" autocomplete="off"
+                 maxlength="{{ 254 if s.kind == 'list_text' else 200 }}" value="{{ s.value or '' }}"
+                 {% if s.kind == 'env_name' %}placeholder="VARIABLE_NAME" aria-describedby="{{ fid }}-hint"{% endif %} {% if s.locked %}disabled{% endif %}>
+          {% if s.kind == 'env_name' %}<span class="muted" id="{{ fid }}-hint">The variable's name, not its value.</span>{% endif %}
+        {% endif %}
+        {% if not s.locked %}
+        <button type="submit" class="btn btn--primary">Save</button>
+        <button type="button" class="btn btn--ghost" data-settings-reset {% if s.source != 'settings' %}hidden{% endif %}>Go back to the deployment's value</button>
+        {% endif %}
+      </div>
+      <div class="muted settings-status">
+        <span class="badge {{ 'pending' if s.locked else ('active' if s.source == 'settings' else '') }}" data-settings-source>{% if s.locked %}Set by the deployment{% elif s.source == 'settings' %}Changed here{% elif s.source == 'default' %}Default{% else %}From the settings file{% endif %}</span>
+        <span data-settings-source-text>{{ s.source_text }}</span>
+        {% if s.kind == 'env_name' %}
+        <span data-settings-variable>{% if s.variable_set %}That variable is set.{% else %}That variable is not set.{% endif %}</span>
+        {% endif %}
+        {% if s.note %}<span>{{ s.note }}</span>{% endif %}
+        {% if s.restart %}<span><strong>Needs a restart</strong> of Second Shift to take effect.</span>{% endif %}
+      </div>
+      <p class="muted" data-settings-message role="status" aria-live="polite" hidden style="margin: 0;"></p>
+    </form>
+    {% endfor %}
+    {% endif %}
+  </section>
+  {% endfor %}
+
+<script nonce="{{ csp_script_nonce }}">
+(function () {
+  function text(node, value) { node.textContent = value; }
+  function rowValue(form) {
+    var kind = form.dataset.kind;
+    var field = form.elements.value;
+    if (kind === "bool") return field.value === "true";
+    if (kind === "int" || kind === "float") return field.value.trim() === "" ? null : Number(field.value);
+    if (kind === "list_choice") {
+      return Array.prototype.map.call(form.querySelectorAll('input[name="value"]:checked'), function (c) { return c.value; });
+    }
+    if (kind === "list_guid" || kind === "list_text") {
+      return field.value.split("\n").map(function (l) { return l.trim(); }).filter(Boolean);
+    }
+    if (kind === "map") {
+      var out = {};
+      var bad = false;
+      field.value.split("\n").map(function (l) { return l.trim(); }).filter(Boolean).forEach(function (line) {
+        var at = line.indexOf("=");
+        if (at < 1) { bad = true; return; }
+        out[line.slice(0, at).trim()] = line.slice(at + 1).trim();
+      });
+      return bad ? undefined : out;
+    }
+    return field.value;
+  }
+  function describe(kind, value) {
+    if (kind === "bool") return value ? "on" : "off";
+    if (Array.isArray(value)) return value.length ? value.join(", ") : "nothing";
+    if (value && typeof value === "object") return Object.keys(value).length + " entries";
+    return value === "" ? "empty" : String(value);
+  }
+  function show(form, row) {
+    var badge = form.querySelector("[data-settings-source]");
+    var reset = form.querySelector("[data-settings-reset]");
+    text(badge, row.locked ? "Set by the deployment" : row.source === "settings" ? "Changed here" : row.source === "default" ? "Default" : "From the settings file");
+    badge.className = "badge " + (row.locked ? "pending" : row.source === "settings" ? "active" : "");
+    text(form.querySelector("[data-settings-source-text]"), row.source_text);
+    var variable = form.querySelector("[data-settings-variable]");
+    if (variable) text(variable, row.variable_set ? "That variable is set." : "That variable is not set.");
+    if (reset) reset.hidden = row.source !== "settings";
+  }
+  function say(form, message, isError) {
+    var line = form.querySelector("[data-settings-message]");
+    line.hidden = !message;
+    text(line, message || "");
+    line.className = isError ? "danger-text" : "muted";
+  }
+  async function save(form, payload, path, ask, okText) {
+    if (!(await window.mvConfirm(ask, { okText: okText }))) return;
+    try {
+      var row = await window.mvFetchJSON("/api/v1/settings/" + encodeURIComponent(form.dataset.key) + path,
+        { method: "POST", body: payload }, "save this setting");
+      show(form, row);
+      var field = form.elements.value;
+      if (field && !(form.dataset.kind === "list_choice")) {
+        var v = row.value;
+        if (form.dataset.kind === "bool") field.value = v ? "true" : "false";
+        else if (form.dataset.kind === "list_guid" || form.dataset.kind === "list_text") field.value = (v || []).join("\n");
+        else if (form.dataset.kind === "map") field.value = row.value_text || "";
+        else field.value = v == null ? "" : v;
+      } else if (form.dataset.kind === "list_choice") {
+        Array.prototype.forEach.call(form.querySelectorAll('input[name="value"]'), function (c) { c.checked = (row.value || []).indexOf(c.value) >= 0; });
+      }
+      say(form, "Saved. " + (row.note || (row.restart ? "Restart Second Shift to apply it." : "It applies now.")), false);
+      window.mvToast("Saved.", {});
+    } catch (e) {
+      say(form, e.message || "The change was not saved.", true);
+      window.mvToast(e.message || "The change was not saved.", { error: true });
+    }
+  }
+  Array.prototype.forEach.call(document.querySelectorAll("form.settings-row"), function (form) {
+    form.addEventListener("submit", function (event) {
+      event.preventDefault();
+      var value = rowValue(form);
+      if (value === undefined || (value === null && form.dataset.kind !== "text")) {
+        say(form, "Check the value: it is not in the form this setting takes.", true);
+        return;
+      }
+      save(form, { value: value, confirmed: true }, "",
+        "Change " + form.dataset.label + " to " + describe(form.dataset.kind, value) + "? This is recorded in the audit log.", "Change it");
+    });
+    var reset = form.querySelector("[data-settings-reset]");
+    if (reset) reset.addEventListener("click", function () {
+      save(form, { confirmed: true }, "/reset",
+        "Take away the change to " + form.dataset.label + " so the deployment's value applies again? This is recorded in the audit log.", "Go back");
+    });
+  });
+  Array.prototype.forEach.call(document.querySelectorAll("[data-settings-test]"), function (button) {
+    button.addEventListener("click", async function () {
+      var line = document.getElementById(button.dataset.result);
+      button.disabled = true;
+      try {
+        var answer = await window.mvFetchJSON(button.dataset.settingsTest, { method: "POST", body: {} }, "run this test");
+        line.hidden = false;
+        text(line, answer.message || answer.summary || "Done.");
+        line.className = "muted";
+      } catch (e) {
+        line.hidden = false;
+        text(line, e.message || "The test did not go through.");
+        line.className = "danger-text";
+      } finally { button.disabled = false; }
+    });
+  });
+})();
+</script>
+{% endblock %}
