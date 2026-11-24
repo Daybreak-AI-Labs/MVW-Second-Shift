@@ -325,6 +325,34 @@ def _reset_process_client_binding():
 
 
 @pytest.fixture(autouse=True)
+def _close_cached_worlds():
+    """Close the web app's cached database connections after every test.
+
+    ``maverick_dashboard._shared._world`` keeps one open world per database
+    path. In production the path never changes, so the cache holds one entry;
+    here every test points the database at its own temporary file, so without
+    this the cache grew by one open database (several file handles) per test.
+    A long run then passed 1,024 open handles and code that uses ``select()``
+    (a proxy server in ``tests/core/test_round5_redirect_tls.py``) failed with
+    "filedescriptor out of range".
+    """
+    yield
+    import sys
+
+    shared = sys.modules.get("maverick_dashboard._shared")
+    cache = getattr(shared, "_world_cache", None) if shared is not None else None
+    if not cache:
+        return
+    worlds = list(cache.values())
+    cache.clear()
+    for world in worlds:
+        try:
+            world.close()
+        except Exception:  # noqa: BLE001 -- a world that will not close must not fail the next test
+            pass
+
+
+@pytest.fixture(autouse=True)
 def _reset_cluster_halt_cache():
     """Forget the killswitch's cached cluster-wide halt after every test.
 
