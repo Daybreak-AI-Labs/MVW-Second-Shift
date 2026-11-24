@@ -133,3 +133,32 @@ def test_delivery_uses_the_guarded_client_for_oauth_and_table_calls(setup, monke
     sn.deliver_due()
     assert ops_alert.delivery_status()["servicenow"]["pending"] == 0
     assert calls == [("POST", "/oauth_token.do"), ("GET", "/api/now/table/incident"), ("POST", "/api/now/table/incident")]
+
+
+def test_blocked_incident_opens_only_when_the_agent_is_contained(setup, monkeypatch):
+    """A single refused action is a normal outcome, not an incident. The incident
+    opens once, when repeated rule breaks contain the agent, and the release that
+    resolves it is the same event that ends the containment."""
+    from contextlib import nullcontext
+
+    from maverick import external_agents as xa
+    from maverick import ops_alert
+
+    sidecar = {"an-agent": {}}
+    monkeypatch.setattr(xa, "_sidecar_locked", nullcontext)
+    monkeypatch.setattr(xa, "_load_sidecar", lambda **_: sidecar)
+    monkeypatch.setattr(xa, "_save_sidecar", lambda _entries: None)
+    monkeypatch.setattr(xa, "_screen_verdict", lambda *_args, **_kwargs: {})
+    opened = []
+    monkeypatch.setattr(ops_alert, "incident", lambda *args, **kwargs: opened.append((args, kwargs)))
+
+    for _ in range(xa._CONTAIN_DENIALS - 1):
+        xa._deny_and_count("an-agent", "send_email", "ceiling", "too risky")
+    assert opened == []
+
+    xa._deny_and_count("an-agent", "send_email", "ceiling", "too risky")
+    assert sidecar["an-agent"]["contained"] is True
+    assert opened == [(("blocked", "an-agent"), {})]
+
+    xa._deny_and_count("an-agent", "send_email", "ceiling", "too risky")
+    assert len(opened) == 1

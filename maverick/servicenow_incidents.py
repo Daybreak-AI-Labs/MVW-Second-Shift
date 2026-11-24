@@ -36,7 +36,7 @@ _TABLE_PATH = "/api/now/table/incident"
 _FIELDS = f"sys_id,state,{_CORRELATION}"
 _DRAIN_LOCK = threading.Lock()
 _TITLES = {
-    "blocked": "Second Shift blocked an agent action for a rule violation",
+    "blocked": "Second Shift blocked an agent after repeated rule violations",
     "drift": "Second Shift detected a high-severity change in an agent",
     "missing": "Second Shift could no longer find an agent on its platform",
     "emergency": "The Second Shift emergency stop was turned on",

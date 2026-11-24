@@ -1,13 +1,14 @@
 # Send Second Shift incidents to ServiceNow
 
-Second Shift queues an incident when it refuses an enrolled agent's action
-for a rule violation, detects high-severity drift outside the learning period,
-marks an agent missing from its platform, or arms the emergency stop. It
+Second Shift queues an incident when it blocks an enrolled agent after
+repeated rule violations (a single refused action is not an incident),
+detects high-severity drift outside the learning period, marks an agent
+missing from its platform, or arms the emergency stop. It
 resolves the corresponding incident after release, acknowledgement, a
 successful sighting, or clearing the stop in the dashboard.
 
 An incident covers one active episode of a cause. Repeated reports for the same
-agent and rule, drift finding, platform absence or deployment stop coalesce.
+blocked agent, drift finding, platform absence or deployment stop coalesce.
 If the cause returns after resolution, a new episode can start. Titles and
 notes use fixed language. The incident includes an opaque correlation ID and,
 for an agent, a short opaque reference. The queue and outgoing requests omit
