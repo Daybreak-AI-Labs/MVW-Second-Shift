@@ -85,7 +85,14 @@ PAGES: tuple[dict, ...] = ({'path': '/',
   'group': 'Govern',
   'icon': 'audit',
   'floor': 'audit',
-  'default': 'audit'})
+  'default': 'audit'},
+ {'path': '/ekko',
+  'label': 'Discover work to automate',
+  'aliases': 'Ekko',
+  'group': 'Agents',
+  'icon': 'agents',
+  'floor': 'operate',
+  'default': 'operate'})
 
 # Moderate sidebar declutter: keep a focused set of everyday destinations in the
 # rail; fold the rest OUT of the sidebar (in_nav=False) while leaving them fully

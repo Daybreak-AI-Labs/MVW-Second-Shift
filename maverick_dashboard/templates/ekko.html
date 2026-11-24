@@ -1,0 +1,269 @@
+{% extends "base.html" %}
+{% block title %}Ekko · Second Shift{% endblock %}
+{% block content %}
+  {#- One person's own Ekko page. It only shows and sends: who may enroll, which
+      apps are allowed and whether recording may start are checked by the
+      server. Every value here belongs to the person who is signed in. -#}
+  {% set apps = ekko.app_labels %}
+  <h1 class="page-title">Ekko: find work you repeat</h1>
+  <p class="page-subtitle">With your consent, a small recorder on your own computer notices which work apps you switch between. Second Shift then looks for work you repeat, so you can decide whether it is worth automating.</p>
+
+  <div class="panel" id="ekko-scope">
+    <h2 style="margin-top: 0;">What Ekko records, and what it never records</h2>
+    <p><strong>It records</strong> the name of the app in front on your computer (for example “Microsoft Excel”), when you switched to it and for how long. Only the apps you choose are noticed.</p>
+    <p><strong>It never records</strong> window titles, what is on your screen, what you type, the clipboard, web addresses, file names, or anything inside a file, email or message.</p>
+    <p>Nothing is recorded until you press Start. Recording stops when you pause, stop or withdraw your consent.</p>
+    <p style="margin-bottom: 0;">What is noticed is sent to your organisation’s Second Shift server and stored there encrypted. Only you can open it: Second Shift has no view across people. Each activity is deleted after {{ ekko.retention_days }} days, and you can erase everything sooner.</p>
+  </div>
+
+  {% if not ekko.enabled %}
+  <div class="panel" id="ekko-off">
+    <p style="margin: 0;"><span class="badge pending">Ekko is turned off</span></p>
+    <p class="muted" style="margin: var(--space-2) 0 0;">An administrator turns Ekko on in the settings. Nothing is recorded while it is off. You can still erase what was recorded before.</p>
+  </div>
+  {% endif %}
+
+  <div class="panel" id="ekko-device" data-device="{{ ekko.device_id }}" data-server="{{ server_address }}"
+       data-session="{{ (ekko.session or {}).session_id or '' }}">
+    <h2 style="margin-top: 0;">Your computer</h2>
+    <p>This page is about the computer you named <strong>{{ ekko.device_id }}</strong>. Use one name for each computer you record on.</p>
+    <form method="get" action="/ekko" class="mv-row__actions">
+      <label>Computer name
+        <input class="input" name="device" value="{{ ekko.device_id }}" required maxlength="64" pattern="[A-Za-z0-9][A-Za-z0-9_.:\-]*">
+      </label>
+      <button type="submit" class="btn">Show this computer</button>
+    </form>
+    {% if other_devices %}
+    <p class="muted" style="margin-bottom: 0;">Your other computers with a recorder key:
+      {% for name in other_devices %}<a href="/ekko?device={{ name | urlencode }}">{{ name }}</a>{% if not loop.last %}, {% endif %}{% endfor %}
+    </p>
+    {% endif %}
+  </div>
+
+  <div class="panel" id="ekko-consent">
+    <h2 style="margin-top: 0;">Your consent</h2>
+    {% if enrolled %}
+    <p><span class="badge active">Consent given</span> for this computer on {{ ekko.enrollment.enrolled_at | datetime("absolute") }}. It ends on {{ ekko.enrollment.expires_at | datetime("absolute") }} unless you withdraw it sooner.</p>
+    <p>Apps Ekko may notice:
+      {% for app in ekko.allowed_apps %}<span class="badge">{{ apps.get(app, app) }}</span> {% endfor %}
+    </p>
+    <div class="mv-row__actions">
+      <button type="button" class="btn btn--ghost btn--danger" data-ekko="withdraw">Withdraw consent</button>
+    </div>
+    <p class="muted" style="margin-bottom: 0;">Withdrawing stops recording at once and ends the recorder key. What was already recorded stays until you erase it below.</p>
+    {% elif ekko.enabled and ekko.app_choices %}
+    <p>You have not given consent for this computer. Read the box above, choose the apps Ekko may notice, then enroll. Enrolling does not start recording.</p>
+    <form id="ekko-enroll">
+      <fieldset style="border: 0; padding: 0; margin: 0 0 var(--space-3);">
+        <legend>Apps Ekko may notice on this computer</legend>
+        {% for choice in ekko.app_choices %}
+        <label style="display: block;"><input type="checkbox" name="apps" value="{{ choice.value }}" checked> {{ choice.label }}</label>
+        {% endfor %}
+      </fieldset>
+      <label>For how long
+        <select class="select" name="days">
+          {% for days in day_choices %}<option value="{{ days }}"{% if days == ekko.enrollment_days %} selected{% endif %}>{{ days }} days</option>{% endfor %}
+        </select>
+      </label>
+      <label style="display: block; margin: var(--space-3) 0;"><input type="checkbox" name="consent" required> I have read what Ekko records and never records, and I agree to it for this computer.</label>
+      <button type="submit" class="btn btn--primary">Give consent and enroll</button>
+    </form>
+    {% elif ekko.enabled %}
+    <p class="muted" style="margin: 0;">No apps are allowed yet. Your administrator needs to choose which apps Ekko may notice.</p>
+    {% else %}
+    <p class="muted" style="margin: 0;">You can give consent once an administrator turns Ekko on.</p>
+    {% endif %}
+  </div>
+
+  {% if enrolled %}
+  <div class="panel" id="ekko-recorder">
+    <h2 style="margin-top: 0;">The recorder on your computer</h2>
+    <p>The recorder is a small program you, or your IT team, run on this computer. It needs a key so that the server knows it is yours. The key can only read whether to record and hand over app activity for this computer. It cannot open anything else.</p>
+    <p id="ekko-recorder-state">
+      {% if recorder.unreadable %}<span class="badge failure">The recorder key cannot be read</span> Nothing is accepted from the recorder. Remove the key, then create a new one.
+      {% elif not recorder.has_key %}<span class="badge pending">No recorder key yet</span>
+      {% elif recorder.heard_recently %}<span class="badge active">Recorder connected</span> Last heard from {{ recorder.last_heard_at | datetime }}.
+      {% elif recorder.last_heard_at %}<span class="badge pending">Recorder not heard from recently</span> Last heard from {{ recorder.last_heard_at | datetime }}.
+      {% else %}<span class="badge pending">Recorder not heard from yet</span> The key was created {{ recorder.created_at | datetime }}.
+      {% endif %}
+    </p>
+    <div class="mv-row__actions">
+      <button type="button" class="btn{% if not recorder.has_key %} btn--primary{% endif %}" data-ekko="key" data-replace="{{ '1' if recorder.has_key else '' }}">{{ 'Replace the recorder key' if recorder.has_key else 'Create a recorder key' }}</button>
+      {% if recorder.has_key %}<button type="button" class="btn btn--ghost btn--danger" data-ekko="key-remove">Remove the key</button>{% endif %}
+    </div>
+    <div id="ekko-key-panel" hidden>
+      <h3>Your new recorder key: copy it now</h3>
+      <p class="muted">You won’t see it again. Creating another key replaces this one straight away.</p>
+      <p><code id="ekko-key" style="word-break: break-all;"></code></p>
+      <button type="button" class="btn" id="ekko-key-copy">Copy the key</button>
+      <p>To put it into the recorder, save the text below as a file named <code>.second-shift-recorder.json</code> in your home folder on this computer, and make sure only you can read it. The recorder’s instructions explain how.</p>
+      <pre id="ekko-key-file" style="white-space: pre-wrap; word-break: break-all;"></pre>
+      <button type="button" class="btn" id="ekko-key-file-copy">Copy the file text</button>
+    </div>
+  </div>
+
+  <div class="panel" id="ekko-recording">
+    <h2 style="margin-top: 0;">Recording</h2>
+    <p>
+      {% if session_state == 'running' %}<span class="badge active">Recording is on</span>
+      {% elif session_state == 'paused' %}<span class="badge pending">Recording is paused</span>
+      {% elif session_state in ('stopped', 'halted') %}<span class="badge">Recording is stopped</span>
+      {% else %}<span class="badge">Recording has not started</span>{% endif %}
+      <span id="ekko-count">{{ ekko.event_count }}</span> activities noticed on this computer.
+    </p>
+    <div class="mv-row__actions">
+      {% if session_state == 'running' %}
+      <button type="button" class="btn" data-ekko="pause">Pause</button>
+      <button type="button" class="btn btn--ghost btn--danger" data-ekko="stop">Stop</button>
+      {% elif session_state == 'paused' %}
+      <button type="button" class="btn btn--primary" data-ekko="resume">Resume</button>
+      <button type="button" class="btn btn--ghost btn--danger" data-ekko="stop">Stop</button>
+      {% else %}
+      <button type="button" class="btn btn--primary" data-ekko="start"{% if not ekko.enabled %} disabled aria-disabled="true"{% endif %}>Start recording</button>
+      {% endif %}
+      <a class="btn btn--ghost" href="/ekko?device={{ ekko.device_id | urlencode }}">Refresh</a>
+    </div>
+    <p class="muted" style="margin-bottom: 0;">Only you start recording, here. The recorder never starts by itself, and it stops within a few seconds of you pausing or stopping.</p>
+  </div>
+  {% endif %}
+
+  <div class="panel" id="ekko-suggestions">
+    <h2 style="margin-top: 0;">Repeated work</h2>
+    <p>These are patterns to investigate. App activity cannot tell Ekko what you were working on, whether the whole task was observed, or how much time automation would save. This is never an employee performance score.</p>
+    <div class="mv-row__actions">
+      <button type="button" class="btn" data-ekko="mine">Look for repeated work</button>
+    </div>
+    <p role="status" aria-live="polite" id="ekko-progress" class="muted"></p>
+    <ul id="ekko-patterns" style="padding-left: 1.2rem;"></ul>
+  </div>
+
+  <div class="panel" id="ekko-data">
+    <h2 style="margin-top: 0;">Your recordings</h2>
+    {% if sessions %}
+    <ul style="padding-left: 1.2rem;">
+      {% for item in sessions %}
+      <li>Started {{ item.started_at | datetime("absolute") }} · {{ item.state | humanize }} · {{ item.last_sequence }} activities
+        <button type="button" class="btn btn--ghost btn--danger" data-ekko="erase-session" data-id="{{ item.session_id }}">Erase</button></li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="muted">Nothing has been recorded on this computer.</p>
+    {% endif %}
+    <div class="mv-row__actions">
+      <button type="button" class="btn btn--ghost btn--danger" data-ekko="erase-all">Erase everything recorded here</button>
+      <button type="button" class="btn btn--ghost btn--danger" data-ekko="forget">Forget this computer</button>
+    </div>
+    <p class="muted" style="margin-bottom: 0;">Erasing cannot be undone. Forgetting this computer erases everything recorded on it, withdraws your consent and ends its recorder key.</p>
+  </div>
+
+<script nonce="{{ csp_script_nonce }}">
+(function () {
+  var root = document.getElementById("ekko-device");
+  var device = root.getAttribute("data-device"), session = root.getAttribute("data-session");
+  var query = "?device_id=" + encodeURIComponent(device);
+  var sessions = "/api/v1/ekko/sessions";
+
+  // One call to the server. Every answer shown is the server's own plain
+  // sentence, or a general one; nothing is decided on this page.
+  async function send(url, method, body, what) {
+    try { return (await window.mvFetchJSON(url, { method: method, body: body, plainDetail: true }, what)) || {}; }
+    catch (error) { window.mvToast(error.message, { error: true }); return null; }
+  }
+  function reload(message) { window.mvToastAfterReload(message); window.location.reload(); }
+
+  var actions = {
+    start: { ask: "Start recording on “" + device + "”? Ekko will notice when you switch between the apps you chose, until you pause or stop.", ok: "Start recording",
+             run: function () { return send(sessions, "POST", { device_id: device, acknowledge_capture_scope: true }, "start recording"); }, done: "Recording is on." },
+    pause: { run: function () { return send(sessions + "/" + encodeURIComponent(session) + "/pause", "POST", { device_id: device }, "pause recording"); }, done: "Recording is paused." },
+    resume: { run: function () { return send(sessions + "/" + encodeURIComponent(session) + "/resume", "POST", { device_id: device }, "resume recording"); }, done: "Recording is on." },
+    stop: { ask: "Stop recording on “" + device + "”? You can start again later.", ok: "Stop",
+            run: function () { return send(sessions + "/" + encodeURIComponent(session) + "/stop", "POST", { device_id: device }, "stop recording"); }, done: "Recording is stopped." },
+    withdraw: { ask: "Withdraw your consent for “" + device + "”? Recording stops at once and the recorder key ends. What was already recorded stays until you erase it.", ok: "Withdraw consent",
+                run: async function () {
+                  var out = await send("/api/v1/ekko/revoke", "POST", { device_id: device }, "withdraw your consent");
+                  if (out) await send("/api/v1/ekko/device-key" + query, "DELETE", undefined, "remove the recorder key");
+                  return out;
+                }, done: "Consent withdrawn." },
+    "key-remove": { ask: "Remove the recorder key for “" + device + "”? The recorder on that computer stops being accepted.", ok: "Remove the key",
+                    run: function () { return send("/api/v1/ekko/device-key" + query, "DELETE", undefined, "remove the recorder key"); }, done: "Recorder key removed." },
+    "erase-all": { ask: "Erase everything recorded on “" + device + "”? This cannot be undone.", ok: "Erase everything",
+                   run: function () { return send("/api/v1/ekko/data" + query, "DELETE", undefined, "erase your recordings"); }, done: "Everything recorded here was erased." },
+    forget: { ask: "Forget “" + device + "”? This erases everything recorded on it, withdraws your consent and ends its recorder key. It cannot be undone.", ok: "Forget this computer",
+              run: async function () {
+                var out = await send("/api/v1/ekko/device" + query, "DELETE", undefined, "forget this computer");
+                if (out) await send("/api/v1/ekko/device-key" + query, "DELETE", undefined, "remove the recorder key");
+                return out;
+              }, done: "This computer was forgotten." },
+  };
+
+  async function createKey(button) {
+    var text = button.getAttribute("data-replace")
+      ? "Replace the recorder key for “" + device + "”? The key the recorder has now stops working straight away."
+      : "Create a recorder key for “" + device + "”? It is shown once.";
+    if (!(await window.mvConfirm(text, { okText: "Create the key" }))) return;
+    var out = await send("/api/v1/ekko/device-key", "POST", { device_id: device }, "create the recorder key");
+    if (!out || !out.device_key) return;
+    document.getElementById("ekko-key").textContent = out.device_key;
+    document.getElementById("ekko-key-file").textContent =
+      JSON.stringify({ server: root.getAttribute("data-server"), device_key: out.device_key }, null, 2);
+    var panel = document.getElementById("ekko-key-panel");
+    panel.hidden = false;
+    window.mvReveal(panel, { block: "center" });
+  }
+
+  async function eraseSession(button) {
+    if (!(await window.mvConfirm("Erase this recording? This cannot be undone.", { okText: "Erase" }))) return;
+    var out = await send(sessions + "/" + encodeURIComponent(button.getAttribute("data-id")) + query, "DELETE", undefined, "erase this recording");
+    if (out) reload("Recording erased.");
+  }
+
+  // Suggestions are written as text, never as markup.
+  async function mine() {
+    var progress = document.getElementById("ekko-progress"), list = document.getElementById("ekko-patterns");
+    progress.textContent = "Looking…";
+    var out = await send("/api/v1/ekko/candidates/mine", "POST", { device_id: device }, "look for repeated work");
+    list.textContent = "";
+    if (!out) { progress.textContent = ""; return; }
+    progress.textContent = out.count
+      ? "Found " + out.count + (out.count === 1 ? " pattern to investigate." : " patterns to investigate.")
+      : (out.progress && out.progress.next_step) || "No repeated work was found yet.";
+    (out.candidates || []).forEach(function (candidate) {
+      var item = document.createElement("li");
+      item.textContent = candidate.title + ". Seen " + candidate.occurrences + " times on " + candidate.distinct_days + " different days.";
+      list.appendChild(item);
+    });
+  }
+
+  document.addEventListener("click", async function (event) {
+    var button = event.target.closest ? event.target.closest("[data-ekko]") : null;
+    if (!button || button.disabled) return;
+    var name = button.getAttribute("data-ekko");
+    if (name === "key") return createKey(button);
+    if (name === "erase-session") return eraseSession(button);
+    if (name === "mine") return mine();
+    var action = actions[name];
+    if (!action) return;
+    if (action.ask && !(await window.mvConfirm(action.ask, { okText: action.ok }))) return;
+    button.disabled = true;
+    var out = await action.run();
+    if (out) reload(action.done); else button.disabled = false;
+  });
+
+  var enroll = document.getElementById("ekko-enroll");
+  if (enroll) enroll.addEventListener("submit", async function (event) {
+    event.preventDefault();
+    var chosen = Array.prototype.map.call(enroll.querySelectorAll("input[name=apps]:checked"), function (box) { return box.value; });
+    if (!chosen.length) { window.mvToast("Choose at least one app.", { error: true }); return; }
+    var out = await send("/api/v1/ekko/enroll", "POST", {
+      device_id: device, apps: chosen, days: Number(enroll.elements.days.value),
+      acknowledge_capture_scope: enroll.elements.consent.checked }, "enroll this computer");
+    if (out) reload("Consent recorded. Recording has not started.");
+  });
+
+  [["ekko-key-copy", "ekko-key"], ["ekko-key-file-copy", "ekko-key-file"]].forEach(function (pair) {
+    var button = document.getElementById(pair[0]);
+    if (button) button.addEventListener("click", function () { window.mvCopy(document.getElementById(pair[1]).textContent); });
+  });
+})();
+</script>
+{% endblock %}
