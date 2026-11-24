@@ -8,9 +8,9 @@ using System.Text.RegularExpressions;
 namespace SecondShift;
 
 public enum Risk { Low, Medium, High }
-public sealed record RunStart(string Title, string? Summary = null, string? Department = null);
-public sealed record LiveRun(long GoalId, double HeartbeatSeconds);
 public sealed record AgentBuild(string Version, string ConfigDigest, string Model);
+public sealed record RunStart(string Title, string? Summary = null, string? Department = null, AgentBuild? Declared = null);
+public sealed record LiveRun(long GoalId, double HeartbeatSeconds);
 public sealed record RunResult(string Outcome, decimal CostDollars, long InputTokens,
     long OutputTokens, IReadOnlyList<string> Tools, AgentBuild Declared, string? Summary = null,
     IReadOnlyList<string>? Steps = null, double? DurationSeconds = null, string? IdempotencyKey = null);

@@ -24,14 +24,37 @@ log = logging.getLogger("second_shift_runtime.governance")
 DEFAULT_HEARTBEAT_SECONDS = 15.0
 
 
+#: Why Second Shift said no, as its screening answer's ``kind`` names it: ``denied`` (asking again will not change
+#: it), ``approval_required`` (a person must decide), ``halted`` (the emergency stop), ``contained`` (held for
+#: review), ``limit`` (a budget or backlog; try later) and ``unavailable`` (it could not decide; try later).
+KINDS = ("denied", "approval_required", "halted", "contained", "limit", "unavailable")
+
+
+def kind_from_reason(reason: str, *, default: str = "denied") -> str:
+    """The kind for a refusal that came without one (an older Second Shift, or a refused run start), read from
+    its plain-language reason. Anything not recognised is ``default``."""
+    text = (reason or "").lower()
+    if "emergency stop" in text:
+        return "halted"
+    if "contained" in text:
+        return "contained"
+    return default
+
+
 class GovernanceError(Exception):
-    """Second Shift could not be used. The message is plain and safe to show."""
+    """Second Shift could not be used. The message is plain and safe to show. ``kind`` says whether asking
+    again later may help (``unavailable``, ``limit``) or not (``denied``, ``halted``, ``contained``)."""
+
+    def __init__(self, message: str, kind: str = "unavailable"):
+        super().__init__(message)
+        self.kind = kind if kind in KINDS else "unavailable"
 
 
 @dataclass(frozen=True)
 class Decision:
     allowed: bool
     reason: str
+    kind: str = ""  # empty when allowed; otherwise one of KINDS
 
 
 class Governance:
@@ -71,7 +94,7 @@ class Governance:
                 if attempt < self._max_retries and wait <= self._max_retry_wait:
                     self._sleep(wait)
                     continue
-                raise GovernanceError("Second Shift asked the agent to slow down and the wait was too long, so the action was not allowed.")
+                raise GovernanceError("Second Shift asked the agent to slow down and the wait was too long, so the action was not allowed.", "limit")
             return self._decode(response)
         raise GovernanceError("Second Shift kept asking the agent to slow down.")  # pragma: no cover
 
@@ -84,21 +107,27 @@ class Governance:
         except ValueError:
             data = None
         if response.status_code in (401, 403) and not isinstance(data, dict):
-            raise GovernanceError("Second Shift did not accept the agent key.")
+            raise GovernanceError("Second Shift did not accept the agent key.", "denied")
         if response.status_code >= 400:
             detail = data.get("detail") if isinstance(data, dict) else None
             reason = " ".join(detail.split())[:300] if isinstance(detail, str) else ""
             if response.status_code == 401:
                 reason = "Second Shift did not accept the agent key."
-            raise GovernanceError(reason or f"Second Shift refused the request (status {response.status_code}).")
+            raise GovernanceError(reason or f"Second Shift refused the request (status {response.status_code}).",
+                                  kind_from_reason(reason, default="unavailable" if response.status_code >= 500 else "denied"))
         if not isinstance(data, dict):
             raise GovernanceError("Second Shift sent an answer this agent could not read, so the action was not allowed.")
         return data
 
     # -- the run -------------------------------------------------------------------------------------------
 
-    def start(self, title: str, summary: str = "") -> int:
-        data = self._call("POST", "/runs/start", body={"title": title[:500], "summary": summary[:4000]})
+    def start(self, title: str, summary: str = "", declared: dict[str, str] | None = None) -> int:
+        """Open the run. ``declared`` (``version``, ``config_digest``, ``model``) tells Second Shift the agent's
+        build before its first action."""
+        body: dict[str, Any] = {"title": title[:500], "summary": summary[:4000]}
+        if declared:
+            body["declared"] = declared
+        data = self._call("POST", "/runs/start", body=body)
         goal = data.get("goal_id")
         if isinstance(goal, bool) or not isinstance(goal, int):
             raise GovernanceError("Second Shift did not say which run was opened.")
@@ -156,31 +185,34 @@ class Governance:
             if data.get("requires_approval") is True:
                 return self._wait_for_approval(data)
             reason = data.get("reason")
-            return Decision(False, reason.strip() if isinstance(reason, str) and reason.strip() else "Second Shift did not allow this action.")
+            kind = data.get("kind")
+            if kind not in KINDS:  # an older Second Shift sends none
+                kind = kind_from_reason(reason if isinstance(reason, str) else "")
+            return Decision(False, reason.strip() if isinstance(reason, str) and reason.strip() else "Second Shift did not allow this action.", kind)
         except GovernanceError as exc:
-            return Decision(False, str(exc))
+            return Decision(False, str(exc), exc.kind)
 
     def _wait_for_approval(self, screened: dict[str, Any]) -> Decision:
         approval_id = screened.get("approval_id")
         binding = screened.get("approval_binding_sha256")
         if isinstance(approval_id, bool) or not isinstance(approval_id, int) or not isinstance(binding, str) or not binding:
-            raise GovernanceError("Second Shift asked for an approval but did not say which one, so the action was not allowed.")
+            raise GovernanceError("Second Shift asked for an approval but did not say which one, so the action was not allowed.", "unavailable")
         deadline = self._clock() + self._approval_wait
         while True:
             data = self._call("GET", f"/approvals/{approval_id}", params={"binding_sha256": binding})
             if data.get("approval_binding_sha256") not in (None, binding):
-                raise GovernanceError("The approval no longer matches the action that was asked about, so it was not allowed.")
+                raise GovernanceError("The approval no longer matches the action that was asked about, so it was not allowed.", "denied")
             status = data.get("status")
             if status == "approved":
                 return Decision(True, "approved by a person")
             if status == "denied":
-                return Decision(False, "A person denied this action.")
+                return Decision(False, "A person denied this action.", "denied")
             if status != "pending":
-                return Decision(False, f"The approval request ended without an approval (status {status}).")
+                return Decision(False, f"The approval request ended without an approval (status {status}).", "denied")
             if self.stop_reason:
-                return Decision(False, self.stop_reason)
+                return Decision(False, self.stop_reason, kind_from_reason(self.stop_reason))
             if self._clock() + self._poll > deadline:
-                return Decision(False, f"No one approved this action within {int(self._approval_wait)} seconds, so it was not run.")
+                return Decision(False, f"No one approved this action within {int(self._approval_wait)} seconds, so it was not run.", "approval_required")
             self._sleep(self._poll)
 
     # -- the end -------------------------------------------------------------------------------------------
