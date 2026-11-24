@@ -832,7 +832,7 @@
 
     /* ---------- adaptive density. Comfortable is the default above;
        compact tightens the scale + chrome for operators watching many runs.
-       Selected via ?density= / mvk_density cookie. ---------- */
+       Selected via ?density= / ss_density cookie. ---------- */
     body.density-compact {
       font-size: 13px; --topbar-h: 48px; --sidebar-w: 212px;
       --space-4: 12px; --space-5: 18px; --space-6: 24px; --space-7: 36px;

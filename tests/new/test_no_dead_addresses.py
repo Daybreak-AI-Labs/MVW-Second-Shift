@@ -26,7 +26,7 @@ _ASSET = re.compile(r"""\b(?:asset|static_url)\(\s*(["'])(.*?)\1\s*\)""")
 _CALL = re.compile(r"""\b(?:fetch|mvFetchJSON)\(\s*(["'])(/[^"']*)\1(\s*\+)?""")
 _JS_HREF = re.compile(r"""\.(?:href|action)\s*=\s*(["'])(/[^"']*)\1(\s*\+)?""")
 _SERVER_TAG = re.compile(r"\{\{.*?\}\}|\{%.*?%\}", re.S)
-_OTHER_NAMES = re.compile(r"lightwork|daybreak", re.I)
+_OTHER_NAMES = re.compile("light" + "work|day" + "break", re.I)
 
 
 def _served_paths() -> list[str]:
