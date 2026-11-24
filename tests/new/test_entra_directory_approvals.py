@@ -213,10 +213,15 @@ def test_when_microsoft_cannot_be_read_the_person_is_refused_and_everyone_else_i
 
 def test_the_other_approver_rule_sees_approvers_whose_role_comes_only_from_entra(
         directory, env, world, bot, monkeypatch):
-    """Alice asked; the only other person who could decide is Entra-only."""
+    """Alice asked; the only other person who could decide is Entra-only.
+
+    This is the "when another approver is available" rule, so the test sets it:
+    the default is now that someone else must always approve."""
     from maverick.channel_approvals import separate_approver_refusal
     from maverick_dashboard import approval_decisions
 
+    env.configure(extra=kit.CONFIG.replace("{extra}", "")
+                  + '\n[approval]\nseparate_approver = "when_available"\n')
     _link("alice")
     _recognised(monkeypatch, "frank")
     approval_id, _binding = _park(world, risk="high", requested_by="user:alice")
