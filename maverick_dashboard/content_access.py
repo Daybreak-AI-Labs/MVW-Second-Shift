@@ -56,6 +56,32 @@ def _grant_current(grant: dict, *, owner: str, resource_kind: str, resource_id: 
                 or grant.get("expires_at", 0) <= time.time() or not _reviewer_current(grant))
 
 
+def grant_readers(owner: str, *, resource_kind: str, resource_id: str, resource_revision: str | None = None,
+                  among=None) -> set[str]:
+    """The requesters holding a current, independently reviewed read grant for
+    exactly this resource (see :func:`_grant_current`). With ``among``, only
+    those people's grants are checked, and nobody's store is read for nobody.
+    An unreadable grant store or reviewer check opens nothing (it raises
+    inside ``strict_reads.strict()``)."""
+    if not enabled() or (among is not None and not among):
+        return set()
+    readers = set()
+    try:
+        for grant in STORE.list():
+            requester = grant.get("requester")
+            if (isinstance(requester, str) and requester and (among is None or requester in among)
+                    and _grant_current(grant, owner=owner, resource_kind=resource_kind, resource_id=resource_id,
+                                       resource_revision=resource_revision)):
+                readers.add(requester)
+    except Exception:  # noqa: BLE001 -- an unreadable grant store opens nothing
+        from . import strict_reads
+
+        if strict_reads.active():
+            raise
+        return set()
+    return readers
+
+
 def may_read_employee_content(request, owner: str, *, resource_kind: str, resource_id: str, resource_revision: str | None = None) -> bool:
     from maverick.audit import record as record_audit
 
@@ -101,6 +127,22 @@ def approval_resource(approval, world) -> dict:
             "resource_revision": revision, "label": f"Approval {approval.id} — {approval.status}"}
 
 
+def _governance_request(approval) -> bool:
+    """An outside agent's request, or a request about one (an access key).
+    It is a governance record, not one employee's private work."""
+    return getattr(approval, "provenance", None) == "external_agents"
+
+
+def _people_with_a_role() -> set[str]:
+    """Everyone given a role here; callers keep those who may decide."""
+    from . import rbac
+
+    try:
+        return set(rbac.list_users())
+    except Exception:  # noqa: BLE001 -- an unreadable roster names nobody
+        return set()
+
+
 def can_read_approval(request, approval, world=None) -> bool:
     if approval is None:
         return False
@@ -111,6 +153,8 @@ def can_read_approval(request, approval, world=None) -> bool:
     if (auth.api_key_permissions(request) is not None
             and not auth.has_permission(request, "operate", api_scope="approvals:decide")):
         return False
+    if _governance_request(approval):
+        return auth.has_permission(request, "operate")
     if world is None:
         from ._shared import _world
         world = _world()
@@ -120,6 +164,29 @@ def can_read_approval(request, approval, world=None) -> bool:
         return False
     return may_read_employee_content(request, resource["owner"], resource_kind="approval",
         resource_id=resource["resource_id"], resource_revision=resource["resource_revision"])
+
+
+def approval_readers(approval, world, *, among=None) -> set[str]:
+    """The people who can open this approval card on the Approvals page.
+
+    Its owner, plus (while exceptional access is on) anyone holding a current,
+    independently reviewed read grant for exactly this card -- the same rules
+    :func:`can_read_approval` applies to a reader. An unreadable grant store
+    opens nothing, as it would for that reader. ``among`` is as for
+    :func:`grant_readers`. An outside agent's request is open to everyone
+    given a role (the caller keeps those who may decide)."""
+    if _governance_request(approval):
+        people = _people_with_a_role()
+        return people if among is None else people & set(among)
+    try:
+        resource = approval_resource(approval, world)
+    except HTTPException:
+        return set()
+    readers = {resource["owner"]} if resource["owner"] else set()
+    # The owner's access needs no grant, so it never waits on the grant store.
+    return readers | grant_readers(resource["owner"], resource_kind="approval", resource_id=resource["resource_id"],
+                                   resource_revision=resource["resource_revision"],
+                                   among=None if among is None else set(among) - readers)
 
 
 def require_approval_content(request, approval_id, world=None):

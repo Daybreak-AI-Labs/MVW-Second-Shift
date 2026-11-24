@@ -64,26 +64,6 @@ def test_revoked_authority_never_dispatches_and_is_not_reported_uncertain(tmp_pa
     assert record['safe_to_retry'] is False
 
 
-def test_async_queue_is_not_delivery_and_failed_backend_visible(tmp_path, monkeypatch):
-    from maverick import notifications
-    path = tmp_path / 'receipts.json'
-    monkeypatch.setattr('maverick.paths.data_dir', lambda *parts: path)
-    monkeypatch.setattr(notifications, '_load_config', lambda: {'backend':'ntfy', 'ntfy_topic':'synthetic'})
-    jobs = []
-    class Executor:
-        def submit(self, fn, *args):
-            jobs.append((fn, args))
-    monkeypatch.setattr(notifications, '_get_executor', lambda: Executor())
-    monkeypatch.setattr(notifications, '_send_ntfy', lambda *args: False)
-    assert notifications.notify('PRIVATE', batch=False, delivery_key='event-once') == 1
-    assert DeliveryReceipts(path).recent()[0]['state'] == 'queued'
-    fn, args = jobs.pop()
-    fn(*args)
-    assert DeliveryReceipts(path).recent()[0]['state'] == 'failed'
-    assert notifications.notify('PRIVATE', batch=False, delivery_key='event-once') == 0
-    assert 'PRIVATE' not in path.read_text()
-
-
 def test_sync_outcomes_report_each_backends_final_state(tmp_path, monkeypatch):
     from maverick import notifications
     path = tmp_path / 'receipts.json'
@@ -142,15 +122,4 @@ def test_only_definite_failures_that_are_safe_to_retry_are_ever_dropped(tmp_path
     with pytest.raises(ValueError, match='full'):
         receipts.claim('another event', 'ntfy')
     assert len(receipts._load()) == 1000
-
-
-def test_notify_goes_out_when_the_history_is_full_of_definite_failures(tmp_path, monkeypatch):
-    from maverick import notifications
-    path = tmp_path / 'receipts.json'
-    monkeypatch.setattr('maverick.paths.data_dir', lambda *parts: path)
-    monkeypatch.setattr(notifications, '_load_config', lambda: {'backend': 'ntfy', 'ntfy_topic': 'synthetic'})
-    DeliveryReceipts(path)._save([_failed_row(i) for i in range(1000)])
-    monkeypatch.setattr(notifications, '_send_ntfy', lambda *args: True)
-    assert notifications.notify('synthetic', batch=False, async_dispatch=False) == 1
-    assert len(DeliveryReceipts(path)._load()) == 1000
 

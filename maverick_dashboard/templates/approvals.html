@@ -1,0 +1,177 @@
+{% extends "base.html" %}
+{% block title %}Approvals · Second Shift{% endblock %}
+{% block content %}
+  {#- Requests waiting for a person. The page only shows and sends: every rule
+      (who may decide, a separate approver, the acknowledgement for a risky
+      request, the exact card the person saw) is checked by the server. -#}
+  <h1 class="page-title">Approvals</h1>
+  <p class="page-subtitle">A risky action an agent wants to take waits here. Nothing goes ahead until a person approves it, and every decision is recorded.</p>
+
+  <div class="panel">
+    <p style="margin: 0;">
+      <span class="badge {{ 'pending' if approvals else 'active' }}" id="ap-count">{{ approvals | length }} waiting</span>
+      {% if private_count %}<span class="badge">{{ private_count }} more you cannot open</span>{% endif %}
+    </p>
+    <p role="status" aria-live="polite" id="ap-status" class="muted" style="margin: var(--space-2) 0 0;"></p>
+  </div>
+
+  {% if not approvals %}
+  <div class="panel">
+    <div class="mv-empty">
+      <p class="mv-empty__title">Nothing is waiting</p>
+      <p class="mv-empty__body">When an agent asks to do something risky, or asks for an access key that needs a second person, the request appears here.</p>
+    </div>
+  </div>
+  {% endif %}
+
+  {% for a in approvals %}
+    {% set card = cards.get(a.id) %}
+    {% set card_status = card_statuses.get(a.id, 'legacy') %}
+    {% set unusable = card_status in ('expired', 'invalid') %}
+    {% set own_note = own_request_notes.get(a.id, '') %}
+    {% set progress = approval_progress.get(a.id) %}
+    {% set source = sources.get(a.id) %}
+    {% set action = approval_actions.get(a.id, '') %}
+    {#- An outside agent's action is recorded as external:<agent>:<action>. -#}
+    {% set parts = action.split(':') %}
+    {% set from_agent = parts[1] if (a.provenance == 'external_agents' and parts | length == 3 and parts[0] == 'external') else '' %}
+    {% set title = (parts[2] if from_agent else action) | humanize %}
+    <article class="panel" id="approval-{{ a.id }}" data-approval="{{ a.id }}" data-risk="{{ a.risk }}"
+             data-label="{{ title }}" aria-labelledby="approval-title-{{ a.id }}">
+      <h2 id="approval-title-{{ a.id }}" style="margin-top: 0;">{{ title }}</h2>
+      <p style="margin: 0 0 var(--space-3);">
+        <span class="badge {{ 'failure' if a.risk in ('high', 'critical') else 'pending' }}">{{ a.risk | humanize }} risk</span>
+        {% if source %}<span class="badge">{{ source }}</span>{% endif %}
+        {% if card_status == 'expired' %}<span class="badge failure">Expired</span>{% endif %}
+        {% if card_status == 'invalid' %}<span class="badge failure">Details failed their check</span>{% endif %}
+        <span class="badge" data-ap-outcome hidden></span>
+      </p>
+      <dl style="display: grid; grid-template-columns: max-content 1fr; gap: var(--space-1) var(--space-4); margin: 0 0 var(--space-3);">
+        {% if from_agent %}<dt class="muted">Agent</dt><dd style="margin: 0;"><a href="/external-agents/{{ from_agent }}">{{ from_agent }}</a></dd>{% endif %}
+        <dt class="muted">Applies to</dt><dd style="margin: 0;">{{ approval_scopes.get(a.id) or 'The item described' }}</dd>
+        <dt class="muted">Asked by</dt><dd style="margin: 0;">{% if card %}{{ card.authority.actor | identity }}{% elif a.requested_by %}{{ a.requested_by | identity }}{% else %}Not recorded{% endif %}</dd>
+        <dt class="muted">Asked</dt><dd style="margin: 0;">{{ a.requested_at | datetime }}</dd>
+        {% if card %}<dt class="muted">Decide by</dt><dd style="margin: 0;">{{ card.expires_at | datetime }}</dd>{% endif %}
+        {% if card and card.target and card.target.label %}<dt class="muted">What it changes</dt><dd style="margin: 0;">{{ card.target.label }}</dd>{% endif %}
+        {% if card and card.consequences and card.consequences.irreversible %}<dt class="muted">Can it be undone</dt><dd style="margin: 0;">No. Once done, it cannot be reversed.</dd>{% endif %}
+      </dl>
+      <p>{{ approval_details.get(a.id, '') }}</p>
+      {% if card and card.parameters and card.parameters.summary %}
+      <ul style="margin: 0 0 var(--space-3); padding-left: 1.2rem;">
+        {% for line in card.parameters.summary %}<li>{{ line }}</li>{% endfor %}
+      </ul>
+      {% endif %}
+      {% if progress %}<p class="muted" data-ap-progress>{{ progress.text }}</p>{% endif %}
+      {% if own_note %}<p class="muted">{{ own_note }}</p>{% endif %}
+      {% if unusable %}<p class="muted">This request can no longer be approved. Reject it, and the agent can ask again.</p>{% endif %}
+      <div class="mv-row__actions" data-ap-actions>
+        <button type="button" class="btn btn--primary" data-ap-decide="approve"{% if card %} data-binding="{{ card.binding_sha256 }}"{% endif %}{% if unusable or own_note or (progress and progress.recorded) %} disabled aria-disabled="true"{% endif %}>Approve</button>
+        <button type="button" class="btn btn--ghost btn--danger" data-ap-decide="deny">Reject</button>
+      </div>
+    </article>
+  {% endfor %}
+
+<script nonce="{{ csp_script_nonce }}">
+(function () {
+  var status = document.getElementById("ap-status"), count = document.getElementById("ap-count");
+  function say(text) { if (status) status.textContent = text; }
+  function left() { return document.querySelectorAll("[data-approval]:not([data-decided])").length; }
+
+  // A risky approval needs the person to say they have read it; the most
+  // serious also asks them to type the word. The server requires both.
+  async function acknowledge(label, risk) {
+    if (risk !== "high" && risk !== "critical") return {};
+    if (risk === "critical") {
+      var typed = await window.mvForm("Approve a critical-risk action", [
+        { key: "confirmation", label: "Type approve to confirm", type: "text", required: true,
+          help: "You are approving: " + label + ". This is rated critical risk." },
+      ], { okText: "Approve" });
+      if (!typed) return null;
+      return { acknowledged: true, confirmation: String(typed.confirmation || "").trim().toLowerCase() };
+    }
+    var ok = await window.mvConfirm("Approve “" + label + "”? It is rated high risk. " +
+      "Approving means you have read what it will do.", { okText: "Approve" });
+    return ok ? { acknowledged: true } : null;
+  }
+
+  async function reason(label) {
+    var answer = await window.mvForm("Reject “" + label + "”", [
+      { key: "reason", label: "Why? (optional)", type: "text", required: false,
+        help: "The reason is written to the audit record." },
+    ], { okText: "Reject" });
+    if (!answer) return null;
+    var text = String(answer.reason || "").trim();
+    return text ? { reason: text } : {};
+  }
+
+  async function decide(button) {
+    var item = button.closest("[data-approval]"), action = button.getAttribute("data-ap-decide");
+    var id = item.getAttribute("data-approval"), label = item.getAttribute("data-label") || "this request";
+    var body = action === "approve" ? await acknowledge(label, item.getAttribute("data-risk")) : await reason(label);
+    if (body === null) return;
+    var buttons = item.querySelectorAll("[data-ap-decide]");
+    var was = Array.prototype.map.call(buttons, function (b) { return b.disabled; });
+    buttons.forEach(function (b) { b.disabled = true; });
+    say(action === "approve" ? "Approving…" : "Rejecting…");
+    function restore() { buttons.forEach(function (b, i) { b.disabled = was[i]; }); }
+    var headers = { "Content-Type": "application/json" };
+    if (button.dataset.binding) headers["X-Second-Shift-Approval-Binding"] = button.dataset.binding;
+    var response;
+    try {
+      response = await fetch("/api/v1/approvals/" + encodeURIComponent(id) + "/" + action, {
+        method: "POST", credentials: "same-origin", headers: headers, body: JSON.stringify(body) });
+    } catch (error) {
+      restore();
+      say("The decision could not be sent. Check your connection and try again.");
+      window.mvToast("The decision could not be sent.", { error: true });
+      return;
+    }
+    if (response.status === 202) {
+      restore();
+      say("Your decision is saved but not in effect yet while the record is finished. It is safe to try again.");
+      window.mvToast("Decision saved, not in effect yet. It is safe to try again.", { error: true });
+      return;
+    }
+    if (response.status !== 204) {
+      restore();
+      var failure = await window.mvErrorResponse(response);
+      say(window.mvErrorText(failure, action === "approve" ? "approve this request" : "reject this request"));
+      window.mvFail(failure, action === "approve" ? "approve this request" : "reject this request");
+      return;
+    }
+    var state = response.headers.get("X-Second-Shift-Approval-State") || "";
+    if (state === "pending") {
+      // Recorded, but more approvers are needed before the action is allowed.
+      var got = response.headers.get("X-Second-Shift-Approval-Count") || "?";
+      var need = response.headers.get("X-Second-Shift-Approval-Required") || "?";
+      buttons.forEach(function (b) { b.disabled = b.getAttribute("data-ap-decide") === "approve"; });
+      var progress = item.querySelector("[data-ap-progress]");
+      if (!progress) {
+        progress = document.createElement("p"); progress.className = "muted"; progress.setAttribute("data-ap-progress", "");
+        item.querySelector("[data-ap-actions]").before(progress);
+      }
+      progress.textContent = "Your approval is recorded. " + got + " of " + need +
+        " required approvals received. The action is not allowed yet.";
+      say("Your approval is recorded. More approvers are needed before it goes ahead.");
+      return;
+    }
+    item.setAttribute("data-decided", state || action);
+    buttons.forEach(function (b) { b.disabled = true; b.setAttribute("aria-disabled", "true"); });
+    var outcome = item.querySelector("[data-ap-outcome]");
+    var approved = state ? state === "approved" : action === "approve";
+    if (outcome) {
+      outcome.hidden = false; outcome.textContent = approved ? "Approved" : "Rejected";
+      outcome.className = "badge " + (approved ? "active" : "failure");
+    }
+    if (count) { count.textContent = left() + " waiting"; count.className = "badge " + (left() ? "pending" : "active"); }
+    say((approved ? "Approved: " : "Rejected: ") + label + ".");
+    window.mvToast(approved ? "Approved." : "Rejected.", { quiet: true });
+  }
+
+  document.addEventListener("click", function (event) {
+    var button = event.target.closest ? event.target.closest("[data-ap-decide]") : null;
+    if (button && !button.disabled) decide(button);
+  });
+})();
+</script>
+{% endblock %}

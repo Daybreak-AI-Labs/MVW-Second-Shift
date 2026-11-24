@@ -71,3 +71,15 @@ def test_unparseable_configured_quorum_requires_two_approvers(monkeypatch):
     monkeypatch.setattr(dual_control, "_security_cfg", lambda: {
         "approvals_required": 3, "approvals_required_by_risk": {"high": "x"}})
     assert dual_control.required_approvals("high") == 3  # never lowered
+
+
+def test_allow_self_approval_default_false(monkeypatch):
+    monkeypatch.delenv("MAVERICK_ALLOW_SELF_APPROVAL", raising=False)
+    monkeypatch.setattr(dual_control, "_security_cfg", dict)
+    assert dual_control.allow_self_approval() is False
+    monkeypatch.setenv("MAVERICK_ALLOW_SELF_APPROVAL", "1")
+    assert dual_control.allow_self_approval() is True
+
+
+def test_approval_state_unknown_is_none(wm):
+    assert wm.approval_state(99999) is None

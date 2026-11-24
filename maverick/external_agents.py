@@ -336,11 +336,14 @@ def _clean_external_ref(value: str | None) -> str | None:
 
 
 def _require_external_ref_free(sidecar: dict, agent_id: str, external_ref: str | None) -> None:
-    """Two enrolled agents cannot claim one record on a platform."""
+    """Two enrolled agents cannot claim one record on a platform. Platform
+    checks match without regard to capital letters, so this does too."""
     if not external_ref:
         return
+    wanted = external_ref.casefold()
     for other, meta in sidecar.items():
-        if other != agent_id and isinstance(meta, dict) and meta.get("external_ref") == external_ref:
+        if (other != agent_id and isinstance(meta, dict)
+                and str(meta.get("external_ref") or "").casefold() == wanted):
             raise ExternalAgentsError(
                 f"external_ref {external_ref!r} is already linked to agent {other!r}")
 
@@ -1374,6 +1377,7 @@ def _screen_decision(
             parameter_summary=[
                 f"Resolved risk: {req_risk}",
                 f"Request detail digest is bound to agent {agent_id}.",
+                *_request_detail_lines(detail),
             ],
             actor=f"agent:{agent_id}",
             role="external_agent_operator",
@@ -1427,6 +1431,31 @@ def _screen_decision(
         out["approval_binding_sha256"] = approval_card["binding_sha256"]
         return out
     return _screen_verdict(agent_id, tool, True, "allow", "within ceilings")
+
+
+#: How much of an agent's own description of an action a person deciding it is
+#: shown. The whole description stays bound to the request by its digest.
+_SHOWN_DETAIL_CHARS = 400
+
+
+def _request_detail_lines(detail: str) -> list[str]:
+    """The agent's own words about the action, for the person deciding it.
+
+    Shown unless ``[external_agents] show_request_detail = false``. The text is
+    the agent's claim, not a checked fact; it is shortened here, and the request
+    record removes secrets and unprintable characters from every line it keeps."""
+    try:
+        from .config import get_external_agents
+        if not get_external_agents()["show_request_detail"]:
+            return []
+    except Exception:  # unreadable settings: keep the request content-free
+        return []
+    text = " ".join(str(detail or "").split())
+    if not text:
+        return []
+    if len(text) > _SHOWN_DETAIL_CHARS:
+        text = text[:_SHOWN_DETAIL_CHARS].rstrip() + " (shortened)"
+    return ["The agent says: " + text]
 
 
 def _live_screening_approvals(world: Any, agent_id: str, *, window: float) -> int | None:

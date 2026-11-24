@@ -12,8 +12,6 @@ Future: ``redis``, ``duckdb``.
 from .postgres import is_postgres_configured, open_postgres_world
 
 __all__ = [
-    "PostgresWorldModel",
-    "PGGoal",
     "open_postgres_world",
     "is_postgres_configured",
 ]

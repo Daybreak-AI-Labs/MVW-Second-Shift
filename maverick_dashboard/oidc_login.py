@@ -60,6 +60,8 @@ from maverick.oidc import (
 )
 from maverick.web_session import sign_session, verify_session
 
+from . import sign_in_roles
+
 log = logging.getLogger(__name__)
 
 router = APIRouter(tags=["auth"])
@@ -369,6 +371,11 @@ def session_claims(payload: dict, request: Request, *, via: str) -> dict | None:
     verified_email = _normalized_invite_email(payload.get("verified_email"))
     if via == "session" and verified_email:
         claims["verified_email"] = verified_email
+    # The role this sign-in's app roles mapped to (sign_in_roles). Only a provider
+    # sign-in carries one, and only as that module's own type.
+    claim_role = sign_in_roles.from_session(payload) if via == "session" else None
+    if claim_role:
+        claims[sign_in_roles.CLAIM_KEY] = claim_role
     if not isinstance(sid, str) or not sid:
         from .session_policy import company_ttl, idle_minutes
 
@@ -713,7 +720,9 @@ async def auth_callback(request: Request):
             extra={"oidc_issuer": principal.issuer,
                    "oidc_audience": principal.audience,
                    "idp_email": _oidc_invite_email(principal.claims or {}),
-                   "verified_email": _oidc_permission_email(principal.claims or {})},
+                   "verified_email": _oidc_permission_email(principal.claims or {}),
+                   # The role this verified ID token's app roles map to, if any.
+                   **sign_in_roles.session_extra(principal.claims)},
         )
     except Exception:
         log.warning("OIDC callback: session record unavailable; refusing sign-in")

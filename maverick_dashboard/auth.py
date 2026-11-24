@@ -515,6 +515,8 @@ def _tenant_pin_choice(request: Request, principal: VerifiedPrincipal) -> tuple[
 
 
 def _tenant_pin_choice_now(request: Request, principal: VerifiedPrincipal) -> tuple[str, str] | None:
+    """This product runs one workspace, so there is no workspace selection to
+    honour: the only pin is per-person isolation, when the deployment asks for it."""
     try:
         from maverick.paths import current_tenant_id, tenant_by_user_enabled
 
@@ -523,39 +525,12 @@ def _tenant_pin_choice_now(request: Request, principal: VerifiedPrincipal) -> tu
             name = ""
         if not name or getattr(request.state, "tenant_pin_token", None) is not None:
             return None
-        # A process/env/client binding is an operator floor and always outranks
-        # an in-app preference.
+        # A process or deployment binding always stands.
         if current_tenant_id() is not None:
             return None
         if tenant_by_user_enabled():
             return "principal_isolation", f"api:{name}"
-
-        from maverick.tenant.registry import is_active
-
-        from . import workspace_tenants
-
-        claims = getattr(principal, "claims", None) or {}
-        bound = claims.get("workspace") if claims.get("via") == "api_key" else ""
-        # A key bound to a workspace acts only inside it; its owner's browser
-        # selection is irrelevant to the key. Membership is still re-checked.
-        selected = str(bound or "") or workspace_tenants.get_selection(name)
-        if not selected:
-            return None
-        if not is_active(selected) or not workspace_tenants.principal_can_select(
-            name, selected
-        ):
-            if bound:
-                # A key acts only inside its workspace. Falling back to the
-                # default workspace would run it somewhere it was never given.
-                raise HTTPException(
-                    status_code=403,
-                    detail="This API key's workspace is paused or its owner is no longer a "
-                           "member of it. Ask a workspace administrator.",
-                )
-            return "denied", selected
-        return "principal_selection", selected
-    except HTTPException:
-        raise
+        return None
     except Exception as exc:
         raise HTTPException(
             status_code=503,
@@ -584,13 +559,15 @@ def is_dashboard_admin(principal: str) -> bool:
     return is_admin_principal(principal)
 
 
-def global_role_for_principal(principal: str | None) -> str | None:
+def global_role_for_principal(principal: str | None, *, request: Request | None = None) -> str | None:
     """The principal's dashboard-wide RBAC role, ignoring tenant memberships.
 
     Resolution: explicit stored assignment, then the role mapped to the user's
     SCIM groups (``[dashboard] group_roles`` — team membership in the IdP), then
-    the configured default. Explicit always beats derived, so an admin can still
-    pin an individual without fighting the group mapping."""
+    the role from the caller's own sign-in claim (sign_in_roles; only when
+    ``request`` is given and ``principal`` is its caller), then the configured
+    default. Explicit always beats derived, so an admin can still pin an
+    individual without fighting the group or claim mapping."""
     if principal is None:
         return None
     if is_dashboard_admin(principal):
@@ -608,6 +585,13 @@ def global_role_for_principal(principal: str | None) -> str | None:
             group_role = scim_groups.role_for_principal(principal)
         if group_role:
             return group_role
+        from . import sign_in_roles
+
+        # A claim role belongs to one verified sign-in: with no request
+        # (background work) or for anyone but its caller there is none.
+        claim_role = sign_in_roles.for_request(request, principal)
+        if claim_role:
+            return claim_role
         # Once workspace membership is in use, an unassigned account is not
         # implicitly entitled to the separate installation-wide namespace. The
         # durable roster remains after revocation, preventing privilege return.
@@ -625,7 +609,7 @@ def global_role_for_principal(principal: str | None) -> str | None:
         return None
 
 
-def role_for_principal(principal: str | None) -> str | None:
+def role_for_principal(principal: str | None, *, request: Request | None = None) -> str | None:
     """The dashboard RBAC role for ``principal``.
 
     None when auth is off (no principal) -- the signal for every gate to
@@ -633,7 +617,8 @@ def role_for_principal(principal: str | None) -> str | None:
     (:func:`is_dashboard_admin`) is always ``"admin"`` and cannot be demoted via
     the store, so you can't lock yourself out. Otherwise the stored role, or the
     configured default (``viewer``) for an authenticated user with no explicit
-    assignment.
+    assignment. Given the caller's own ``request``, the role from that caller's
+    sign-in claim comes before the default (:func:`global_role_for_principal`).
     """
     if principal is None:
         return None
@@ -659,7 +644,7 @@ def role_for_principal(principal: str | None) -> str | None:
                 from . import strict_reads
 
                 with strict_reads.strict():
-                    return global_role_for_principal(principal) or rbac.default_role()
+                    return global_role_for_principal(principal, request=request) or rbac.default_role()
     except Exception:
         # Never replace an unreadable tenant-local demotion with the broader
         # global/default role.
@@ -668,13 +653,27 @@ def role_for_principal(principal: str | None) -> str | None:
         if strict_reads.active():
             raise
         return None
-    return global_role_for_principal(principal)
+    return global_role_for_principal(principal, request=request)
+
+
+def _role_of_caller(lookup, request: Request, principal: str | None) -> str | None:
+    """``lookup(principal)`` for the caller of ``request``, where ``lookup`` is
+    :func:`role_for_principal` or :func:`global_role_for_principal`.
+
+    The request goes to the lookup only when that caller's own verified sign-in
+    carries a claim role for it to place. A caller without one is looked up
+    with the principal alone, exactly as before."""
+    from . import sign_in_roles
+
+    if sign_in_roles.carried(request, principal) is None:
+        return lookup(principal)
+    return lookup(principal, request=request)
 
 
 def caller_role(request: Request) -> str | None:
     """The RBAC role of the current caller (None when auth is off)."""
     with single_read(fresh=True):  # a gate: the current files, even inside a render
-        return role_for_principal(_authorization_principal(request))
+        return _role_of_caller(role_for_principal, request, _authorization_principal(request))
 
 
 def api_key_permissions(request) -> frozenset[str] | None:
@@ -739,7 +738,7 @@ def has_permission(request: Request, permission: str, *, api_scope: str | None =
         if not _api_key_allows(request, permission, api_scope=api_scope):
             return False
         from . import rbac
-        return permission in rbac.permissions_for(role_for_principal(principal))
+        return permission in rbac.permissions_for(_role_of_caller(role_for_principal, request, principal))
 
 
 def _permission_denied(request: Request, permission: str, *, installation: bool = False,
@@ -814,7 +813,7 @@ def has_global_permission(request: Request, permission: str) -> bool:
             return False
         from . import rbac
 
-        return permission in rbac.permissions_for(global_role_for_principal(principal))
+        return permission in rbac.permissions_for(_role_of_caller(global_role_for_principal, request, principal))
 
 
 def require_global_permission(request: Request, permission: str) -> None:
@@ -937,7 +936,9 @@ def _resolve_websocket_principal(websocket) -> VerifiedPrincipal | None:
         if is_revoked(ws_principal.sub, ws_principal.claims.get("iat")):
             raise HTTPException(status_code=401, detail="invalid OIDC token")
         _enforce_scim_active(ws_principal)
-        return ws_principal
+        from . import sign_in_roles
+
+        return sign_in_roles.with_token_role(ws_principal)
 
     # Proxy/session identities are valid WebSocket credentials too. Their
     # browser Origin is checked by ``websocket_authorized`` before accept.
@@ -982,7 +983,10 @@ def _authenticate_oidc_bearer(request: Request, token: str) -> VerifiedPrincipal
             headers={"WWW-Authenticate": "Bearer"},
         ) from None
     _enforce_scim_active(principal)
-    return principal
+    from . import sign_in_roles
+
+    # The app roles in this verified token count for this request only.
+    return sign_in_roles.with_token_role(principal)
 
 
 def _resolve_principal(

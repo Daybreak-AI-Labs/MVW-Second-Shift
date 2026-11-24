@@ -53,6 +53,7 @@ _KINDS = {
 # as "Privacy officer".
 _ROLE_LABELS = {
     "admin": "Administrator",
+    "governance_lead": "Governance lead",
     "operator": "Operator",
     "auditor": "Auditor",
     "viewer": "Viewer",

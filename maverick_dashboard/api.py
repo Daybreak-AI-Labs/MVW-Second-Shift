@@ -21,6 +21,14 @@ from . import step_up
 from ._shared import _world
 from ._shared import dashboard_token as _dashboard_token
 from .api_schemas import ExternalAgentIn, ExternalCredentialIn, HaltIn, TrustRevokeIn
+from .approval_decisions import (
+    _audit_approval_decision,
+    _record_vote_or_raise,
+    _require_acknowledgement,
+    _require_separate_approver,
+    _safe_action_label,
+    require_current_decision_card,
+)
 from .auth import (
     caller_principal,
     has_global_permission,
@@ -1069,3 +1077,325 @@ async def external_agent_unenroll(request: Request, agent_id: str) -> None:
         raise HTTPException(status_code=503, detail=_UNSAVED) from e
     if not removed:
         raise HTTPException(status_code=404, detail=f"agent {agent_id!r} is not enrolled")
+
+
+@router.get("/approvals")
+def list_approvals(request: Request, response: Response) -> dict:
+    """Actions waiting for a person's decision.
+
+    The queue has no per-user owner, so listing it requires the ``operate``
+    permission: the same gate as approving and rejecting.
+    """
+    require_permission(request, "operate")
+    response.headers["Cache-Control"] = "private, no-store"
+    w = _world()
+    from .content_access import can_read_approval
+
+    rows = list(w.pending_approvals())
+    readable = [a for a in rows if can_read_approval(request, a, w)]
+    return {"approvals": [_approval_api_row(a) for a in readable],
+            "private_count": len(rows) - len(readable)}
+
+
+@router.get("/approvals/waiting-count")
+def approvals_waiting_count(request: Request, response: Response) -> dict:
+    """How many requests this person can open and decide now."""
+    require_permission(request, "operate")
+    response.headers["Cache-Control"] = "private, no-store"
+    w = _world()
+    from .content_access import can_read_approval
+
+    return {"waiting": sum(1 for a in w.pending_approvals() if can_read_approval(request, a, w))}
+
+
+def _approval_api_row(approval) -> dict:
+    """Project one approval without exposing a malformed structured envelope."""
+    from maverick.approval_cards import (
+        ApprovalCardError,
+        decode_approval_detail,
+    )
+    from maverick.safety.secret_detector import redact
+
+    def safe(value: object, *, fallback: str = "") -> str:
+        try:
+            text, _matches = redact(" ".join(str(value or "").split()))
+            return text[:2000]
+        except Exception:
+            return fallback
+
+    card = None
+    card_status = "legacy"
+    detail = safe(approval.detail)
+    try:
+        card = decode_approval_detail(approval.detail)
+    except ApprovalCardError:
+        detail = "Structured approval details failed their integrity check."
+        card_status = "invalid"
+    if card is not None:
+        detail = card["summary"]
+        card_status = "expired" if time.time() >= card["expires_at"] else "current"
+    return {
+        "id": approval.id,
+        "action": safe(approval.action, fallback="reviewed operation"),
+        "risk": approval.risk,
+        "scope": safe(approval.scope, fallback="reviewed target"),
+        "detail": detail,
+        "requested_at": approval.requested_at,
+        "approval_card": card,
+        "approval_card_status": card_status,
+        # Collaborative supervision: who is handling this review.
+        "claimed_by": getattr(approval, "claimed_by", None),
+        "claimed_at": getattr(approval, "claimed_at", None),
+    }
+
+
+def _require_current_decision_card(world, approval_id: int, request: Request) -> None:
+    """Reject a stale page, expired card, or corrupted structured approval."""
+    require_current_decision_card(
+        world, approval_id, request.headers.get("X-Second-Shift-Approval-Binding", ""),
+    )
+
+
+def _supervisor(request: Request) -> str:
+    """The acting supervisor's identity for claims/attribution.
+
+    The authenticated principal when auth is on; the shared "operator"
+    identity in single-user/no-auth deployments (claims still prevent
+    double-handling across that operator's browser tabs)."""
+    from .auth import caller_principal
+
+    return caller_principal(request) or "operator"
+
+
+async def _decision_payload(request: Request) -> dict:
+    """The optional JSON body of a decision (acknowledgement, reason)."""
+    if not (request.headers.get("content-type") or "").lower().startswith("application/json"):
+        return {}
+    try:
+        payload = await request.json()
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=422, detail="the decision details could not be read") from None
+    return payload if isinstance(payload, dict) else {}
+
+
+def _held_for_undo(world, approval_id: int) -> bool:
+    """Only a request the consent wait holds can be undone; every other
+    requester acts on the decision at once, so the page offers no Undo."""
+    from maverick.channel_approvals import held_for_undo
+
+    try:
+        return held_for_undo(world.get_approval(approval_id))
+    # failure-policy: fail_closed -- an unreadable request offers no Undo
+    except Exception:
+        log.warning("approval %s: undo hold unreadable; no Undo offered", approval_id)
+        return False
+
+
+def _decider_name(principal) -> str:
+    """Who decided, as a person reads it: never the raw sign-in identifier."""
+    from .identity_format import humanize_principal
+
+    return humanize_principal(principal).name
+
+
+def _approval_decision_response(world, event, audit_delivered: bool) -> Response:
+    """Make pending-vs-effective state explicit at the HTTP boundary."""
+    try:
+        state = world.approval_state(event.approval_id) or {}
+    # The decision/outbox transaction has already committed. A diagnostic read
+    # failure must not turn that into a misleading 500/retry; fall back to the
+    # conservative state derivable from the delivery result.
+    # failure-policy: fail_soft_with_audit
+    except Exception:
+        log.exception(
+            "approval state read failed after accepted decision (event_id=%s)",
+            event.event_id,
+        )
+        state = {}
+    fallback_status = (
+        event.final_status if audit_delivered and event.final_status is not None else "pending"
+    )
+    approval_status = str(state.get("status") or fallback_status)
+    common_headers = {
+        "X-Second-Shift-Decision-Id": event.event_id,
+        "X-Second-Shift-Approval-Audit": ("delivered" if audit_delivered else "pending"),
+        "X-Second-Shift-Approval-State": approval_status,
+        "X-Second-Shift-Approval-Count": str(state.get("approved_count", 0)),
+        "X-Second-Shift-Approval-Required": str(state.get("approvals_required", 1)),
+        "X-Second-Shift-Decided-By": (
+            _decider_name(event.decided_by).encode("ascii", "backslashreplace").decode("ascii")
+        ),
+    }
+    if audit_delivered and approval_status != "pending" and _held_for_undo(world, event.approval_id):
+        from maverick.safety.consent import approval_undo_grace_seconds
+
+        # The page offers Undo for this long; the consumer waits the same window.
+        common_headers["X-Second-Shift-Undo-Seconds"] = str(int(approval_undo_grace_seconds()))
+    if audit_delivered:
+        return Response(status_code=204, headers=common_headers)
+    return JSONResponse(
+        status_code=202,
+        content={
+            "decision": "accepted",
+            "decision_id": event.event_id,
+            "audit": "pending",
+            "approval_status": approval_status,
+            "effective": False,
+            "retry_safe": True,
+        },
+        headers={"Retry-After": "1", **common_headers},
+    )
+
+
+def _decide_approval(request: Request, approval_id: int, payload: dict, status: str, *,
+                     binding: str | None = None, reviewed: dict | None = None, effect_guard=None) -> Response:
+    """The synchronous native queue decision, shared with typed Copilot controls.
+
+    The HTTP routes retain their exact statuses, headers and denial-note
+    behavior. Copilot additionally binds the queued material at this effect
+    boundary; callers cannot provide a substitute authority or actor.
+    """
+    from .approval_authority import require_approval_authority
+
+    if status not in {"approved", "denied"}:
+        raise HTTPException(422, "Choose approve or reject.")
+    approving = status == "approved"
+    require_approval_authority(request, action="approval.approve" if approving else "approval.deny",
+                               resource=str(approval_id))
+    who, world = _supervisor(request), _world()
+    from .approval_decisions import require_code_decider
+    require_code_decider(request, world.get_approval(approval_id), approving=approving,
+                         copilot=reviewed is not None)
+    from .approval_queue_operations import guard
+
+    vote_guard = reviewed
+    if reviewed is None:
+        original = world.get_approval(approval_id)
+        event_id = world.approval_audit_event_id(approval_id, status, who)
+        if original is not None and world.get_approval_audit_event(event_id) is None:
+            vote_guard = guard(world, original, who, status,
+                               request.headers.get("X-Second-Shift-Approval-Binding", "") if binding is None else binding,
+                               bind_state=False)
+    if approving:
+        if binding is None:
+            _require_current_decision_card(world, approval_id, request)
+        else:
+            require_current_decision_card(world, approval_id, binding)
+        _require_separate_approver(world, approval_id, who)
+        _require_acknowledgement(world, approval_id, payload, who, channel="dashboard")
+    reason = " ".join(str(payload.get("reason") or "").split())[:2000] if not approving else ""
+    before = world.get_approval(approval_id) if reason else None
+    effect_options = {"effect_guard": effect_guard} if effect_guard is not None else {}
+    event = (_record_vote_or_raise(world, approval_id, status, who, **effect_options) if vote_guard is None
+             else _record_vote_or_raise(world, approval_id, status, who, reviewed_card=vote_guard, **effect_options))
+    delivered = _audit_approval_decision(world, event, **effect_options)
+    if reason and delivered and before is not None:
+        from maverick import audit
+        from maverick.safety.secret_detector import redact
+
+        try:
+            reason, _matches = redact(reason)
+        except Exception:
+            reason = "Reason removed because redaction failed."
+        label = _safe_action_label(before)
+        if not audit.audit_event(
+            audit.EventKind.CONSENT_RESULT,
+            agent=who,
+            actor=who,
+            action="approval_rejection_reason",
+            approval_id=int(approval_id),
+            reason=reason,
+            summary=f"{who} rejected '{label}' and gave a reason: {reason}",
+        ):
+            log.warning("approval rejection reason audit write failed (approval_id=%s)", approval_id)
+    return _approval_decision_response(world, event, delivered)
+
+
+@router.post(
+    "/approvals/{approval_id}/approve",
+    status_code=204,
+    responses={
+        202: {
+            "description": (
+                "Vote accepted durably; approval remains non-effective while "
+                "signed audit delivery is pending"
+            ),
+        },
+        409: {"description": "A competing final vote is awaiting audit delivery"},
+        503: {
+            "description": (
+                "Database commit outcome could not be reconciled; retrying the "
+                "returned decision id is safe"
+            ),
+        },
+    },
+)
+async def approve_approval(request: Request, approval_id: int) -> Response:
+    """Record an approval vote; once the required quorum of distinct approvers is
+    met the polling consent path proceeds (N-of-M dual control).
+
+    High and critical risk requests also need the person's acknowledgement in
+    the JSON body (see ``_require_acknowledgement``)."""
+    from .approval_authority import require_approval_authority
+
+    require_approval_authority(request, action="approval.approve", resource=str(approval_id))
+    payload = await _decision_payload(request)
+    # The decision commits to the database, signs audit rows and takes
+    # cross-process locks: keep that off the event loop.
+    return await run_in_threadpool(_decide_approval, request, approval_id, payload, "approved")
+
+
+@router.post(
+    "/approvals/{approval_id}/deny",
+    status_code=204,
+    responses={
+        202: {
+            "description": (
+                "Vote accepted durably; denial remains non-effective while "
+                "signed audit delivery is pending"
+            ),
+        },
+        409: {"description": "A competing final vote is awaiting audit delivery"},
+        503: {
+            "description": (
+                "Database commit outcome could not be reconciled; retrying the "
+                "returned decision id is safe"
+            ),
+        },
+    },
+)
+async def deny_approval(request: Request, approval_id: int) -> Response:
+    """Deny a parked action (a single deny rejects it); the polling consent path
+    then refuses it. An optional JSON ``reason`` is written to the audit log."""
+    from .approval_authority import require_approval_authority
+
+    require_approval_authority(request, action="approval.deny", resource=str(approval_id))
+    payload = await _decision_payload(request)
+    return await run_in_threadpool(_decide_approval, request, approval_id, payload, "denied")
+
+
+@router.get("/approvals/{approval_id}/state")
+def approval_state(request: Request, approval_id: int) -> dict:
+    """N-of-M quorum progress for an approval (status, approvers so far vs.
+    required) — the operator view of an in-flight multi-party decision."""
+    require_permission(request, "operate")
+    from .content_access import require_approval_content
+    require_approval_content(request, approval_id)
+    world = _world()
+    st = world.approval_state(approval_id)
+    approval = world.get_approval(approval_id)
+    if st is None or approval is None:
+        raise HTTPException(status_code=404, detail="no such approval")
+    from .approval_decisions import own_request_note
+
+    who = _supervisor(request)
+    own = bool(st.get("requested_by")) and st.get("requested_by") == who
+    # What is actually enforced: the person who asked may approve unless
+    # someone else must (the separate-approver rule for a high-risk request,
+    # or two-person approval without self-approval); the note says why.
+    note = own_request_note(world, approval, who) if own else ""
+    from maverick.safety.dual_control import includes_person
+
+    return {**st, "your_approval_recorded": includes_person(st.get("approvers", []), who),
+            "requested_by_you": own, "self_approval_counts": not note,
+            "own_request_note": note}

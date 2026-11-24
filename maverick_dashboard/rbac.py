@@ -1,4 +1,4 @@
-"""Dashboard RBAC: admin-managed user roles (admin / operator / auditor / viewer).
+"""Dashboard RBAC: admin-managed user roles (admin / governance_lead / operator / auditor / viewer).
 
 This is the dashboard's *access-control* layer and is deliberately distinct from
 the kernel's ``[roles]`` (``maverick.capability``), which only ATTENUATES an
@@ -38,7 +38,7 @@ from pathlib import Path
 # admin UIs rely on the order). Custom roles extend -- never replace -- these:
 # the builtins are immutable, and every permission a custom role can hold is
 # one of the same four atoms the 1,400+ require_permission call sites gate on.
-ROLES = ("admin", "operator", "auditor", "viewer")
+ROLES = ("admin", "governance_lead", "operator", "auditor", "viewer")
 
 # The permission atoms a role may grant. "view" is mandatory for every role:
 # a principal who cannot even view has no working dashboard, which reads as
@@ -87,9 +87,12 @@ ROSTER_RECOVERY = (
 # audit log WITHOUT also holding operate/admin (run goals, change settings,
 # manage users). "auditor" deliberately grants NOTHING operational: audit + view
 # only. "operator"/"viewer" do NOT get "audit" -- reading the trail is a
-# distinct grant, not implied by operate.
+# distinct grant, not implied by operate. "governance_lead" is the one
+# deliberate combination: a day-to-day operator who also reads the trail
+# (operate + audit + view), with no administrator rights.
 _PERMISSIONS: dict[str, frozenset[str]] = {
     "admin": frozenset({"admin", "audit", "operate", "view"}),  # users, settings, secrets, + all
+    "governance_lead": frozenset({"audit", "operate", "view"}),  # operator who also reads the audit trail
     "operator": frozenset({"operate", "view"}),                 # run/cancel goals, approve, tools
     "auditor": frozenset({"audit", "view"}),                    # read audit trail (read-only)
     "viewer": frozenset({"view"}),                              # read-only
@@ -315,6 +318,11 @@ def _decode_json_object(raw: str, *, label: str) -> object:
         raise RbacStoreError(f"{label} corrupt: {exc}") from exc
 
 
+def list_users() -> dict[str, str]:
+    """All explicitly-assigned {principal: role} (bootstrap admins excluded)."""
+    return _load()
+
+
 def get_stored_role(principal: str) -> str | None:
     return _load().get((principal or "").strip())
 
@@ -407,6 +415,7 @@ __all__ = [
     "store_path",
     "default_role",
     "permissions_for",
+    "list_users",
     "get_stored_role",
     "tenant_store_path",
     "get_tenant_role",

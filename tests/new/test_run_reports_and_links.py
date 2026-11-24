@@ -169,6 +169,8 @@ def test_two_agents_cannot_claim_the_same_platform_record(client):
     refused = _enroll(client, "second", external_ref="foundry:helpdesk")
     assert refused.status_code == 400 and "already linked" in refused.json()["detail"]
     assert [row["id"] for row in client.get("/api/v1/external-agents").json()["agents"]] == ["helpdesk"]
+    # platform checks match without regard to capitals, so a respelling is the same record
+    assert _enroll(client, "second", external_ref="foundry:HelpDesk").status_code == 400
     # the holder itself can be saved again with the link it already has
     assert _enroll(client, external_ref="foundry:helpdesk").status_code == 201
 

@@ -204,6 +204,22 @@ def test_goal_reads_are_owner_scoped(world):
     assert world.list_goals(owner=f"agent:nobody:{token}") == []
 
 
+def test_approval_undo_window_starts_when_last_audit_vote_is_delivered(world):
+    # Same rule as the SQLite backend: the decision takes effect when the last
+    # vote reaches the signed audit log, so that is when the undo window
+    # starts. The vote time would use up the window while delivery waits.
+    aid = world.create_approval("wire-funds", risk="high", approvals_required=2, undoable=True)
+    first = world.decide_approval_audited(aid, "approved", decided_by="user:a")
+    final = world.decide_approval_audited(aid, "approved", decided_by="user:b")
+    delivered = final.created_at + 100
+    world.mark_approval_audit_delivered(final.event_id, delivered_at=delivered)
+    assert world.get_approval(aid).status == "pending"
+    world.mark_approval_audit_delivered(first.event_id, delivered_at=delivered + 60)
+    assert world.get_approval(aid).decided_at == delivered + 60
+    world.mark_approval_audit_delivered(first.event_id, delivered_at=delivered + 120)
+    assert world.get_approval(aid).decided_at == delivered + 60
+
+
 def test_schema_version_is_int(world):
     assert isinstance(world.schema_version, int)
     assert world.schema_version >= 1

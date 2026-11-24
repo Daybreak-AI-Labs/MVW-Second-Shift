@@ -765,6 +765,29 @@ def test_create_approval_announces_it_to_webhook_subscribers_after_commit(monkey
     assert told == [("approval.created", 42, {"risk": "high", "action": "payment"}, False)]
 
 
+def _delivery_answers():
+    event = ("evt", 7, "approved", "user:dana", "approved", 10.0, None)
+    return [event, None, ("approved", "user:dana", 10.0)]  # event, nothing else pending, the final vote
+
+
+def test_a_delivered_final_vote_is_announced_only_after_the_guard_and_the_commit(monkeypatch):
+    world, told = _approval_world(monkeypatch, _ScriptedCursor(_delivery_answers()))
+    calls = []
+
+    def guard():
+        calls.append(1)
+        if len(calls) == 2:  # the guard that runs just before the commit
+            raise PermissionError("authority changed")
+
+    with pytest.raises(PermissionError):
+        world.mark_approval_audit_delivered("evt", effect_guard=guard)
+    assert told == []
+
+    world, told = _approval_world(monkeypatch, _ScriptedCursor(_delivery_answers()))
+    assert world.mark_approval_audit_delivered("evt") is True
+    assert told == [("approval.decided", 7, {"status": "approved", "decided_by": "user:dana"}, False)]
+
+
 def test_stamped_fill_batch_waits_briefly_for_goals_and_retries_then_stops(monkeypatch):
     """A fill batch lifts FORCE on goals, which queues an exclusive lock.
     It waits at most a fifth of a second, retries a busy batch a few times,

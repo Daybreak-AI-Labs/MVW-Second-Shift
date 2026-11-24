@@ -122,7 +122,7 @@
         <input class="input" name="department" id="xa-department" maxlength="100">
       </label>
       <label>Record on its platform <span class="muted">(optional)</span>
-        <input class="input" name="external_ref" id="xa-external-ref" maxlength="300" placeholder="foundry:agent-name" aria-describedby="xa-external-ref-help">
+        <input class="input" name="external_ref" id="xa-external-ref" maxlength="300" placeholder="foundry:resource/project/agent-name" aria-describedby="xa-external-ref-help">
       </label>
       <label>Riskiest action allowed
         <select class="select" name="max_risk">
@@ -166,7 +166,8 @@
     </p>
     <p class="muted" id="xa-external-ref-help" style="font-size: var(--text-sm); margin: var(--space-2) 0 0;">
       The record on its platform links this agent to what the platform itself reports about it,
-      so a change made there shows up here even if the agent says nothing. Leave it blank if you do not have it.
+      so a change made there shows up here even if the agent says nothing. Leave it blank if you do not have it;
+      the form of the reference for each platform is in the platform checks guide.
     </p>
   </div>
   {% if outside_agent_tabs %}</div>{% endif %}

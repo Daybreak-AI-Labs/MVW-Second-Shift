@@ -16,7 +16,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 APPROVAL_CARD_SCHEMA = "second-shift.approval-card.v1"
-APPROVAL_DETAIL_PREFIX = "lightwork-approval-card:v1:"
+APPROVAL_DETAIL_PREFIX = "second-shift-approval-card:v1:"
 _MAX_ENVELOPE_CHARS = 24_000
 _MAX_LABEL_CHARS = 500
 _MAX_LIST_ITEMS = 24

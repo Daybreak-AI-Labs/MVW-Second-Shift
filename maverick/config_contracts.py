@@ -34,6 +34,32 @@ class TextSettingContract:
         return re.fullmatch(self.pattern, value) is not None
 
 
+@dataclass(frozen=True)
+class IntegerSettingContract:
+    """A stored integer default and the bounds exposed by the settings page."""
+
+    setting: str
+    default: int
+    minimum: int
+    maximum: int
+    dashboard_env: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class BooleanSettingContract:
+    setting: str
+    default: bool
+    dashboard_env: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class ChoiceSettingContract:
+    setting: str
+    default: str
+    options: tuple[str, ...]
+    dashboard_env: tuple[str, ...] = ()
+
+
 HTTPS = r"https://[^\s\"'<>?#]{1,300}"
 COLLECTOR_ADDRESS = (r"(" + HTTPS + r"|http://(localhost|127\.0\.0\.1|\[::1\])"
                      r"(:[0-9]{1,5})?(/[^\s\"'<>?#]{0,300})?)?")
@@ -56,4 +82,43 @@ _CONTRACTS = (
 )
 TEXT_SETTINGS: Mapping[str, TextSettingContract] = MappingProxyType(
     {contract.setting: contract for contract in _CONTRACTS}
+)
+
+_INTEGER_CONTRACTS = (
+    IntegerSettingContract("approval.undo_grace_seconds", 30, 0, 3600,
+                           ("MAVERICK_APPROVAL_UNDO_GRACE_SECONDS",)),
+    IntegerSettingContract("approval.check_retention_days", 90, 1, 3650),
+    IntegerSettingContract("approval.decision_expiry_hours", 72, 1, 720),
+    IntegerSettingContract("agent_tests.max_cases_per_specialist", 20, 1, 200),
+    IntegerSettingContract("agent_tests.canary_percent", 0, 0, 50),
+    IntegerSettingContract("durable.keep_last", 5, 1, 100),
+)
+INTEGER_SETTINGS: Mapping[str, IntegerSettingContract] = MappingProxyType(
+    {contract.setting: contract for contract in _INTEGER_CONTRACTS}
+)
+_BOOLEAN_CONTRACTS = (
+    BooleanSettingContract("approval.require_acknowledgement", True,
+                           ("MAVERICK_APPROVAL_REQUIRE_ACKNOWLEDGEMENT",)),
+    BooleanSettingContract("approval.record_checks", True),
+    BooleanSettingContract("budget.strict_pricing", True, ("MAVERICK_BILLING_STRICT",)),
+    BooleanSettingContract("budget.guidance", True),
+    BooleanSettingContract("budget.warnings", True),
+    BooleanSettingContract("agent_tests.require_for_new_specialists", False),
+    BooleanSettingContract("agent_tests.bypass_requires_second_person", False),
+    BooleanSettingContract("agent_tests.tool_checks", False),
+    BooleanSettingContract("agent_tests.canary_auto_rollback", False),
+    BooleanSettingContract("automation_import.enable", False, ("MAVERICK_AUTOMATION_IMPORT",)),
+    BooleanSettingContract("automation_import.create_schedules", False),
+    BooleanSettingContract("durable.enabled", False),
+)
+BOOLEAN_SETTINGS: Mapping[str, BooleanSettingContract] = MappingProxyType(
+    {contract.setting: contract for contract in _BOOLEAN_CONTRACTS}
+)
+_CHOICE_CONTRACTS = (
+    ChoiceSettingContract("approval.separate_approver", "when_available",
+                          ("when_available", "always", "never"),
+                          ("MAVERICK_SEPARATE_APPROVER",)),
+)
+CHOICE_SETTINGS: Mapping[str, ChoiceSettingContract] = MappingProxyType(
+    {contract.setting: contract for contract in _CHOICE_CONTRACTS}
 )

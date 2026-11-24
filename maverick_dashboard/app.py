@@ -16,6 +16,7 @@ import os
 import re
 import secrets
 import threading
+import time
 import weakref
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -42,6 +43,7 @@ from .auth import (
     has_permission,
     non_static_auth_configured,
     probe_path,
+    require_permission,
     require_principal_in_request_context,
     route_path,
 )
@@ -206,7 +208,7 @@ def _page_role(request: Request, *, global_scope: bool = False) -> str | None:
     try:
         principal = auth.caller_principal(request)
         role = (
-            auth.global_role_for_principal(principal)
+            auth._role_of_caller(auth.global_role_for_principal, request, principal)
             if global_scope and principal is not None else caller_role(request)
         )
         if role is None and principal is not None:
@@ -393,6 +395,30 @@ async def _drift_check_loop() -> None:
         await asyncio.sleep(max(1, int(minutes)) * 60)
 
 
+async def _platform_check_loop() -> None:
+    """Ask each configured platform which agents it has, on a timer.
+
+    What a platform reports is compared with enrollment by the check itself. A
+    failed pass is logged and the loop carries on; it never stops the app.
+    The first pass waits a moment, so starting the app never begins with
+    calls to other systems.
+    """
+    await asyncio.sleep(60)
+    while True:
+        minutes = 60
+        try:
+            from maverick import agent_watch
+
+            minutes = agent_watch.settings().get("sync_minutes", 60)
+            if agent_watch.enabled():
+                await run_in_threadpool(agent_watch.sync)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.warning("scheduled platform check failed", exc_info=True)
+        await asyncio.sleep(max(1, int(minutes)) * 60)
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     """Start-up and shut-down for the web app.
@@ -419,13 +445,15 @@ async def _lifespan(app: FastAPI):
             warn_if_untrusted_proxy_config()
         except Exception:  # pragma: no cover -- a warning must never block startup
             pass
-        drift_checks = asyncio.create_task(_drift_check_loop())
+        timers = [asyncio.create_task(_drift_check_loop()), asyncio.create_task(_platform_check_loop())]
         try:
             yield
         finally:
-            drift_checks.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await drift_checks
+            for timer in timers:
+                timer.cancel()
+            for timer in timers:
+                with contextlib.suppress(asyncio.CancelledError):
+                    await timer
     finally:
         await run_in_threadpool(partial(close_postgres_pools, timeout=5))
         if owns_lease:
@@ -567,6 +595,12 @@ app.include_router(static_files_router)
 from .agent_drift_api import router as agent_drift_router  # noqa: E402
 
 app.include_router(agent_drift_router)
+from .alerts_api import router as alerts_router  # noqa: E402
+
+app.include_router(alerts_router)
+from .agent_watch_api import router as agent_watch_router  # noqa: E402
+
+app.include_router(agent_watch_router)
 
 
 def _compress_enabled() -> bool:
@@ -1617,6 +1651,200 @@ async def external_agent_scorecard(request: Request, agent_id: str) -> HTMLRespo
          "can_operate": has_permission(request, "operate"),
          "drift": await run_in_threadpool(_agent_drift_view, agent_id)},
         headers={"Cache-Control": "private, no-store"}
+    )
+
+
+def _approval_source(provenance: str | None) -> str | None:
+    """Label trusted governance/Art-14 approvals, else ``None``.
+
+    Approval ``detail`` is free-form operator context and may include
+    model-, user-, or remote-server-controlled text. Only the explicit
+    trusted ``provenance`` field may drive source labels in the decision UI.
+    """
+    if provenance == "governance":
+        return "Required human oversight (EU AI Act)"
+    if provenance == "external_agents":
+        return "Outside agent"
+    if provenance == "harness_refine":
+        # A change to the standing instructions every agent follows. An
+        # approver must see that at a glance, not read it as an ordinary task
+        # approval. People suggest these (Learned page or CLI), so the label
+        # names the change, not an agent asking for itself.
+        return "Change to the instructions agents follow"
+    if provenance == "assessment":
+        return "Assessment review"
+    if provenance == "plan":
+        # [autonomy] confirm_plan: the task's first outside action waits for
+        # a person to check the whole plan (maverick.plan_review).
+        return "Plan to check before the task acts"
+    if provenance == "goal_risk":
+        # A task held before it starts because its wording looks risky.
+        return "Task waiting to start"
+    if provenance == "ifc":
+        return "Sensitive data about to leave Second Shift"
+    return None
+
+
+def _approval_viewer_context(request: Request | None, approvals: list) -> dict:
+    """Who is looking at the queue, so a card can say "your own request", and
+    -- when the enforced rules keep that person from approving it -- why."""
+    if request is None:
+        return {"approval_viewer": "", "own_request_notes": {}}
+    from .api import _supervisor
+    from .approval_decisions import own_request_note
+
+    viewer = _supervisor(request)
+    world = _world()
+    notes = {}
+    for approval in approvals:
+        note = own_request_note(world, approval, viewer)
+        if note:
+            notes[approval.id] = note
+    return {"approval_viewer": viewer, "own_request_notes": notes}
+
+
+def _approval_progress(approvals: list, request: Request) -> dict:
+    """Each pending card's approval progress, in the words the card shows.
+
+    The same facts ``GET /api/v1/approvals/{id}/state`` returns, rendered with
+    the page instead of fetched once per card after load. Callers pass only
+    the approvals the viewer may open (the page routes filter with
+    ``can_read_approval``, the state API's content check); the state API's
+    operate floor applies here too.
+    """
+    if not has_permission(request, "operate"):
+        return {}
+    from maverick.safety.dual_control import allow_self_approval
+
+    from .api import _supervisor
+    from .approval_decisions import own_request_note
+
+    who = _supervisor(request)
+    world = _world()
+    progress = {}
+    for approval in approvals:
+        try:
+            state = world.approval_state(approval.id)
+        except Exception:  # noqa: BLE001 - the card keeps its server-side checks
+            continue
+        if not state or state.get("status") != "pending":
+            continue
+        required = int(state.get("approvals_required") or 1)
+        words = ["One approval is needed." if required <= 1
+                 else f"{state.get('approved_count', 0)} of {required} required approvals received."]
+        from maverick.safety.dual_control import includes_person
+
+        recorded = includes_person(state.get("approvers") or [], who)
+        if recorded:
+            words.append("Your approval is recorded.")
+        elif state.get("requested_by") and state.get("requested_by") == who:
+            # The words follow what is enforced: one approver may be the person
+            # who asked; under two-person approval their vote may not count.
+            # When another approver must decide, the card already says why.
+            if own_request_note(world, approval, who):
+                pass
+            elif required > 1 and not allow_self_approval():
+                words.append("You asked for this, so other people must approve it.")
+            elif required <= 1:
+                words.append("You asked for this, so approving it approves your own request.")
+            else:
+                words.append("You asked for this; your approval counts as one of them.")
+        progress[approval.id] = {"text": " ".join(words), "recorded": recorded}
+    return progress
+
+
+def _approval_queue_context(approvals: list, request: Request | None = None) -> dict:
+    """Build the exact-operation review context shared by approval surfaces."""
+
+    from maverick.approval_cards import ApprovalCardError, decode_approval_detail
+    from maverick.safety.secret_detector import redact
+
+    def safe(value: object, *, fallback: str = "") -> str:
+        try:
+            text, _matches = redact(" ".join(str(value or "").split()))
+            return text[:2000]
+        except Exception:
+            return fallback
+
+    sources = {approval.id: _approval_source(approval.provenance) for approval in approvals}
+    cards = {}
+    card_statuses = {}
+    approval_details = {}
+    approval_actions = {}
+    approval_scopes = {}
+    assessment_ids = {}
+    for approval in approvals:
+        approval_actions[approval.id] = safe(
+            approval.action, fallback="reviewed operation",
+        )
+        approval_scopes[approval.id] = safe(
+            approval.scope, fallback="reviewed target",
+        )
+        # Assessment UI enhancement is selected from explicit, app-owned
+        # provenance. Free-form detail, target labels, and model output must not
+        # be able to opt another approval into a DOM rewrite by containing an
+        # ``assessment:...`` substring.
+        if approval.provenance == "assessment":
+            assessment_match = re.search(
+                r"\[assessment:([A-Za-z0-9._-]{1,128})\]\s*$",
+                str(approval.detail or ""),
+            )
+            if assessment_match:
+                assessment_ids[approval.id] = assessment_match.group(1)
+        try:
+            card = decode_approval_detail(approval.detail)
+        except ApprovalCardError:
+            card = None
+            card_statuses[approval.id] = "invalid"
+            approval_details[approval.id] = (
+                "Structured approval details failed their integrity check."
+            )
+        else:
+            cards[approval.id] = card
+            approval_details[approval.id] = (
+                card["summary"] if card is not None else safe(approval.detail)
+            )
+            card_statuses[approval.id] = (
+                "expired"
+                if card is not None and time.time() >= card["expires_at"]
+                else ("current" if card is not None else "legacy")
+            )
+    return {
+        "sources": sources,
+        "cards": cards,
+        "card_statuses": card_statuses,
+        "approval_details": approval_details,
+        "approval_actions": approval_actions,
+        "approval_scopes": approval_scopes,
+        "assessment_ids": assessment_ids,
+        "approval_progress": _approval_progress(approvals, request) if request is not None else {},
+        **_approval_viewer_context(request, approvals),
+    }
+
+
+@app.get("/approvals", response_class=HTMLResponse)
+def approvals_page(request: Request) -> HTMLResponse:
+    """Actions waiting for a person to approve or reject.
+
+    An outside agent's high-risk action waits here, and so does a request for
+    an access key when step-up approval is on. Gated on ``operate``, the same
+    as the API the page calls.
+    """
+    require_permission(request, "operate")
+    from .content_access import can_read_approval
+
+    world = _world()
+    pending = list(world.pending_approvals())
+    approvals = [row for row in pending if can_read_approval(request, row, world)]
+    return templates.TemplateResponse(
+        request,
+        "approvals.html",
+        {
+            "approvals": approvals,
+            "private_count": len(pending) - len(approvals),
+            **_approval_queue_context(approvals, request),
+        },
+        headers={"Cache-Control": "private, no-store"},
     )
 
 

@@ -4,9 +4,8 @@ Nothing used to tell anyone that a data-subject request, an incident's
 72-hour notification clock, an assessment renewal, a vendor contract renewal
 or an approval was about to run out. This module evaluates every such record
 in the workspace and sends plain-language alerts through the notification
-backends already configured in ``[notifications]`` (ntfy, Pushover, Slack,
-Discord today; e-mail or Teams when those backends exist, since delivery goes
-through :func:`maverick.notifications.notify`).
+backend already configured in ``[notifications]`` (Microsoft Teams or
+e-mail, since delivery goes through :func:`maverick.notifications.notify`).
 
 Each record gets at most one alert per *state* (``due_soon_7d``,
 ``due_soon_2d``, ``due_today``, ``overdue`` ...) per deadline. The ledger

@@ -105,31 +105,6 @@ def test_notify_email_backend_uses_the_default_recipient(monkeypatch):
     assert notifications.notify("Run 43 finished", async_dispatch=False) == 0
 
 
-def test_a_non_ascii_ntfy_title_is_sent_as_an_rfc2047_word_not_a_local_encoding_error(monkeypatch):
-    """httpx writes header text as ASCII, so a raw "Zürich" title would fail
-    before any request existed and be recorded as an unknown outcome."""
-    from email.header import decode_header, make_header
-
-    import httpx
-
-    from maverick import notifications as n
-
-    sent = []
-
-    def post(url, content=None, headers=None, timeout=None):
-        httpx.Request("POST", url, content=content, headers=headers)        # what httpx itself would build
-        sent.append(headers)
-        return httpx.Response(200)
-
-    monkeypatch.setattr(httpx, "post", post)
-    assert n._send_ntfy("Due soon: José from Zürich", "body", "default", "https://ntfy.example", "topic") is True
-    title = sent[0]["Title"]
-    assert title.isascii()
-    assert str(make_header(decode_header(title))) == "Due soon: José from Zürich"
-    assert n._send_ntfy("Plain title", "body", "default", "https://ntfy.example", "topic") is True
-    assert sent[1]["Title"] == "Plain title"
-
-
 def test_a_delivered_notification_whose_receipt_cannot_be_updated_is_still_delivered(monkeypatch):
     from maverick import notifications as n
 

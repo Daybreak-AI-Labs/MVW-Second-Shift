@@ -133,8 +133,8 @@ class EventKind:
     """Stringly-typed event kinds. Use these constants, not bare strings."""
     CAPABILITY_DENIED = "capability_denied"
     EGRESS_BLOCKED  = "egress_blocked"
+    CONSENT_RESULT  = "consent_result"
     HALT            = "halt"
-    TENANT_DEFAULT_REGISTERED = "tenant_default_registered"
     # A user's dashboard access changed: privilege role (global or per-tenant),
     # department (suite) grant, or one atomic SCIM group-authority mutation.
     # One row per change makes who-granted-whom-what-when provable instead of a

@@ -114,27 +114,6 @@ def test_policy_off_by_default(monkeypatch):
     assert policy_from_config().is_active() is False
 
 
-def test_notify_routes_to_batcher_when_active(monkeypatch):
-    import maverick.notification_batcher as nb
-    import maverick.notifications as N
-
-    sends: list = []
-    batcher = nb.NotificationBatcher(
-        nb.BatchPolicy(window_seconds=600.0),
-        send=lambda t, body, p, c, backends=None: sends.append((t, body, backends)) or 1,
-    )
-    monkeypatch.setattr(nb, "shared", lambda: batcher)
-    monkeypatch.setattr(N, "_load_config", dict)
-    states: list = []
-    n = N.notify("hi", backends=["slack"], priority="default", outcomes=states)
-    assert n == 0 and sends == [] and states == ["batched"]  # queued, and says so
-    assert N.notify("to the default backend") == 0
-    # The caller's backends survive the batch: one digest per set of backends.
-    assert batcher.flush() == 2
-    assert sends == [("Second Shift", "hi", ["slack"]),
-                     ("Second Shift", "to the default backend", None)]
-
-
 def test_notify_sync_bypasses_batcher(monkeypatch):
     import maverick.notification_batcher as nb
     import maverick.notifications as N

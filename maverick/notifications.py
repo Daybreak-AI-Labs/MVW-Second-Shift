@@ -1,20 +1,16 @@
-"""Push notifications for run events.
+"""Notifications for run events and operator alerts.
 
-Wraps the most common consumer push services:
-  - ntfy.sh (default, no account required; just a topic)
-  - Pushover (PUSHOVER_USER_KEY + PUSHOVER_APP_TOKEN, else the sealed
-    [notifications] user_key + app_token saved on the All settings page)
-  - Discord webhook (DISCORD_NOTIFY_WEBHOOK_URL)
-  - Slack webhook (SLACK_NOTIFY_WEBHOOK_URL)
+Sends through two channels and nothing else:
+  - Microsoft Teams, through a Workflows webhook (the saved
+    [notifications] teams_webhook, else TEAMS_NOTIFY_WEBHOOK_URL)
   - Email over SMTP (the platform mail backend; also carries the daily
     summary from maverick.daily_digest)
 
 Config (in ~/.maverick/config.toml):
 
     [notifications]
-    backend = "ntfy"             # ntfy | pushover | discord | slack | email | none
-    ntfy_topic = "${MAVERICK_NTFY_TOPIC}"
-    ntfy_server = "https://ntfy.sh"
+    backend = "teams"            # teams | email | none (the default)
+    teams_webhook = "${TEAMS_NOTIFY_WEBHOOK_URL}"   # a secret: whoever holds it can post
 
     [notifications.email]
     host = "smtp.example.com"
@@ -32,6 +28,11 @@ Use:
 
 Failures are logged but never block the caller. Multiple backends can
 be configured; each fires its own notification.
+
+It does not retry a failed send, and it does not send to ntfy, Pushover,
+Discord or Slack: those names are no longer channels, and a message
+addressed to one is recorded as not sent. A webhook address is a secret and
+never appears in a log line, a delivery record or a returned message.
 """
 from __future__ import annotations
 
@@ -116,155 +117,214 @@ def _load_config() -> dict:
         return {}
 
 
-def _header_text(value: str) -> str:
-    """An HTTP header value that is safe to send. httpx writes header text as
-    ASCII, so a title such as "Zürich" would fail before anything is sent;
-    ntfy decodes RFC 2047 encoded words, so non-ASCII text goes as one."""
-    if value.isascii():
-        return value
-    import base64
+#: The backends a notification can go to. Every other name is refused.
+BACKENDS = ("teams", "email")
 
-    return "=?UTF-8?B?" + base64.b64encode(value.encode("utf-8")).decode("ascii") + "?="
+_NOT_A_BACKEND = "Not sent: this is not a supported channel. Use teams or email."
 
 
-def _send_ntfy(title: str, body: str, priority: str, server: str, topic: str) -> bool:
-    try:
-        import httpx
-    except ImportError:
-        return False
-    if not topic:
-        return False
-    prio_map = {"low": "1", "default": "3", "high": "4", "max": "5"}
-    headers = {
-        # The title is agent-controlled (the notify tool lets the model set
-        # it). Strip CR/LF so it can't inject extra ntfy control headers /
-        # split the header block.
-        "Title": _header_text(title.replace("\r", " ").replace("\n", " ")),
-        "Priority": prio_map.get(priority, "3"),
-    }
-    try:
-        # ntfy topics are [A-Za-z0-9_-]; reject anything else so a typo/hostile
-        # topic with '/'/'..'/'?'/'#' can't post to a different path on the server.
-        import re as _re
-        if not _re.fullmatch(r"[A-Za-z0-9_-]+", topic or ""):
-            log.warning("notify ntfy: invalid topic format")
-            return False
-        url = f"{server.rstrip('/')}/{topic}"
-        from .governed_http import guarded_sender
-
-        resp = guarded_sender(httpx.post)(url, content=body.encode("utf-8"), headers=headers, timeout=10.0)
-        return _response_accepted(resp.status_code)
-    except Exception as e:
-        mark_transport_failure(e)
-        log.warning("notify ntfy failed: %s", type(e).__name__)
-        return False
+def _not_sent(reason: str, *, retry: bool = True) -> bool:
+    """Record a definite "not sent" and its plain reason. Always False."""
+    _outcome.set(("failed", reason, retry))
+    log.debug("notify: %s", reason)
+    return False
 
 
-def _pushover_credentials(cfg: dict | None = None) -> tuple[str, str]:
-    """``(user_key, app_token)``: ``PUSHOVER_USER_KEY`` / ``PUSHOVER_APP_TOKEN``
-    win; otherwise ``[notifications] user_key`` / ``app_token`` -- the sealed
-    values saved on the All settings page (opened by ``load_config``), or the
-    installer's ``${PUSHOVER_...}`` references."""
-    section = _load_config() if cfg is None else cfg
-    values = []
-    for env_name, key in (("PUSHOVER_USER_KEY", "user_key"), ("PUSHOVER_APP_TOKEN", "app_token")):
-        value = os.environ.get(env_name, "").strip()
-        if not value:
-            saved = _resolve_env_ref(section.get(key)) if isinstance(section.get(key), str) else None
-            value = (saved or "").strip()
-        values.append(value)
-    return values[0], values[1]
+# The HTTP client writes every request line, address included, to its own log
+# at INFO, and at DEBUG the reply's headers, which can repeat the address (a
+# redirect does). A webhook address is a secret (whoever holds it can post), so
+# the client's own log lines are dropped while one is in use.
+_secret_address = ContextVar("notification_secret_address", default=False)
 
 
-def _send_pushover(title: str, body: str, priority: str, cfg: dict | None = None) -> bool:
-    user, app = _pushover_credentials(cfg)
-    if not user or not app:
-        return False
-    try:
-        import httpx
-    except ImportError:
-        return False
-    prio_map = {"low": "-1", "default": "0", "high": "1", "max": "2"}
-    try:
-        from .governed_http import guarded_sender
-
-        resp = guarded_sender(httpx.post)(
-            "https://api.pushover.net/1/messages.json",
-            data={
-                "token": app, "user": user,
-                "title": title, "message": body,
-                "priority": prio_map.get(priority, "0"),
-            },
-            timeout=10.0,
-        )
-        if 200 <= resp.status_code < 300 and resp.json().get("status") != 1:
-            _outcome.set(("failed", "The notification service refused this request. Check the saved destination and credentials.", True))
-            return False
-        return _response_accepted(resp.status_code)
-    except Exception as e:
-        mark_transport_failure(e)
-        log.warning("notify pushover failed: %s", type(e).__name__)
-        return False
+class _HideSecretRequest(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        return not _secret_address.get()
 
 
-def _send_discord(title: str, body: str, url: str) -> bool:
+for _client_log in ("httpx", "httpcore.connection", "httpcore.http11", "httpcore.http2", "httpcore.proxy",
+                    "httpcore.socks"):
+    logging.getLogger(_client_log).addFilter(_HideSecretRequest())
+
+_TEAMS_TIMEOUT = 10.0
+# Microsoft gives 28 KB as the most a webhook message may hold. What counts
+# toward it is not spelled out, so the whole request stays well inside it.
+_TEAMS_MAX_BYTES = 24_000
+_TEAMS_SHORTENED = "\n\n(This message was shortened.)"
+
+
+def _teams_address_problem(url: str) -> str:
+    """Why ``url`` cannot be used as a Teams webhook address, in words for an
+    administrator, or "" when it can. The address itself is never quoted."""
     if not url:
-        return False
+        return "No Teams webhook address is set."
+    from urllib.parse import urlsplit
+
     try:
-        import httpx
-
-        from .governed_http import guarded_sender
-
-        resp = guarded_sender(httpx.post)(
-            url,
-            # allowed_mentions parse:[] so an agent-controlled title/body
-            # containing @everyone/@here can't trigger a mass ping.
-            json={
-                "content": f"**{title}**\n{body}",
-                "allowed_mentions": {"parse": []},
-            },
-            timeout=10.0,
-        )
-        return _response_accepted(resp.status_code)
-    except Exception as e:
-        # The webhook URL IS the secret here, and httpx embeds the request URL
-        # in str(e); log the exception TYPE only so a failed POST can't write the
-        # full secret URL to the logs.
-        mark_transport_failure(e)
-        log.warning("notify discord failed: %s", type(e).__name__)
-        return False
+        parts = urlsplit(url)
+        scheme, host, _port = parts.scheme.lower(), (parts.hostname or "").lower(), parts.port
+    except ValueError:
+        scheme = host = ""
+    if scheme not in ("http", "https") or not host:
+        return "The Teams webhook address is not a web address."
+    # The address is the credential, so it only travels encrypted. Plain HTTP
+    # is left for an address on this machine, which never crosses a network.
+    if scheme == "http" and host not in ("localhost", "127.0.0.1", "::1"):
+        return "The Teams webhook address must start with https://."
+    return ""
 
 
-def _send_slack(title: str, body: str, url: str) -> bool:
-    if not url:
-        return False
+def _teams_target(url: str) -> str:
+    """``url`` without a port that only repeats the default. Microsoft's own
+    example addresses end the host in ``:443``; other HTTP clients leave that
+    out of the host they name in the request, and so does this one."""
+    from urllib.parse import urlsplit, urlunsplit
+
+    parts = urlsplit(url)
+    if parts.port != {"https": 443, "http": 80}.get(parts.scheme.lower()):
+        return url
+    return urlunsplit(parts._replace(netloc=parts.netloc.rsplit(":", 1)[0]))
+
+
+def _teams_text(value: str) -> str:
+    """``value`` as card text. Teams reads card text as Markdown, so square
+    brackets become round ones: text an agent chose can then never show as a
+    link with a hidden target. A line break only shows after a blank line."""
+    plain = str(value or "").encode("utf-8", "replace").decode("utf-8")
+    plain = plain.replace("[", "(").replace("]", ")")
+    return "\n\n".join(line.strip() for line in plain.splitlines() if line.strip())
+
+
+def _teams_message(title: str, body: str) -> bytes:
+    """The request Microsoft documents for a Workflows webhook ("When a Teams
+    webhook request is received"): a ``message`` carrying one Adaptive Card.
+    A long body is cut so the request stays inside the size limit."""
+    import json
+
+    heading = _teams_text(title)[:200]
+
+    def encode(text: str) -> bytes:
+        blocks = [{"type": "TextBlock", "text": heading, "weight": "Bolder", "size": "Medium", "wrap": True}]
+        if text:
+            blocks.append({"type": "TextBlock", "text": text, "wrap": True})
+        card = {"$schema": "http://adaptivecards.io/schemas/adaptive-card.json", "type": "AdaptiveCard",
+                "version": "1.2", "body": blocks}
+        message = {"type": "message", "attachments": [{
+            "contentType": "application/vnd.microsoft.card.adaptive", "contentUrl": None, "content": card}]}
+        return json.dumps(message, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+    text = _teams_text(body)
+    whole = encode(text)
+    if len(whole) <= _TEAMS_MAX_BYTES:
+        return whole
+    low, high = 0, len(text)
+    while low < high:  # the longest start of the text that still fits
+        middle = (low + high + 1) // 2
+        if len(encode(text[:middle] + _TEAMS_SHORTENED)) <= _TEAMS_MAX_BYTES:
+            low = middle
+        else:
+            high = middle - 1
+    return encode(text[:low] + _TEAMS_SHORTENED)
+
+
+def _teams_failure(exc: BaseException, *, requested: bool) -> None:
+    """Record why a Teams send raised, in words that hold no address.
+    ``requested`` says whether the request had been handed to the HTTP client."""
+    from .enterprise import EgressBlocked
+    from .tools._ssrf import BlockedHost
+
+    if isinstance(exc, BlockedHost):
+        _not_sent("The Teams webhook address could not be found on the public internet, so nothing was sent.",
+                  retry=False)
+    elif isinstance(exc, EgressBlocked):
+        _not_sent("The outbound network rules do not allow the Teams webhook address, so nothing was sent.",
+                  retry=False)
+    elif not requested:
+        _not_sent("The request to Teams could not be prepared on this server, so nothing was sent.")
+    else:
+        mark_transport_failure(exc)
+
+
+def _send_teams(title: str, body: str, url: str) -> bool:
+    """Post one card to a Teams channel through its Workflows webhook. The
+    address passes the outbound guards first (a public address, a connection
+    pinned to it, the outbound policy) and no redirect is followed. Never
+    raises."""
+    hide = _secret_address.set(True)
+    requested = False
     try:
-        import httpx
-
         from .governed_http import guarded_sender
-        from .slack_interactive import _slack_literal
-        raw = f"{title}\n{body}"
-        if len(raw) > 145000:
-            log.warning("notify slack failed: message exceeds Slack block limits")
-            return False
-        message = _slack_literal(raw)
-        blocks = [{"type": "section", "text": {"type": "plain_text", "text": raw[i:i + 2900], "emoji": False}}
-                  for i in range(0, len(raw), 2900)]
-        resp = guarded_sender(httpx.post)(
-            url,
-            json={"text": message, "blocks": blocks, "mrkdwn": False, "parse": "none", "link_names": False},
-            timeout=10.0,
-        )
-        return _response_accepted(resp.status_code)
-    except Exception as e:
-        # The webhook URL IS the secret (see _send_discord); log type only.
-        mark_transport_failure(e)
-        log.warning("notify slack failed: %s", type(e).__name__)
+        from .tools._ssrf import safe_client
+
+        url = _teams_target(url)
+        message = _teams_message(title, body)
+        with safe_client(url, timeout=_TEAMS_TIMEOUT) as client:
+            def post(target: str, **request) -> int:
+                # Only the status is needed, and the receiver chooses how long
+                # its reply is: stop reading once the status has arrived.
+                with client.stream("POST", target, **request) as reply:
+                    return reply.status_code
+
+            requested = True
+            status = guarded_sender(post)(url, content=message, headers={"Content-Type": "application/json"})
+        return _response_accepted(status)
+    except Exception as e:  # noqa: BLE001 -- a send never raises into its caller
+        # The address IS the secret, and both the HTTP client and the outbound
+        # guards put it (or its host) in str(e): log the exception TYPE only.
+        _teams_failure(e, requested=requested)
+        log.warning("notify teams failed: %s", type(e).__name__)
         return False
+    finally:
+        _secret_address.reset(hide)
 
 
 _EMAIL_TLS_MODES = ("starttls", "ssl", "none")
 _EMAIL_TIMEOUT = 15.0
+
+
+def _setting_text(value: object) -> str:
+    """A saved text setting, or "" for anything else: an unresolved reference,
+    a number, a table. A setting typed wrongly must not raise into a send."""
+    return (_resolve_env_ref(value) or "").strip() if isinstance(value, str) else ""
+
+
+def _recipients(value: object) -> str:
+    """The ``to`` setting as one address line; several recipients may be
+    written as a list."""
+    values = value if isinstance(value, (list, tuple)) else [value]
+    return ", ".join(filter(None, (_setting_text(item) for item in values)))
+
+
+def _sender_domain(address: str) -> str:
+    """The domain of a ``Name <user@domain>`` sending address, or "" when it
+    has none that is safe to put in a message header."""
+    from email.utils import parseaddr
+
+    domain = parseaddr(address)[1].rpartition("@")[2]
+    return domain if domain.isascii() and domain.replace("-", "").replace(".", "").isalnum() else ""
+
+
+def _smtp_failure(exc: BaseException) -> str:
+    """Why the mail server did not take a message, in words that hold no
+    address, user name or password (an SMTP error can echo all three)."""
+    import smtplib
+    import ssl
+
+    if isinstance(exc, smtplib.SMTPAuthenticationError):
+        return "The mail server did not accept the user name and password."
+    if isinstance(exc, smtplib.SMTPRecipientsRefused):
+        return "The mail server refused the address set to receive alerts."
+    if isinstance(exc, smtplib.SMTPSenderRefused):
+        return "The mail server refused the sending address."
+    if isinstance(exc, ssl.SSLError):
+        return ("A secure connection to the mail server could not be set up. "
+                "Check the tls setting and the server's certificate.")
+    if isinstance(exc, smtplib.SMTPNotSupportedError):
+        return ("The mail server does not offer the sign-in or encryption these settings ask for. "
+                "Check the tls, user and password settings.")
+    if isinstance(exc, smtplib.SMTPResponseException):
+        return "The mail server answered but did not take the message."
+    return "The mail server could not be reached, or it closed the connection."
 
 
 def _email_config(cfg: dict | None = None) -> dict:
@@ -283,13 +343,13 @@ def _email_config(cfg: dict | None = None) -> dict:
         tls = "starttls"
     saved_password = _resolve_env_ref(raw.get("password")) if isinstance(raw.get("password"), str) else None
     return {
-        "host": str(_resolve_env_ref(raw.get("host")) or "").strip(),
+        "host": _setting_text(raw.get("host")),
         "port": port,
-        "user": str(_resolve_env_ref(raw.get("user")) or "").strip(),
+        "user": _setting_text(raw.get("user")),
         "password": get_secret_or_saved("MAVERICK_SMTP_PASSWORD", saved_password) or "",
-        "from_address": str(_resolve_env_ref(raw.get("from_address")) or "").strip(),
+        "from_address": _setting_text(raw.get("from_address")),
         "tls": tls,
-        "to": str(_resolve_env_ref(raw.get("to")) or "").strip(),
+        "to": _recipients(raw.get("to")),
     }
 
 
@@ -347,7 +407,7 @@ def send_email(to: str, subject: str, text_body: str, *, html_body: str | None =
     message["To"] = recipient
     message["Subject"] = " ".join(str(subject or "Second Shift").split())[:200]
     message["Date"] = formatdate(localtime=True)
-    message["Message-ID"] = make_msgid(domain="lightwork.local")
+    message["Message-ID"] = make_msgid(domain=_sender_domain(mail["from_address"]) or "second-shift.local")
     # One-click unsubscribe (RFC 8058) and similar list headers; values are
     # links Second Shift made, never message content.
     for name, value in (headers or {}).items():
@@ -374,68 +434,94 @@ def send_email(to: str, subject: str, text_body: str, *, html_body: str | None =
                                            smtplib.SMTPDataError))
         if on_the_wire and not refused_by_server:
             _network_unknown()
+        else:
+            _not_sent(_smtp_failure(e))
         log.warning("notify email failed: %s", type(e).__name__)
         return False
 
-def _legacy_url(section: dict, backend: str):
-    # Older installers wrote ``webhook_url`` next to a single backend.
-    return section.get("webhook_url") if section.get("backend") == backend else None
+def _email_problem(cfg: dict | None = None) -> str:
+    """Why a notification cannot be emailed with the current settings, in
+    words for an administrator, or "" when it can."""
+    mail = _email_config(cfg)
+    if not mail["to"]:
+        return "No email address is set to receive alerts."
+    if "@" not in mail["to"]:
+        return "The email address set to receive alerts is not valid."
+    if mail["host"] and mail["from_address"]:
+        return ""
+    from .mailer import unavailable_reason
 
-def _ntfy_topic(cfg: dict) -> str | None:
-    # ``topic`` is what older installers wrote; keep honouring it.
-    return (_resolve_env_ref(cfg.get("ntfy_topic") or cfg.get("topic"))
-            or os.environ.get("MAVERICK_NTFY_TOPIC"))
+    # No complete alert server: the platform mail account carries the message.
+    reason = unavailable_reason()
+    if not reason:
+        return ""
+    if reason != "no sending account configured":
+        return "Email sending is turned off, or its settings could not be read."
+    if mail["host"] or mail["from_address"]:
+        return "The alert mail settings are incomplete: both host and from_address are needed."
+    return "No mail server is set up to send alerts."
+
+def backend_status(backend: str, cfg: dict | None = None) -> dict:
+    """Whether ``backend`` has what it needs to send, for a settings or status
+    page: ``ready``, and the plain ``problem`` when it is not. It holds no
+    secret: a webhook address is reported only as set or not set, while an
+    email recipient is shown."""
+    section = _load_config() if cfg is None else cfg
+    if backend == "teams":
+        url = _webhook_url(section, "teams")
+        problem = _teams_address_problem(url)
+        return {"channel": "teams", "ready": not problem, "problem": problem, "webhook_set": bool(url)}
+    if backend == "email":
+        problem = _email_problem(section)
+        return {"channel": "email", "ready": not problem, "problem": problem,
+                "recipient": _email_config(section)["to"]}
+    return {"channel": backend, "ready": False, "problem": _NOT_A_BACKEND}
 
 
 # The configuration key and environment variable of each webhook backend. The
 # key names are spelled out so the settings catalog can prove they are read here.
 _WEBHOOKS = {
-    "discord": ("discord_webhook", "DISCORD_NOTIFY_WEBHOOK_URL"),
-    "slack": ("slack_webhook", "SLACK_NOTIFY_WEBHOOK_URL"),
+    "teams": ("teams_webhook", "TEAMS_NOTIFY_WEBHOOK_URL"),
 }
 
 
 def _webhook_url(cfg: dict, backend: str) -> str:
-    """The saved or environment webhook URL of a ``discord`` / ``slack`` backend."""
+    """The saved or environment webhook address of the ``teams`` backend. It is
+    a secret: callers send to it and never log, store or return it."""
     key, env_name = _WEBHOOKS[backend]
-    return (_resolve_env_ref(cfg.get(key) or _legacy_url(cfg, backend))
-            or os.environ.get(env_name) or "")
+    return _setting_text(cfg.get(key)) or os.environ.get(env_name, "").strip()
 
 
 def _dispatch(backend: str, *, cfg: dict, title: str, body: str, priority: str) -> bool:
-    if backend == "ntfy":
-        server = _resolve_env_ref(cfg.get("ntfy_server")) or "https://ntfy.sh"
-        topic = _ntfy_topic(cfg)
-        if not topic:
-            log.debug("notify ntfy: no topic configured")
-            return False
-        return _send_ntfy(title, body, priority, server, topic)
-    if backend == "pushover":
-        return _send_pushover(title, body, priority, cfg)
-    if backend == "discord":
-        return _send_discord(title, body, _webhook_url(cfg, "discord"))
-    if backend == "slack":
-        return _send_slack(title, body, _webhook_url(cfg, "slack"))
+    if backend == "teams":
+        url = _webhook_url(cfg, "teams")
+        problem = _teams_address_problem(url)
+        return _not_sent(problem) if problem else _send_teams(title, body, url)
     if backend == "email":
-        mail = _email_config(cfg)
-        if not mail["to"]:
-            log.debug("notify email: no [notifications.email] to address configured")
-            return False
-        return send_email(mail["to"], title, body, cfg=cfg)
+        problem = _email_problem(cfg)
+        return _not_sent(problem) if problem else send_email(_email_config(cfg)["to"], title, body, cfg=cfg)
     log.warning("notify: unknown backend %r", backend)
-    return False
+    return _not_sent(_NOT_A_BACKEND, retry=False)
+
+def _is_backend_name(text: str) -> bool:
+    """Whether ``text`` looks like a backend name at all. Names are typed by
+    hand, and anything else found in their place (an address pasted into the
+    wrong setting, say) must not travel on into a log line or a delivery
+    record."""
+    return 0 < len(text) <= 32 and text.isascii() and text.replace("-", "").replace("_", "").isalnum()
+
 
 def _requested(cfg: dict, backends: list[str] | None) -> list[str]:
     # Normalize: backend names are user-typed (config/TOML or the `backends`
-    # arg) and matched case-sensitively in _dispatch ("ntfy"/"discord"/...), so
-    # "Discord" / "Ntfy" / "None" would otherwise dispatch to no handler or
+    # arg) and matched case-sensitively in _dispatch ("teams"/"email"), so
+    # "Teams" / "Email" / "None" would otherwise dispatch to no handler or
     # skip the "none" filter -- a user who configured notifications silently
-    # gets none. Lowercase + strip; drop empties and the "none" sentinel.
-    return [
-        b.strip().lower()
-        for b in (backends or [cfg.get("backend", "ntfy")])
-        if isinstance(b, str) and b.strip().lower() not in ("", "none")
-    ]
+    # gets none. Lowercase + strip; drop the "none" sentinel and anything that
+    # is not a name. With nothing configured the backend is "none".
+    if isinstance(backends, str):  # one name, not its letters
+        backends = [backends]
+    names = [b.strip().lower() for b in (backends or [cfg.get("backend", "none")]) if isinstance(b, str)]
+    return [b for b in names if b != "none" and _is_backend_name(b)]
 
 
 def _admit(cfg, requested, event, delivery_kind, retry):
@@ -525,7 +611,7 @@ def notify(
     """Queue a notification. Async returns accepted queue count, never proof of delivery.
 
     ``priority`` is one of: low / default / high / max.
-    ``backends`` overrides config (e.g. ['ntfy']). None = use config.
+    ``backends`` overrides config (e.g. ['teams']). None = use config.
     ``async_dispatch=False`` runs synchronously (mainly for tests).
     ``batch`` lets opt-in **notification batching** coalesce low/normal-priority
     pushes (``[notifications] batch_window_seconds``); high/urgent always go

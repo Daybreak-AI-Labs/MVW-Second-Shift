@@ -1470,6 +1470,10 @@ def get_external_agents() -> dict:
         # (fail closed — this is a tightening switch).
         "mint_approval": _strict_config_bool(
             cfg, "mint_approval", False, invalid=True),
+        # Whether a person deciding a parked action is shown the agent's own
+        # description of it (shortened, secrets removed). Off keeps the
+        # request content-free: agent, action name and risk only.
+        "show_request_detail": coerce_bool(cfg.get("show_request_detail"), True),
     }
 
 

@@ -120,7 +120,7 @@ def _issued_by_a_signed_in_person(principal) -> bool:
     """
     claims = getattr(principal, "claims", None) or {}
     return (claims.get("via") == "api_key"
-            or getattr(principal, "issuer", "") == "lightwork:paired-device")
+            or getattr(principal, "issuer", "") == "second-shift:paired-device")
 
 
 def enforce_session_policy(principal) -> None:

@@ -53,7 +53,7 @@ log = logging.getLogger(__name__)
 #: Domain-separated, versioned message prefix for the Ed25519 request scheme,
 #: so a request signature can never double as a handoff/approval/federation
 #: signature (mirrors ``approval_signing.APPROVAL_MESSAGE_VERSION``).
-ENVELOPE_MESSAGE_VERSION = "lightwork-external-request-v1"
+ENVELOPE_MESSAGE_VERSION = "second-shift-external-request-v1"
 ENVELOPE_MAX_AGE_SECONDS = 300.0
 ENVELOPE_CLOCK_SKEW_SECONDS = 60.0
 HMAC_MAX_AGE_SECONDS = 300

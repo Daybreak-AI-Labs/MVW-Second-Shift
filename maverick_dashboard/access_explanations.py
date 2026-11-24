@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 
-def role(principal, *, installation=False, without_explicit=False):
+def role(principal, *, installation=False, without_explicit=False, request=None):
     from maverick.paths import current_tenant_id
 
     from . import auth, rbac, scim_groups, strict_reads
@@ -30,6 +30,11 @@ def role(principal, *, installation=False, without_explicit=False):
         return {"role": None, "source": "Sign-in group policy unavailable", "owner": "Identity or installation administrator"}
     if group:
         return {"role": group, "source": "Verified sign-in group mapping", "owner": "Identity or installation administrator"}
+    from . import sign_in_roles
+
+    claim = sign_in_roles.for_request(request, principal)
+    if claim:
+        return {"role": claim, "source": "Verified sign-in app role", "owner": "Identity or installation administrator"}
     if rbac.tenant_role_scope_initialized():
         from maverick.paths import tenant_by_user_enabled
 
@@ -43,7 +48,7 @@ def denial(request, permission, *, installation=False):
     from . import auth
     from .identity_format import role_label
     try:
-        current = role(auth._authorization_principal(request), installation=installation)
+        current = role(auth._authorization_principal(request), installation=installation, request=request)
         name = role_label(current["role"]) if current["role"] else "No active role"
         return (f"Your {name} role from {current['source'].lower()} does not allow {permission}. "
                 f"Ask your {current['owner'].lower()} to review access. Account shows your current permissions; Permission requests lets you ask the policy owner for review.")

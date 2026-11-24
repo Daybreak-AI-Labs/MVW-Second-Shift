@@ -35,6 +35,8 @@ import logging
 import os
 from typing import Any
 
+from ..config_contracts import CHOICE_SETTINGS
+
 log = logging.getLogger(__name__)
 
 
@@ -112,6 +114,91 @@ def _base_approvals(val: object, risk: str | None) -> int:
     return _configured_quorum(val, "approvals_required")
 
 
+def allow_self_approval() -> bool:
+    """Whether the requester may approve their own request. Default **False**
+    (segregation of duties). ``MAVERICK_ALLOW_SELF_APPROVAL`` env wins over
+    ``[security] allow_self_approval``."""
+    env = os.environ.get("MAVERICK_ALLOW_SELF_APPROVAL")
+    if env is not None and env.strip() != "":
+        return env.strip().lower() in {"1", "true", "yes", "on"}
+    v = _security_cfg().get("allow_self_approval")
+    if isinstance(v, str):
+        return v.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(v)
+
+
+def person_key(principal: object) -> str:
+    """One person's identity for quorum counting and the requester bar:
+    Unicode compatibility-normalised (NFKC: full-width letters, ligatures),
+    case folded and whitespace collapsed, so ``user:Alice``, ``user:alice``
+    and ``user:Ａｌｉｃｅ`` are one person (never two votes, never "someone else")."""
+    import unicodedata
+
+    text = unicodedata.normalize("NFKC", str(principal or "")).casefold()
+    return " ".join(unicodedata.normalize("NFKC", text).split())
+
+
+def distinct_people(principals) -> int:
+    """How many different people (by :func:`person_key`) are in ``principals``."""
+    return len({key for key in map(person_key, principals) if key})
+
+
+def includes_person(principals, who: object) -> bool:
+    """Whether ``who`` (by :func:`person_key`) is among ``principals``."""
+    key = person_key(who)
+    return bool(key) and any(person_key(p) == key for p in principals or ())
+
+
+SEPARATE_APPROVER_MODES = CHOICE_SETTINGS["approval.separate_approver"].options
+_SEPARATE_APPROVER_RISKS = frozenset({"high", "critical"})
+
+
+def separate_approver_mode() -> str:
+    """Who approves a high or critical risk action the requester asked for.
+
+    ``[approval] separate_approver``:
+
+    * ``"when_available"`` (default) -- someone else, whenever at least one
+      other person could decide the request; where the requester is the only
+      one who can, they may approve it themselves (recorded as a self-approval).
+    * ``"always"`` -- someone else, even if nobody else can: the request then
+      waits and expires, which refuses the action.
+    * ``"never"`` -- the requester may approve it.
+
+    ``MAVERICK_SEPARATE_APPROVER`` wins. A value this module does not know is
+    treated as ``"always"``, so a typo never loosens the rule."""
+    env = os.environ.get(CHOICE_SETTINGS["approval.separate_approver"].dashboard_env[0], "").strip().lower()
+    if env:
+        return env if env in SEPARATE_APPROVER_MODES else "always"
+    try:
+        from ..config import load_config
+
+        raw = ((load_config() or {}).get("approval") or {}).get("separate_approver")
+    except Exception:  # pragma: no cover -- config never blocks a request
+        raw = None
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return CHOICE_SETTINGS["approval.separate_approver"].default
+    value = str(raw).strip().lower()
+    return value if value in SEPARATE_APPROVER_MODES else "always"
+
+
+def separate_approver_applies(risk: str | None, approvals_required: object = 1) -> bool:
+    """Whether :func:`separate_approver_mode` governs a request.
+
+    High or critical risk with one approver. With two or more, distinct people
+    approve anyway, and :func:`allow_self_approval` alone decides whether the
+    requester's vote counts as one of them."""
+    return (str(risk or "").strip().lower() in _SEPARATE_APPROVER_RISKS
+            and _coerce_int(approvals_required, 1) <= 1)
+
+
 __all__ = [
+    "SEPARATE_APPROVER_MODES",
+    "allow_self_approval",
+    "distinct_people",
+    "includes_person",
+    "person_key",
     "required_approvals",
+    "separate_approver_applies",
+    "separate_approver_mode",
 ]

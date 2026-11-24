@@ -18,21 +18,11 @@ from __future__ import annotations
 
 import hashlib
 import json
-import logging
 import math
-import threading
-import time
 from dataclasses import dataclass, field
 
-from ..file_lock import (
-    atomic_read_text,
-    atomic_write_text,
-    cross_process_lock,
-    ensure_private_directory,
-)
-from ..paths import _tenant_namespace_key, bind_tenant_namespace, canonical_tenant_id, maverick_home
-
-log = logging.getLogger(__name__)
+from ..file_lock import atomic_read_text
+from ..paths import _tenant_namespace_key, canonical_tenant_id, maverick_home
 
 ACTIVE = "active"
 SUSPENDED = "suspended"
@@ -49,29 +39,15 @@ BILLING_CURRENT = "current"
 BILLING_PAST_DUE = "past_due"
 _BILLING_STATUSES = frozenset({BILLING_CURRENT, BILLING_PAST_DUE})
 
-# A newly provisioned tenant has no daily spend cap unless one is chosen
-# (``0`` means no cap). Administrators set workspace and per-person limits in
-# Admin > Spending limits (maverick.spending_limits) or a daily cap here.
-DEFAULT_TENANT_DAILY_DOLLARS = 0.0
-
 # Upper bound on each per-tenant feature-override list. A control-plane roster
 # edited by an operator should never carry an unbounded blob; a plan has only a
 # handful of features and the catalog a few dozen, so 200 is generous headroom
 # while keeping the record small.
 MAX_FEATURE_OVERRIDES = 200
 
-# Serializes the roster load-modify-save across threads in this process; the
-# cross_process_lock below extends that across processes (the registry is edited
-# from both the CLI and the dashboard, which are separate processes).
-_REGISTRY_LOCK = threading.Lock()
-
 
 class TenantRegistryError(RuntimeError):
     """Tenant control-plane state exists but cannot be trusted."""
-
-
-def _registry_path():
-    return maverick_home() / "tenant_registry.json"
 
 
 def _retirement_path(tenant_id: str):
@@ -291,46 +267,6 @@ def _normalize_feature_overrides(add: object, remove: object) -> dict[str, list[
     return {"add": add_list, "remove": remove_list}
 
 
-def _load() -> dict[str, TenantRecord]:
-    from ..file_lock import ensure_private_file
-
-    ensure_private_directory(maverick_home())
-    path = _registry_path()
-    ensure_private_directory(path.parent)
-    if not path.exists():
-        return {}
-    try:
-        ensure_private_file(path)
-        raw = _decode_json(atomic_read_text(path), label="tenant registry")
-    except TenantRegistryError:
-        raise
-    except OSError as exc:
-        raise TenantRegistryError(f"tenant registry unreadable: {exc}") from exc
-    if not isinstance(raw, dict) or not isinstance(raw.get("tenants"), list):
-        raise TenantRegistryError(
-            "tenant registry corrupt: top-level object must contain a tenants list"
-        )
-    out: dict[str, TenantRecord] = {}
-    namespace_owners: dict[str, str] = {}
-    for d in raw["tenants"]:
-        try:
-            rec = TenantRecord.from_dict(d)
-        except (TypeError, ValueError) as exc:
-            raise TenantRegistryError(f"tenant registry corrupt: {exc}") from exc
-        if rec.id in out:
-            raise TenantRegistryError(f"tenant registry corrupt: duplicate tenant {rec.id!r}")
-        namespace_key = _tenant_namespace_key(rec.id)
-        prior = namespace_owners.get(namespace_key)
-        if prior is not None and prior != rec.id:
-            raise TenantRegistryError(
-                "tenant registry corrupt: tenant ids "
-                f"{prior!r} and {rec.id!r} alias the same filesystem namespace"
-            )
-        namespace_owners[namespace_key] = rec.id
-        out[rec.id] = rec
-    return out
-
-
 def _decode_json(raw: str, *, label: str) -> object:
     def _reject_constant(value: str):
         raise ValueError(f"non-finite number {value!r}")
@@ -349,176 +285,13 @@ def _decode_json(raw: str, *, label: str) -> object:
         raise TenantRegistryError(f"{label} corrupt: {exc}") from exc
 
 
-def _save(records: dict[str, TenantRecord]) -> None:
-    payload = {"tenants": [records[k].to_dict() for k in sorted(records)]}
-    # Atomic temp+replace (0600): a bare O_TRUNC write truncates in place, so a
-    # concurrent _load()/is_active() reader sees a half-written file -> its
-    # JSONDecodeError is swallowed as an EMPTY roster, which spuriously refuses a
-    # legitimately-active tenant. Each mutator also holds _REGISTRY_LOCK +
-    # cross_process_lock across the whole load-modify-save so two edits (e.g. a
-    # suspend racing a set_quota) can't have the second save clobber the first.
-    atomic_write_text(
-        _registry_path(),
-        json.dumps(payload, indent=2, sort_keys=True),
-    )
-
-
-def _locked(*, strict: bool = False):
-    """Serialize a roster load-modify-save in-process AND cross-process.
-
-    ``strict=True`` is used when a roster read participates in an admission
-    transaction.  On a filesystem without a real process lock, admission must
-    fail closed instead of racing a control-plane cap change.
-    """
-    from contextlib import ExitStack
-
-    from ..authority_effects import authority_effect_fence
-
-    ensure_private_directory(maverick_home())
-    ensure_private_directory(_registry_path().parent)
-    with ExitStack() as stack:
-        stack.enter_context(authority_effect_fence())
-        stack.enter_context(_REGISTRY_LOCK)
-        stack.enter_context(cross_process_lock(_registry_path(), strict=strict))
-        # Admission paths that already hold the roster (provider_admission)
-        # must be able to repair the default tenant without re-locking: the
-        # lock is not re-entrant and the flock would block the same process.
-        _LOCK_STATE.held = True
-        stack.callback(setattr, _LOCK_STATE, "held", False)
-        return stack.pop_all()
-
-
-_LOCK_STATE = threading.local()
-
-
-def _roster_locked_by_this_thread() -> bool:
-    return bool(getattr(_LOCK_STATE, "held", False))
-
-
-#: Roster label for the tenant a deployment ran in before it had workspaces.
-DEFAULT_WORKSPACE_DISPLAY_NAME = "Default workspace"
-
-
-def _default_record(records: dict[str, TenantRecord]) -> TenantRecord | None:
-    """A fresh active row for the implicit default tenant, or ``None`` when the
-    deployment has no binding or the roster already lists it. Caller holds the
-    registry lock."""
-    from ..paths import implicit_tenant_id
-
-    try:
-        tid = _lookup_id(implicit_tenant_id())
-    except Exception:
-        return None
-    if not tid or tid in records:
-        return None
-    namespace_key = _tenant_namespace_key(tid)
-    if any(_tenant_namespace_key(existing) == namespace_key for existing in records):
-        return None
-    try:
-        bind_tenant_namespace(tid)
-        from ..workspace import Workspace
-        ensure_private_directory(Workspace(tid).root)
-    except Exception as exc:
-        log.error("default tenant %r could not be provisioned: %s", tid, exc)
-        return None
-    now = time.time()
-    return TenantRecord(
-        id=tid, status=ACTIVE, plan="free",
-        display_name=DEFAULT_WORKSPACE_DISPLAY_NAME,
-        max_daily_dollars=DEFAULT_TENANT_DAILY_DOLLARS,
-        created_at=now, updated_at=now,
-    )
-
-
-def _audit_default_registered(tenant_id: str, *, trigger: str, actor: str = "system") -> None:
-    from ..audit import EventKind, audit_event
-
-    audit_event(
-        EventKind.TENANT_DEFAULT_REGISTERED, agent="system", _global=True,
-        actor=actor, tenant=tenant_id, trigger=trigger,
-    )
-
-
-def ensure_default_tenant_registered(*, actor: str = "system") -> TenantRecord | None:
-    """Repair an install whose roster predates the default-tenant rule.
-
-    When a roster exists but lacks the deployment's implicit default tenant,
-    add it as active and write an audit event. Returns the new record, or
-    ``None`` when nothing needed doing (no roster, no binding, already
-    listed, or paused on purpose). Safe to call on every startup or admission.
-    """
-    if not _registry_path().exists():
-        return None
-
-    def _register() -> TenantRecord | None:
-        records = _load()
-        default = _default_record(records)
-        if default is not None:
-            records[default.id] = default
-            _save(records)
-        return default
-
-    if _roster_locked_by_this_thread():
-        default = _register()
-    else:
-        with _locked():
-            default = _register()
-    if default is None:
-        return None
-    _audit_default_registered(default.id, trigger="repair", actor=actor)
-    log.warning("tenant registry: registered the default workspace %r so it "
-                "keeps running alongside the named workspaces", default.id)
-    return default
-
-
-def _is_implicit_default(tid: str) -> bool:
-    from ..paths import implicit_tenant_id
-
-    try:
-        return bool(tid) and _lookup_id(implicit_tenant_id()) == tid
-    except Exception:
-        return False
-
-
-def is_active(tenant_id: str | None) -> bool:
-    """Whether a tenant may do work.
-
-    The registry is opt-in: before any roster or deletion history exists, named tenants are
-    accepted for single-tenant and unprovisioned deployments. Once a roster
-    exists, only provisioned active tenants may do work; unknown tenant IDs
-    include deleted tenants and are refused.
-    """
-    tid = _lookup_id(tenant_id)
-    if not tid:
-        return True
-    try:
-        if _retired(tid):
-            return False
-        rec = _load().get(tid)
-    except TenantRegistryError:
-        return False
-    if rec is None:
-        if not _registry_path().exists():
-            return True
-        if _is_implicit_default(tid):
-            try:
-                rec = ensure_default_tenant_registered()
-            except Exception:
-                return False
-            return rec is not None and rec.active
-        return False
-    return rec.active
-
-
 __all__ = [
     "ACTIVE",
     "SUSPENDED",
-    "DEFAULT_TENANT_DAILY_DOLLARS",
     "MAX_FEATURE_OVERRIDES",
     "TenantRecord",
     "BILLING_CURRENT",
     "BILLING_PAST_DUE",
     "TenantRegistryError",
     "tenant_retired",
-    "is_active",
 ]

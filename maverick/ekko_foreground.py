@@ -212,7 +212,7 @@ class LinuxX11ForegroundObserver(_Transitions):
             context = multiprocessing.get_context("spawn")  # never fork a threaded dashboard
             self._connection, child = context.Pipe()
             self._process = context.Process(target=_x11_reader,
-                args=(child, os.environ["DISPLAY"]), daemon=True, name="lightwork-ekko-x11")
+                args=(child, os.environ["DISPLAY"]), daemon=True, name="second-shift-ekko-x11")
             try:
                 self._process.start()
                 child.close()

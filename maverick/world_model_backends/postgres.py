@@ -46,6 +46,7 @@ from ..event_admission import (
 from ..goal_mutations import SCHEMA as _GOAL_MUTATION_SCHEMA
 from ..metadata_history import POSTGRES_INDEXES as _HISTORY_INDEXES
 from ..personal_alert_revisions import POSTGRES_MIGRATION as _PERSONAL_ALERT_MIGRATION
+from ..safety.dual_control import distinct_people, person_key
 from ..webhook_subscriptions import POSTGRES_SCHEMA as _WEBHOOK_SUBSCRIPTION_SCHEMA_PG
 
 log = logging.getLogger(__name__)
@@ -1151,6 +1152,20 @@ def _tenant_scope(column: str = "tenant_id") -> tuple[str, list]:
     return f"({column} = %s OR {column} IS NULL)", [t]
 
 
+def _approval_outbox_scope(column: str = "tenant_id") -> tuple[str, list]:
+    """Exact tenant predicate for newly stamped approval-audit rows.
+
+    Unlike compatibility reads of legacy root tables, an active tenant must
+    never inherit a legacy/null outbox event. Every v30 write has an explicit
+    tenant value (or deliberately unbound ``NULL`` in legacy single-tenant
+    mode), so exact matching is both safe and lossless.
+    """
+    tenant = _active_tenant()
+    if tenant is None:
+        return f"{column} IS NULL", []
+    return f"{column} = %s", [tenant]
+
+
 def _mutation_tenant_scope(column: str = "tenant_id") -> tuple[str, list]:
     """Exact tenant predicate for ordinary writes and deletes.
 
@@ -1279,6 +1294,20 @@ def _dec_approval_row(r):
                     r[14] if len(r) > 14 else None,
                     r[15] if len(r) > 15 else "",
                     r[16] if len(r) > 16 else None)
+
+
+def _dec_approval_audit_row(r):
+    from ..world_records import ApprovalAuditEvent
+
+    return ApprovalAuditEvent(
+        event_id=str(r[0]),
+        approval_id=int(r[1]),
+        status=str(r[2]),
+        decided_by=str(r[3]),
+        final_status=str(r[4]) if r[4] is not None else None,
+        created_at=float(r[5]),
+        delivered_at=float(r[6]) if r[6] is not None else None,
+    )
 
 
 def _connection_kwargs(dsn: str) -> dict:
@@ -2536,6 +2565,439 @@ class PostgresWorldModel:
             )
             rows = cur.fetchall()
         return [int(row[0]) for row in rows]
+
+    def pending_approvals(self) -> list:
+        frag, params = _tenant_scope()
+        sql = (
+            "SELECT id, action, risk, scope, detail, provenance, status, "
+            "requested_at, decided_at, claimed_by, claimed_at, decided_by, "
+            "approvals_required, requested_by, goal_id, department, undo_hold, "
+            "tenant_id IS NULL "
+            "FROM approvals WHERE status = 'pending'"
+        )
+        if frag:
+            sql += " AND " + frag
+        sql += " ORDER BY id"
+        with self._tx() as cur:
+            cur.execute(sql, tuple(params))
+            rows = cur.fetchall()
+        return [_dec_approval_row(r) for r in rows]
+
+    def approval_audit_event_id(
+        self,
+        approval_id: int,
+        status: str,
+        decided_by: str,
+    ) -> str:
+        from ..world_model import _approval_audit_event_id
+
+        with self._tx() as cur:
+            undo_round = self._approval_undo_round(cur, approval_id)
+        return _approval_audit_event_id(
+            _active_tenant(),
+            approval_id,
+            status,
+            (decided_by or "").strip(),
+            undo_round,
+        )
+
+    def _approval_undo_round(self, cur, approval_id: int) -> int:
+        """How many times this approval was undone (mirrors SQLite)."""
+        from ..world_model import APPROVAL_UNDO_STATUS
+
+        outbox_scope, outbox_params = _approval_outbox_scope()
+        cur.execute(
+            "SELECT COUNT(*) FROM approval_audit_outbox "
+            f"WHERE approval_id = %s AND status = %s AND {outbox_scope}",
+            tuple([int(approval_id), APPROVAL_UNDO_STATUS, *outbox_params]),
+        )
+        row = cur.fetchone()
+        return int(row[0]) if row else 0
+
+    def get_approval_audit_event(self, event_id: str):
+        scope, params = _approval_outbox_scope()
+        with self._tx() as cur:
+            cur.execute(
+                "SELECT event_id, approval_id, status, decided_by, final_status, "
+                "created_at, delivered_at FROM approval_audit_outbox "
+                f"WHERE event_id = %s AND {scope}",
+                tuple([str(event_id), *params]),
+            )
+            row = cur.fetchone()
+        return _dec_approval_audit_row(row) if row else None
+
+    def pending_approval_audit_events(
+        self,
+        *,
+        approval_id: int | None = None,
+        limit: int = 100,
+    ) -> list:
+        scope, params = _approval_outbox_scope()
+        sql = (
+            "SELECT event_id, approval_id, status, decided_by, final_status, "
+            "created_at, delivered_at FROM approval_audit_outbox "
+            f"WHERE delivered_at IS NULL AND {scope}"
+        )
+        values: list = list(params)
+        if approval_id is not None:
+            sql += " AND approval_id = %s"
+            values.append(int(approval_id))
+        sql += " ORDER BY created_at, event_id LIMIT %s"
+        values.append(max(1, min(int(limit), 1000)))
+        with self._tx() as cur:
+            cur.execute(sql, tuple(values))
+            rows = cur.fetchall()
+        return [_dec_approval_audit_row(row) for row in rows]
+
+    def approval_has_pending_finalization(self, approval_id: int) -> bool:
+        scope, params = _approval_outbox_scope()
+        with self._tx() as cur:
+            cur.execute(
+                "SELECT 1 FROM approval_audit_outbox "
+                "WHERE approval_id = %s AND final_status IS NOT NULL "
+                f"AND delivered_at IS NULL AND {scope} LIMIT 1",
+                tuple([int(approval_id), *params]),
+            )
+            row = cur.fetchone()
+        return row is not None
+
+    def _require_locked_approval_review(self, cur, approval_id: int, status: str,
+                                        approver: str, event_id: str, review: dict, effect_guard=None) -> None:
+        """Read reviewed card, quorum and content owner under the held row lock."""
+        from ..approval_vote_review import require_locked_vote_review
+        from ..world_model import _single_approver
+
+        approval_scope, approval_params = _mutation_tenant_scope()
+        outbox_scope, outbox_params = _approval_outbox_scope()
+        sql = ("SELECT id, action, risk, scope, detail, provenance, status, requested_at, decided_at, claimed_by, claimed_at, decided_by, approvals_required, requested_by, goal_id, department, undo_hold FROM approvals WHERE id = %s")
+        values = [int(approval_id)]
+        if approval_scope:
+            sql += " AND " + approval_scope
+            values += approval_params
+        cur.execute(sql, tuple(values))
+        locked = cur.fetchone()
+        exact = _dec_approval_row(locked) if locked is not None else None
+        cur.execute("SELECT approver, decision FROM approval_signoffs WHERE approval_id = %s ORDER BY decided_at", (int(approval_id),))
+        approvers = _single_approver(exact, [row[0] for row in cur.fetchall() if row[1] == "approved"]) if exact is not None else []
+        cur.execute(f"SELECT COUNT(*) FROM approval_audit_outbox WHERE approval_id = %s AND delivered_at IS NULL AND {outbox_scope}", tuple([int(approval_id), *outbox_params]))
+        audit_pending = int(cur.fetchone()[0])
+        content_owner = (exact.requested_by or "") if exact is not None else None
+        if exact is not None and exact.goal_id:
+            owner_sql = "SELECT owner,domain FROM goals WHERE id = %s"
+            owner_values = [exact.goal_id]
+            if approval_scope:
+                owner_sql += " AND " + approval_scope
+                owner_values += approval_params
+            cur.execute(owner_sql + " FOR SHARE", tuple(owner_values))
+            source = cur.fetchone()
+            content_owner = (source[0] or "") if source is not None else None
+            source_guard = getattr(effect_guard, "approval_source", None)
+            if source_guard is not None:
+                source_guard(exact.goal_id, content_owner, source[1] if source is not None else None)
+        require_locked_vote_review(exact, review, status=status, actor=approver,
+                                   event_id=event_id, approvers=approvers, audit_pending=audit_pending,
+                                   content_owner=content_owner)
+
+    def decide_approval_audited(
+        self,
+        approval_id: int,
+        status: str,
+        *,
+        decided_by: str,
+        reviewed_card: dict | None = None,
+        effect_guard=None,
+    ):
+        """Atomically accept a vote and queue its signed-audit delivery."""
+        if status not in ("approved", "denied"):
+            raise ValueError("status must be 'approved' or 'denied'")
+        approver = (decided_by or "").strip()
+        if not approver:
+            return None
+
+        from ..world_model import _approval_audit_event_id
+        from ..world_records import ApprovalAuditEvent
+
+        tenant = _active_tenant()
+        approval_scope, approval_params = _mutation_tenant_scope()
+        outbox_scope, outbox_params = _approval_outbox_scope()
+        approval_sql = (
+            "SELECT status, approvals_required, requested_by "
+            "FROM approvals WHERE id = %s"
+        )
+        approval_values: list = [int(approval_id)]
+        if approval_scope:
+            approval_sql += " AND " + approval_scope
+            approval_values += approval_params
+        approval_sql += " FOR UPDATE"
+
+        with self._tx() as cur:
+            # Row lock serializes duplicate and competing votes across replicas.
+            cur.execute(approval_sql, tuple(approval_values))
+            approval = cur.fetchone()
+            if effect_guard:
+                effect_guard()
+            undo_round = self._approval_undo_round(cur, approval_id)
+            event_id = _approval_audit_event_id(
+                tenant, approval_id, status, approver, undo_round,
+            )
+
+            if reviewed_card is not None:
+                self._require_locked_approval_review(cur, approval_id, status, approver, event_id, reviewed_card, effect_guard)
+
+            cur.execute(
+                "SELECT event_id, approval_id, status, decided_by, final_status, "
+                "created_at, delivered_at FROM approval_audit_outbox "
+                f"WHERE event_id = %s AND {outbox_scope}",
+                tuple([event_id, *outbox_params]),
+            )
+            prior = cur.fetchone()
+            if prior is not None:
+                prior_event = _dec_approval_audit_row(prior)
+                if not prior_event.matches(approval_id, status, approver):
+                    raise RuntimeError(
+                        "approval audit outbox event identity is corrupt"
+                    )
+                return prior_event
+            if approval is None or approval[0] != "pending":
+                return None
+
+            cur.execute(
+                "SELECT 1 FROM approval_audit_outbox "
+                "WHERE approval_id = %s AND final_status IS NOT NULL "
+                f"AND delivered_at IS NULL AND {outbox_scope} LIMIT 1",
+                tuple([int(approval_id), *outbox_params]),
+            )
+            if cur.fetchone() is not None:
+                return None
+
+            required = max(1, int(approval[1] or 1))
+            requested_by = approval[2]
+            if (
+                required > 1
+                and status == "approved"
+                and requested_by
+                and person_key(approver) == person_key(requested_by)
+            ):
+                from ..safety.dual_control import allow_self_approval
+
+                if not allow_self_approval():
+                    return None
+
+            now = time.time()
+            final_status = None
+            if required <= 1:
+                final_status = status
+            else:
+                # Backfill pending pre-v30 signoffs into the new outbox before
+                # a later vote can reach quorum. This keeps upgraded databases
+                # from signing only the final vote in an N-of-M decision.
+                cur.execute(
+                    "SELECT approver, decision, decided_at "
+                    "FROM approval_signoffs WHERE approval_id = %s "
+                    "ORDER BY decided_at, approver",
+                    (int(approval_id),),
+                )
+                for legacy in cur.fetchall():
+                    legacy_event_id = _approval_audit_event_id(
+                        tenant, approval_id, legacy[1], legacy[0], undo_round,
+                    )
+                    cur.execute(
+                        "INSERT INTO approval_audit_outbox("
+                        "event_id, approval_id, status, decided_by, final_status, "
+                        "created_at, delivered_at, tenant_id) "
+                        "VALUES(%s, %s, %s, %s, NULL, %s, NULL, %s) "
+                        "ON CONFLICT (event_id) DO NOTHING",
+                        (
+                            legacy_event_id,
+                            int(approval_id),
+                            legacy[1],
+                            legacy[0],
+                            float(legacy[2]),
+                            tenant,
+                        ),
+                    )
+                cur.execute(
+                    "SELECT event_id, approval_id, status, decided_by, final_status, "
+                    "created_at, delivered_at FROM approval_audit_outbox "
+                    f"WHERE event_id = %s AND {outbox_scope}",
+                    tuple([event_id, *outbox_params]),
+                )
+                prior = cur.fetchone()
+                if prior is not None:
+                    prior_event = _dec_approval_audit_row(prior)
+                    if not prior_event.matches(approval_id, status, approver):
+                        raise RuntimeError(
+                            "approval audit outbox event identity is corrupt"
+                        )
+                    return prior_event
+
+                cur.execute(
+                    "SELECT decision FROM approval_signoffs "
+                    "WHERE approval_id = %s AND approver = %s",
+                    (int(approval_id), approver),
+                )
+                existing_signoff = cur.fetchone()
+                if (
+                    existing_signoff is not None
+                    and existing_signoff[0] != status
+                ):
+                    return None
+                cur.execute(
+                    "INSERT INTO approval_signoffs(approval_id, approver, decision, "
+                    "decided_at) VALUES(%s, %s, %s, %s) "
+                    "ON CONFLICT (approval_id, approver) DO NOTHING",
+                    (int(approval_id), approver, status, now),
+                )
+                if status == "denied":
+                    final_status = "denied"
+                else:
+                    cur.execute(
+                        "SELECT approver FROM approval_signoffs "
+                        "WHERE approval_id = %s AND decision = 'approved'",
+                        (int(approval_id),),
+                    )
+                    if distinct_people(row[0] for row in cur.fetchall()) >= required:
+                        final_status = "approved"
+
+            cur.execute(
+                "INSERT INTO approval_audit_outbox("
+                "event_id, approval_id, status, decided_by, final_status, "
+                "created_at, delivered_at, tenant_id) "
+                "VALUES(%s, %s, %s, %s, %s, %s, NULL, %s)",
+                (
+                    event_id,
+                    int(approval_id),
+                    status,
+                    approver,
+                    final_status,
+                    now,
+                    tenant,
+                ),
+            )
+            result = ApprovalAuditEvent(
+                event_id=event_id,
+                approval_id=int(approval_id),
+                status=status,
+                decided_by=approver,
+                final_status=final_status,
+                created_at=now,
+                delivered_at=None,
+            )
+            if effect_guard:
+                effect_guard()
+            return result
+
+    def mark_approval_audit_delivered(
+        self,
+        event_id: str,
+        *,
+        delivered_at: float | None = None,
+        effect_guard=None,
+    ) -> bool:
+        """Acknowledge signed delivery and apply any now-safe final outcome."""
+        outbox_scope, outbox_params = _approval_outbox_scope()
+        approval_scope, approval_params = _mutation_tenant_scope()
+        finalized: tuple[str, str] | None = None
+        with self._tx() as cur:
+            cur.execute(
+                "SELECT event_id, approval_id, status, decided_by, final_status, "
+                "created_at, delivered_at FROM approval_audit_outbox "
+                f"WHERE event_id = %s AND {outbox_scope} FOR UPDATE",
+                tuple([str(event_id), *outbox_params]),
+            )
+            event = cur.fetchone()
+            if effect_guard is not None:
+                effect_guard()
+            if event is None:
+                return False
+            source_guard = getattr(effect_guard, "approval_source", None)
+            if source_guard is not None:
+                goal_scope, goal_params = _mutation_tenant_scope("g.tenant_id")
+                cur.execute("SELECT g.id,g.owner,g.domain FROM approvals a JOIN goals g ON g.id=a.goal_id WHERE a.id=%s" + (" AND " + goal_scope if goal_scope else "") + " FOR SHARE OF g", tuple([event[1], *goal_params]))
+                source = cur.fetchone()
+                if source is None:
+                    raise PermissionError("The original approval task is unavailable")
+                source_guard(source[0], source[1] or "", source[2])
+            # The decision takes effect at delivery, so the undo window starts
+            # here and not at the vote (same rule as the SQLite backend).
+            delivery_time = (
+                float(event[6])
+                if event[6] is not None
+                else float(delivered_at) if delivered_at is not None else time.time()
+            )
+            if event[6] is None:
+                cur.execute(
+                    "UPDATE approval_audit_outbox SET delivered_at = %s "
+                    f"WHERE event_id = %s AND delivered_at IS NULL AND {outbox_scope}",
+                    tuple([delivery_time, str(event_id), *outbox_params]),
+                )
+
+            approval_id = int(event[1])
+            cur.execute(
+                "SELECT 1 FROM approval_audit_outbox "
+                f"WHERE approval_id = %s AND delivered_at IS NULL AND {outbox_scope} "
+                "LIMIT 1",
+                tuple([approval_id, *outbox_params]),
+            )
+            if cur.fetchone() is None:
+                cur.execute(
+                    "SELECT final_status, decided_by "
+                    "FROM approval_audit_outbox "
+                    f"WHERE approval_id = %s AND final_status IS NOT NULL "
+                    f"AND {outbox_scope} "
+                    "ORDER BY created_at DESC, event_id DESC LIMIT 1",
+                    tuple([approval_id, *outbox_params]),
+                )
+                final = cur.fetchone()
+                if final is not None:
+                    sql = (
+                        "UPDATE approvals SET status = %s, decided_at = %s, "
+                        "decided_by = %s WHERE id = %s AND status = 'pending'"
+                    )
+                    values: list = [
+                        final[0],
+                        delivery_time,
+                        final[1],
+                        approval_id,
+                    ]
+                    if approval_scope:
+                        sql += " AND " + approval_scope
+                        values += approval_params
+                    cur.execute(sql, tuple(values))
+                    if cur.rowcount > 0:
+                        finalized = (final[0], final[1])
+            if effect_guard is not None:
+                effect_guard()
+        # Only after the guard passed and the transaction committed (as on SQLite).
+        if finalized is not None:
+            self._emit_approval_event("approval.decided", approval_id,
+                                      {"status": finalized[0], "decided_by": finalized[1] or ""})
+        return True
+
+    def approval_state(self, approval_id: int) -> dict | None:
+        """Quorum progress for an approval (tenant-scoped), or None if unknown.
+        Mirrors the SQLite backend's shape."""
+        appr = self.get_approval(approval_id)
+        if appr is None:
+            return None
+        with self._tx() as cur:
+            cur.execute(
+                "SELECT approver, decision FROM approval_signoffs "
+                "WHERE approval_id = %s ORDER BY decided_at, approver", (approval_id,),
+            )
+            rows = cur.fetchall()
+        from ..world_model import _approval_state_view, _single_approver
+
+        approvers = _single_approver(appr, [r[0] for r in rows if r[1] == "approved"])
+        scope, params = _approval_outbox_scope()
+        with self._tx() as cur:
+            cur.execute(
+                "SELECT COUNT(*) FROM approval_audit_outbox "
+                f"WHERE approval_id = %s AND delivered_at IS NULL AND {scope}",
+                tuple([approval_id, *params]),
+            )
+            audit_pending = int(cur.fetchone()[0])
+        return _approval_state_view(appr, approvers, audit_pending)
 
     # ----- conversations / turns (multi-turn channel memory) -----
 

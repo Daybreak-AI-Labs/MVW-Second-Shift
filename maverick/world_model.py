@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import contextlib
 import functools
+import hashlib
 import logging
 import os
 import secrets
@@ -49,6 +50,7 @@ from .paths import bind_tenant_namespace, current_tenant_id, data_dir
 from .personal_alert_revisions import SQLITE_MIGRATION as _PERSONAL_ALERT_MIGRATION
 from .webhook_subscriptions import SQLITE_SCHEMA as _WEBHOOK_SUBSCRIPTION_SCHEMA
 from .world_records import Approval as Approval
+from .world_records import ApprovalAuditEvent as ApprovalAuditEvent
 from .world_records import EpisodeSpend as EpisodeSpend
 from .world_records import Goal as Goal
 
@@ -737,8 +739,42 @@ MIGRATIONS: dict[int, list[str]] = {
     # PostgreSQL v39 scopes learning keys by tenant; SQLite files already do.
     39: [],
 }
+
+
+def _approval_audit_event_id(
+    tenant_id: str | None,
+    approval_id: int,
+    status: str,
+    decided_by: str,
+    undo_round: int = 0,
+) -> str:
+    """Stable, unambiguous id for retrying one supervisor's exact vote.
+
+    ``undo_round`` counts how many times the approval was undone: a vote
+    cast after an undo is a new decision and gets a new identity, so the
+    signed audit chain records it instead of treating it as a replay of the
+    retracted vote. Round 0 keeps the historical id.
+    """
+    parts = [
+        (tenant_id or "").encode("utf-8"),
+        str(int(approval_id)).encode("ascii"),
+        status.encode("ascii"),
+        decided_by.encode("utf-8"),
+    ]
+    if int(undo_round) > 0:
+        parts.append(f"undo-round:{int(undo_round)}".encode("ascii"))
+    framed = b"".join(len(part).to_bytes(4, "big") + part for part in parts)
+    return "approval-v1-" + hashlib.sha256(framed).hexdigest()
+
+
+APPROVAL_UNDO_STATUS = "undone"
 # ``approvals.undo_hold``: a waiting task holds the decision for undo, or has acted on it.
 APPROVAL_UNDO_OPEN = "open"
+
+
+def approval_held_open(approval: Any) -> bool:
+    """A request a waiting task holds open for undo (not yet settled)."""
+    return getattr(approval, "undo_hold", None) == APPROVAL_UNDO_OPEN
 
 
 _EPISODE_SPEND_COLS = (
@@ -1107,6 +1143,49 @@ def _approvals_from_rows(rows: list) -> list[Approval]:
         for name in sealed:
             d[name] = next(decoded)
     return [Approval(**_row_for(Approval, d)) for d in records]
+
+
+def _single_approver(approval, approvers: list[str]) -> list[str]:
+    """A one-approver request keeps no sign-off rows: its approver is the decider."""
+    if (
+        not approvers
+        and approval.status == "approved"
+        and max(1, int(approval.approvals_required or 1)) <= 1
+        and approval.decided_by
+    ):
+        return [approval.decided_by]
+    return approvers
+
+
+def _same_person(a: object, b: object) -> bool:
+    from .safety.dual_control import person_key
+
+    return bool(person_key(a)) and person_key(a) == person_key(b)
+
+
+def _people(rows) -> int:
+    """Distinct people among approver rows (one person spelt two ways is one)."""
+    from .safety.dual_control import distinct_people
+
+    return distinct_people(row[0] for row in rows)
+
+
+def _approval_state_view(approval, approvers: list[str], audit_pending: int) -> dict:
+    """The operator/UI quorum view of one approval (shared by the per-id and
+    the batched readers so both return the same shape and values)."""
+    return {
+        "status": approval.status,
+        "approvals_required": max(1, int(approval.approvals_required or 1)),
+        "approved_count": _people([a] for a in approvers),
+        "approvers": approvers,
+        "requested_by": approval.requested_by,
+        "audit_pending_count": audit_pending,
+        "effective": approval.status != "pending",
+    }
+
+
+def _approval_audit_event_from_row(row) -> ApprovalAuditEvent:
+    return ApprovalAuditEvent(**_row_for(ApprovalAuditEvent, dict(row)))
 
 
 def default_db_path() -> Path:
@@ -2144,6 +2223,409 @@ class WorldModel:
             "AND requested_by=? ORDER BY id DESC LIMIT ?", (owner, max(1, int(limit))),
         )
         return [int(row[0]) for row in rows]
+
+    def pending_approvals(self) -> list[Approval]:
+        rows = self._read_all(
+            "SELECT * FROM approvals WHERE status = 'pending' ORDER BY id"
+        )
+        return _approvals_from_rows(rows)
+
+    def approval_audit_event_id(
+        self,
+        approval_id: int,
+        status: str,
+        decided_by: str,
+    ) -> str:
+        """Deterministic idempotency id for an exact approval vote."""
+        return _approval_audit_event_id(
+            current_tenant_id(),
+            approval_id,
+            status,
+            (decided_by or "").strip(),
+            self._approval_undo_round(approval_id),
+        )
+
+    def _approval_undo_round(self, approval_id: int, conn=None) -> int:
+        """How many times this approval was undone (see ``undo_approval_decision``)."""
+        sql = (
+            "SELECT COUNT(*) FROM approval_audit_outbox "
+            "WHERE approval_id = ? AND status = ?"
+        )
+        params = (int(approval_id), APPROVAL_UNDO_STATUS)
+        row = conn.execute(sql, params).fetchone() if conn is not None else self._read_one(sql, params)
+        return int(row[0]) if row else 0
+
+    def get_approval_audit_event(
+        self,
+        event_id: str,
+    ) -> ApprovalAuditEvent | None:
+        row = self._read_one(
+            "SELECT event_id, approval_id, status, decided_by, final_status, "
+            "created_at, delivered_at FROM approval_audit_outbox "
+            "WHERE event_id = ?",
+            (str(event_id),),
+        )
+        return _approval_audit_event_from_row(row) if row else None
+
+    def pending_approval_audit_events(
+        self,
+        *,
+        approval_id: int | None = None,
+        limit: int = 100,
+    ) -> list[ApprovalAuditEvent]:
+        """Undelivered approval audit events, oldest first."""
+        sql = (
+            "SELECT event_id, approval_id, status, decided_by, final_status, "
+            "created_at, delivered_at FROM approval_audit_outbox "
+            "WHERE delivered_at IS NULL"
+        )
+        params: tuple[Any, ...] = ()
+        if approval_id is not None:
+            sql += " AND approval_id = ?"
+            params = (int(approval_id),)
+        sql += " ORDER BY created_at, event_id LIMIT ?"
+        params += (max(1, min(int(limit), 1000)),)
+        return [
+            _approval_audit_event_from_row(row)
+            for row in self._read_all(sql, params)
+        ]
+
+    def approval_has_pending_finalization(self, approval_id: int) -> bool:
+        """Whether an accepted final vote is waiting on signed audit delivery."""
+        row = self._read_one(
+            "SELECT 1 FROM approval_audit_outbox "
+            "WHERE approval_id = ? AND final_status IS NOT NULL "
+            "AND delivered_at IS NULL LIMIT 1",
+            (int(approval_id),),
+        )
+        return row is not None
+
+    @staticmethod
+    def _check_effect_guard(effect_guard):
+        if effect_guard is not None:
+            effect_guard()
+
+    def decide_approval_audited(
+        self,
+        approval_id: int,
+        status: str,
+        *,
+        decided_by: str,
+        reviewed_card: dict | None = None,
+        effect_guard=None,
+    ) -> ApprovalAuditEvent | None:
+        """Atomically accept a vote and queue its signed-audit delivery.
+
+        Unlike :meth:`decide_approval`, this does not make a final approval
+        effective in the same transaction.  It records the sign-off plus a
+        deterministic outbox event together, and
+        :meth:`mark_approval_audit_delivered` applies the final status only once
+        every event for this approval has reached the audit chain.
+
+        A retry of the same ``(approval, status, supervisor)`` returns the
+        original event even if the approval is now final.  That makes a retry
+        safe after a database commit acknowledgement is lost.
+        """
+        if status not in ("approved", "denied"):
+            raise ValueError("status must be 'approved' or 'denied'")
+        approver = (decided_by or "").strip()
+        if not approver:
+            return None
+        with self._writing() as conn:
+            # The no-op write acquires SQLite's cross-process write reservation
+            # before any decision read.  A SELECT-first deferred transaction can
+            # otherwise race another process and fail with BUSY_SNAPSHOT.
+            pending = conn.execute(
+                "UPDATE approvals SET status = status "
+                "WHERE id = ? AND status = 'pending'",
+                (int(approval_id),),
+            ).rowcount > 0
+            self._check_effect_guard(effect_guard)
+            undo_round = self._approval_undo_round(approval_id, conn)
+            event_id = _approval_audit_event_id(
+                current_tenant_id(), approval_id, status, approver, undo_round,
+            )
+
+            if reviewed_card is not None:
+                from .approval_vote_review import require_locked_vote_review
+
+                locked = conn.execute("SELECT * FROM approvals WHERE id = ?", (int(approval_id),)).fetchone()
+                approval = _approval_from_row(locked) if locked is not None else None
+                signoffs = conn.execute("SELECT approver, decision FROM approval_signoffs WHERE approval_id = ? ORDER BY decided_at", (int(approval_id),)).fetchall()
+                approvers = _single_approver(approval, [row["approver"] for row in signoffs if row["decision"] == "approved"]) if approval is not None else []
+                audit_pending = int(conn.execute("SELECT COUNT(*) FROM approval_audit_outbox WHERE approval_id = ? AND delivered_at IS NULL", (int(approval_id),)).fetchone()[0])
+                content_owner = (approval.requested_by or "") if approval is not None else None
+                if approval is not None and approval.goal_id:
+                    source = conn.execute("SELECT owner,domain FROM goals WHERE id = ?", (approval.goal_id,)).fetchone()
+                    content_owner = (source["owner"] or "") if source is not None else None
+                    source_guard = getattr(effect_guard, "approval_source", None)
+                    if source_guard is not None:
+                        source_guard(approval.goal_id, content_owner, source["domain"] if source is not None else None)
+                require_locked_vote_review(approval, reviewed_card, status=status, actor=approver,
+                                           event_id=event_id, approvers=approvers, audit_pending=audit_pending,
+                                           content_owner=content_owner)
+
+            prior = conn.execute(
+                "SELECT event_id, approval_id, status, decided_by, final_status, "
+                "created_at, delivered_at FROM approval_audit_outbox "
+                "WHERE event_id = ?",
+                (event_id,),
+            ).fetchone()
+            if prior is not None:
+                prior_event = _approval_audit_event_from_row(prior)
+                if not prior_event.matches(approval_id, status, approver):
+                    raise RuntimeError(
+                        "approval audit outbox event identity is corrupt"
+                    )
+                return prior_event
+            if not pending:
+                return None
+
+            row = conn.execute(
+                "SELECT approvals_required, requested_by "
+                "FROM approvals WHERE id = ? AND status = 'pending'",
+                (int(approval_id),),
+            ).fetchone()
+            if row is None:
+                return None
+
+            # Once a vote has selected a final outcome, freeze the approval
+            # while its audit row is pending.  A competing approve/deny must not
+            # race the signed authority boundary.
+            if conn.execute(
+                "SELECT 1 FROM approval_audit_outbox "
+                "WHERE approval_id = ? AND final_status IS NOT NULL "
+                "AND delivered_at IS NULL LIMIT 1",
+                (int(approval_id),),
+            ).fetchone() is not None:
+                return None
+
+            required = max(1, int(row["approvals_required"] or 1))
+            requested_by = row["requested_by"]
+            if (
+                required > 1
+                and status == "approved"
+                and requested_by
+                and _same_person(approver, requested_by)
+            ):
+                from .safety.dual_control import allow_self_approval
+
+                if not allow_self_approval():
+                    return None
+
+            now = time.time()
+            final_status: str | None = None
+            if required <= 1:
+                final_status = status
+            else:
+                # Upgrade seam: v21-v29 could leave a pending N-of-M approval
+                # with one or more signoffs but no transactional outbox rows.
+                # Queue those historical votes before accepting a new one, so
+                # a quorum can never become effective with only its last vote
+                # represented in the signed chain.
+                for legacy in conn.execute(
+                    "SELECT approver, decision, decided_at "
+                    "FROM approval_signoffs WHERE approval_id = ? "
+                    "ORDER BY decided_at, approver",
+                    (int(approval_id),),
+                ).fetchall():
+                    legacy_event_id = _approval_audit_event_id(
+                        current_tenant_id(),
+                        approval_id,
+                        legacy["decision"],
+                        legacy["approver"],
+                        undo_round,
+                    )
+                    conn.execute(
+                        "INSERT OR IGNORE INTO approval_audit_outbox("
+                        "event_id, approval_id, status, decided_by, final_status, "
+                        "created_at, delivered_at) "
+                        "VALUES(?, ?, ?, ?, NULL, ?, NULL)",
+                        (
+                            legacy_event_id,
+                            int(approval_id),
+                            legacy["decision"],
+                            legacy["approver"],
+                            float(legacy["decided_at"]),
+                        ),
+                    )
+                prior = conn.execute(
+                    "SELECT event_id, approval_id, status, decided_by, final_status, "
+                    "created_at, delivered_at FROM approval_audit_outbox "
+                    "WHERE event_id = ?",
+                    (event_id,),
+                ).fetchone()
+                if prior is not None:
+                    prior_event = _approval_audit_event_from_row(prior)
+                    if not prior_event.matches(approval_id, status, approver):
+                        raise RuntimeError(
+                            "approval audit outbox event identity is corrupt"
+                        )
+                    return prior_event
+
+                existing_signoff = conn.execute(
+                    "SELECT decision FROM approval_signoffs "
+                    "WHERE approval_id = ? AND approver = ?",
+                    (int(approval_id), approver),
+                ).fetchone()
+                # A signed human vote is immutable.  The old immediate method
+                # retains its compatibility semantics, but the governed
+                # dashboard path never silently rewrites one decision into the
+                # opposite decision.
+                if (
+                    existing_signoff is not None
+                    and existing_signoff["decision"] != status
+                ):
+                    return None
+                conn.execute(
+                    "INSERT INTO approval_signoffs(approval_id, approver, decision, "
+                    "decided_at) VALUES(?, ?, ?, ?) "
+                    "ON CONFLICT(approval_id, approver) DO NOTHING",
+                    (int(approval_id), approver, status, now),
+                )
+                if status == "denied":
+                    final_status = "denied"
+                else:
+                    approved = _people(conn.execute(
+                        "SELECT approver FROM approval_signoffs "
+                        "WHERE approval_id = ? AND decision = 'approved'",
+                        (int(approval_id),),
+                    ).fetchall())
+                    if approved >= required:
+                        final_status = "approved"
+
+            conn.execute(
+                "INSERT INTO approval_audit_outbox("
+                "event_id, approval_id, status, decided_by, final_status, "
+                "created_at, delivered_at) VALUES(?, ?, ?, ?, ?, ?, NULL)",
+                (
+                    event_id,
+                    int(approval_id),
+                    status,
+                    approver,
+                    final_status,
+                    now,
+                ),
+            )
+            result = ApprovalAuditEvent(
+                event_id=event_id,
+                approval_id=int(approval_id),
+                status=status,
+                decided_by=approver,
+                final_status=final_status,
+                created_at=now,
+                delivered_at=None,
+            )
+            self._check_effect_guard(effect_guard)
+            return result
+
+    def mark_approval_audit_delivered(
+        self,
+        event_id: str,
+        *,
+        delivered_at: float | None = None,
+        effect_guard=None,
+    ) -> bool:
+        """Acknowledge signed delivery and apply any now-safe final outcome.
+
+        The delivery marker and final approval update share one transaction.
+        Repeating the call is idempotent.  If an audit append succeeded but the
+        commit acknowledgement is lost, the caller can safely append the same
+        stable ``event_id`` again and retry this method.
+        """
+        finalized: tuple[str, str] | None = None
+        with self._writing() as conn:
+            # A no-op write first opens the write transaction, so the reads
+            # below cannot see state another process changes before the
+            # final UPDATE (Python sqlite begins only at the first DML).
+            conn.execute("UPDATE approval_audit_outbox SET delivered_at=delivered_at WHERE event_id=?", (str(event_id),))
+            if effect_guard is not None:
+                effect_guard()
+            event = conn.execute(
+                "SELECT event_id, approval_id, status, decided_by, final_status, "
+                "created_at, delivered_at FROM approval_audit_outbox "
+                "WHERE event_id = ?",
+                (str(event_id),),
+            ).fetchone()
+            if event is None:
+                return False
+            source_guard = getattr(effect_guard, "approval_source", None)
+            if source_guard is not None:
+                source = conn.execute("SELECT g.id,g.owner,g.domain FROM approvals a JOIN goals g ON g.id=a.goal_id WHERE a.id=?", (event["approval_id"],)).fetchone()
+                if source is None:
+                    raise PermissionError("The original approval task is unavailable")
+                source_guard(source[0], source[1] or "", source[2])
+            delivery_time = (
+                float(event["delivered_at"])
+                if event["delivered_at"] is not None
+                else float(delivered_at) if delivered_at is not None else time.time()
+            )
+            if event["delivered_at"] is None:
+                conn.execute(
+                    "UPDATE approval_audit_outbox SET delivered_at = ? "
+                    "WHERE event_id = ? AND delivered_at IS NULL",
+                    (
+                        delivery_time,
+                        str(event_id),
+                    ),
+                )
+
+            approval_id = int(event["approval_id"])
+            still_pending = conn.execute(
+                "SELECT 1 FROM approval_audit_outbox "
+                "WHERE approval_id = ? AND delivered_at IS NULL LIMIT 1",
+                (approval_id,),
+            ).fetchone()
+            if still_pending is None:
+                final = conn.execute(
+                    "SELECT final_status, decided_by, created_at "
+                    "FROM approval_audit_outbox "
+                    "WHERE approval_id = ? AND final_status IS NOT NULL "
+                    "ORDER BY created_at DESC, event_id DESC LIMIT 1",
+                    (approval_id,),
+                ).fetchone()
+                if final is not None:
+                    applied = conn.execute(
+                        "UPDATE approvals SET status = ?, decided_at = ?, "
+                        "decided_by = ? WHERE id = ? AND status = 'pending'",
+                        (
+                            final["final_status"],
+                            delivery_time,
+                            final["decided_by"],
+                            approval_id,
+                        ),
+                    ).rowcount
+                    if applied:
+                        finalized = (final["final_status"], final["decided_by"])
+            self._check_effect_guard(effect_guard)
+        # Subscribers hear of the decision only once the guard has passed and the
+        # transaction has committed; a rollback must not leave "approved" sent.
+        if finalized is not None:
+            self._emit_approval_event("approval.decided", approval_id,
+                                      {"status": finalized[0], "decided_by": finalized[1] or ""})
+        return True
+
+    def approval_state(self, approval_id: int) -> dict | None:
+        """Quorum progress for an approval, or None if unknown. Shape:
+        ``{status, approvals_required, approved_count, approvers, requested_by}``
+        -- the operator/UI view of an in-flight N-of-M decision."""
+        appr = self.get_approval(approval_id)
+        if appr is None:
+            return None
+        rows = self._read_all(
+            "SELECT approver, decision FROM approval_signoffs "
+            "WHERE approval_id = ? ORDER BY decided_at, approver", (approval_id,),
+        )
+        approvers = [r["approver"] for r in rows if r["decision"] == "approved"]
+        approvers = _single_approver(appr, approvers)
+        audit_pending = int(
+            self._read_one(
+                "SELECT COUNT(*) FROM approval_audit_outbox "
+                "WHERE approval_id = ? AND delivered_at IS NULL",
+                (approval_id,),
+            )[0]
+        )
+        return _approval_state_view(appr, approvers, audit_pending)
 
     @staticmethod
     def _chunks(values: list[int], size: int = 500) -> Iterator[list[int]]:
