@@ -66,6 +66,8 @@ def a_valid_value(setting: es.Setting):
     if kind == "choice":
         return next(c for c in setting.choices if c != setting.default)
     if kind == "text":
+        if setting.key == "owner_note.timezone":
+            return "Europe/London"
         return "dep-1" if setting.pattern is es._DEPLOYMENT else ("C1:abc" if setting.pattern is es._CHANNEL else "https://second-shift.example.com")
     if kind == "guid":
         return "11111111-2222-3333-4444-555555555555"
@@ -558,3 +560,17 @@ def test_a_section_whose_feature_is_not_installed_says_so(monkeypatch):
     with pytest.raises(SettingRefused) as refused:
         es.change("factory.max_test_cases", 5, actor=ACTOR)
     assert refused.value.status == 409
+
+
+def test_owner_notes_follow_a_change_and_the_page_says_whether_the_note_will_go():
+    from maverick import owner_note
+    es.change("owner_note.enabled", True, actor=ACTOR)
+    es.change("owner_note.weekday", "friday", actor=ACTOR)
+    es.change("owner_note.hour", 17, actor=ACTOR)
+    es.change("owner_note.timezone", "Europe/London", actor=ACTOR)
+    found = owner_note.settings()
+    assert (found["enabled"], found["weekday_name"], found["hour"], found["timezone"]) == (True, "friday", 17, "Europe/London")
+    with pytest.raises(SettingRefused):
+        es.change("owner_note.timezone", "Mars/Olympus", actor=ACTOR)
+    section = next(s for s in es.describe()["sections"] if s["id"] == "owner_note")
+    assert len(section["settings"]) == 5 and "cannot be sent" in section["status"][0]

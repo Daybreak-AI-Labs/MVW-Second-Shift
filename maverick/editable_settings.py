@@ -50,6 +50,7 @@ _GUID = re.compile(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}")
 _EMAIL = re.compile(r"[^\s@<>\"',;]{1,64}@[A-Za-z0-9.-]{1,200}\.[A-Za-z]{2,24}")
 _HTTPS_ADDRESS = re.compile(r"https://[A-Za-z0-9.-]{1,253}(?:/[A-Za-z0-9._~:/@%+-]{0,200})?")
 _DEPLOYMENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+_ZONE = re.compile(r"[A-Za-z][A-Za-z0-9_+/-]{0,63}")
 _CHANNEL = re.compile(r"[A-Za-z0-9:._@+-]{1,200}")
 
 _GUID_WORDS = "an id like 11111111-2222-3333-4444-555555555555"
@@ -367,6 +368,19 @@ def _build() -> tuple[Setting, ...]:
         Setting("agent_keys.expiry_warning_days", "keys", "int", "Warn before an access key ends",
                 "Administrators are alerted once when an agent's access key will end within this many days. 0 never warns.",
                 default=14, minimum=0, maximum=365, unit="days"),
+        # ------------------------------------------------------------ owner notes
+        Setting("owner_note.enabled", "owner_note", "bool", "Send the weekly note to agent owners",
+                "Each owner gets at most one email a week listing only what needs them. Needs alerts by email to be set up.",
+                default=False),
+        Setting("owner_note.weekday", "owner_note", "choice", "Day it goes out", "The day of the week the note is sent.",
+                default="monday", choices=("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"),
+                choice_labels={d: d.capitalize() for d in ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")}),
+        Setting("owner_note.hour", "owner_note", "int", "Hour it goes out", "The hour of the day, in the time zone below.",
+                default=8, minimum=0, maximum=23, unit="o'clock"),
+        Setting("owner_note.timezone", "owner_note", "text", "Time zone", "A time zone name such as UTC or Europe/London.",
+                default="UTC", pattern=_ZONE, pattern_help="a time zone name such as Europe/London", max_length=64),
+        Setting("owner_note.teams", "owner_note", "bool", "Also message owners in Teams",
+                "When Teams is set up, the same short list also goes to the owner's own Teams chat.", default=False),
         # ----------------------------------------------------------------- models
         *_model_settings(),
     ]
@@ -392,6 +406,7 @@ SECTIONS: tuple[Section, ...] = (
     Section("factory", "Agent factory", "The model that drafts and tests new agents, and the limits on a test run.",
             needs="factory"),
     Section("keys", "Access keys", "When people are warned that an agent's access key is about to end."),
+    Section("owner_note", "Owner notes", "The weekly note that tells each agent owner what needs them."),
     Section("models", "Models", "The statistical limits that make a change in a model's data a finding."),
 )
 
@@ -462,7 +477,7 @@ def validate(setting: Setting, raw: Any) -> Any:
             raise SettingRefused(f"{setting.label}: choose one of the listed options.")
         return raw
     if kind == "text":
-        return _text(setting, raw, allow_empty=setting.allow_empty)
+        return _free_text(setting, raw)
     if kind == "guid":
         return _text(setting, raw, pattern=_GUID, what=_GUID_WORDS, allow_empty=setting.allow_empty).lower()
     if kind == "env_name":
@@ -487,6 +502,15 @@ def validate(setting: Setting, raw: Any) -> Any:
     if kind == "map":
         return _environments(setting, raw)
     raise SettingRefused("That setting cannot be changed here.", 409)  # pragma: no cover
+
+
+def _free_text(setting: Setting, raw: Any) -> str:
+    text = _text(setting, raw, allow_empty=setting.allow_empty)
+    if setting.key == "owner_note.timezone":
+        from .owner_note import _zone
+        if _zone(text) is None:
+            raise SettingRefused(f"{setting.label}: that time zone is not known. Use a name such as Europe/London.")
+    return text
 
 
 def _plain_number(value: float | None) -> str:
@@ -832,6 +856,24 @@ def _secret_rows(section: Section, view: dict[str, dict]) -> list[dict]:
     return rows
 
 
+def _status_lines(section: Section) -> list[str]:
+    """A line or two on whether a feature will act, for sections that have one."""
+    if section.id != "owner_note":
+        return []
+    try:
+        import time as _time
+
+        from .owner_note import status
+        found = status()
+    except Exception:  # noqa: BLE001
+        return ["The state of the weekly note could not be read."]
+    if found["active"]:
+        return ["The weekly note is on. The next one is due " + _time.strftime("%d %B %Y at %H:%M UTC", _time.gmtime(found["next_at"])) + "."]
+    if not found["enabled"]:
+        return ["The weekly note is off."]
+    return ["The weekly note is on but cannot be sent: " + (found["email_problem"] or "email alerts are not set up.")]
+
+
 def describe() -> dict:
     """Every section with its settings, each setting's effective value and source, for the page and the API."""
     from .config import load_config
@@ -873,6 +915,7 @@ def describe() -> dict:
             "not_installed": why, "settings": rows if installed else [],
             "tests": [{"label": a, "url": u, "what": w} for a, u, w in section.tests] if installed else [],
             "secrets": _secret_rows(section, view) if installed else [],
+            "status": _status_lines(section) if installed else [],
         })
     return {"sections": sections, "layer_problem": problem, "layer_file": LAYER_BASENAME}
 

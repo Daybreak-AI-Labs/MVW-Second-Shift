@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block title %}My agents · Second Shift{% endblock %}
+{% block content %}
+  {#- The outside agents the signed-in person owns. Everything here is read from
+      records Second Shift already keeps; nothing is checked or changed. Names
+      come from people and platforms and are escaped by the template engine. -#}
+  {% set _NEEDS = {'platform': 'Changed on its platform', 'drift': 'Changes to acknowledge', 'models': 'Model changes to acknowledge',
+                   'blocked': 'Blocked or paused', 'spend': 'Spending near the limit', 'key': 'Access key ending',
+                   'requests': 'Requests waiting', 'silent': 'Not heard from yet'} %}
+  <h1 class="page-title">My agents</h1>
+  <p class="page-subtitle">The outside agents that list you as their owner, and what needs you. This page only shows; it never runs a check.</p>
+
+  {% if not enabled %}
+  <div class="panel" role="status"><div class="mv-empty">
+    <p class="mv-empty__title">Outside agents are turned off</p>
+    <p class="mv-empty__body">An administrator can turn them on. Until then there are no agents to show.</p>
+  </div></div>
+  {% elif not signed_in %}
+  <div class="panel" id="my-agents-no-identity" role="status"><div class="mv-empty">
+    <p class="mv-empty__title">Second Shift cannot tell who you are</p>
+    <p class="mv-empty__body">This page lists agents by the work email you signed in with, and that email has to be one your sign-in provider has confirmed. Sign in with your work account to see your agents. Ask an administrator if you already do.</p>
+  </div></div>
+  {% elif unreadable %}
+  <div class="panel" role="alert"><p style="margin: 0;"><span class="badge failure">Not shown</span> {{ unreadable }} An administrator should look at the server log.</p></div>
+  {% elif not agents %}
+  <div class="panel" id="my-agents-none"><div class="mv-empty">
+    <p class="mv-empty__title">You do not own any agents yet</p>
+    <p class="mv-empty__body">An agent shows here when your work email, or your Entra account, is named as its owner when it is added to Second Shift. An administrator can set the owner on the agent's page.</p>
+  </div></div>
+  {% else %}
+  {% set _needing = agents | selectattr('needs') | list %}
+  <div class="panel" id="my-agents-summary">
+    <p style="margin: 0;">
+      <span class="badge">{{ agents | length }} {{ 'agent' if agents | length == 1 else 'agents' }}</span>
+      {% if _needing %}<span class="badge failure">{{ _needing | length }} {{ 'needs' if _needing | length == 1 else 'need' }} you</span>{% else %}<span class="badge active">Nothing needs you</span>{% endif %}
+      {% if can_approve %}<a class="btn btn--ghost" href="/approvals">Approvals</a>{% endif %}
+    </p>
+    {% if not can_admin %}<p class="muted" style="margin: var(--space-2) 0 0; font-size: var(--text-sm);">You can see your agents here. Only an administrator can change an agent, its limit or its access key{% if not can_respond %}, or pause it{% endif %}; ask one if something below needs changing.</p>{% endif %}
+    {% if note %}<p class="muted" style="margin: var(--space-2) 0 0; font-size: var(--text-sm);">{% if note.active %}You also get a note by email once a week, on {{ note.weekday_name | capitalize }} at {{ '%02d' | format(note.hour) }}:00 ({{ note.timezone }}), when something needs you.{% else %}A weekly note by email is not turned on.{% endif %}</p>{% endif %}
+  </div>
+
+  {% for a in agents %}
+  <section class="panel" id="agent-{{ a.id }}" aria-labelledby="agent-{{ a.id }}-title" data-agent="{{ a.id }}">
+    <h2 id="agent-{{ a.id }}-title" style="margin-top: 0;"><a href="/external-agents/{{ a.id | urlencode }}">{{ a.name }}</a></h2>
+    <p style="margin: 0 0 var(--space-3);">
+      <span class="badge {{ 'active' if a.level == 'connected' else '' }}">{{ a.level_label }}</span>
+      {% if a.platform_label %}<span class="badge">{{ a.platform_label }}</span>{% endif %}
+      <span class="badge {{ 'failure' if a.blocked else '' }}">{{ a.lifecycle_label }}</span>
+      {% for kind in a.needs %}<span class="badge failure">{{ _NEEDS[kind] }}</span>{% endfor %}
+    </p>
+    <dl class="mv-facts" style="margin: 0; display: grid; grid-template-columns: max-content 1fr; gap: var(--space-2) var(--space-4);">
+      <dt>Connection</dt>
+      <dd>{{ a.level_label }}{% if a.heard_at %}, last heard from {{ a.heard_at | datetime }}{% elif a.level == 'added' %}, not heard from yet{% endif %}</dd>
+      <dt>Behaviour and set-up</dt>
+      <dd data-fact="drift">{{ a.drift.state_label }}{% if a.drift.readable and a.drift.open %}: <strong>{{ a.drift.open }}</strong> {{ 'change' if a.drift.open == 1 else 'changes' }} not acknowledged{% endif %}</dd>
+      <dt>Its platform</dt>
+      <dd data-fact="platform">{{ a.platform.label }}{% if a.platform.last_checked_at %} (checked {{ a.platform.last_checked_at | datetime }}){% endif %}</dd>
+      <dt>Models</dt>
+      <dd data-fact="models">{% if not a.models.readable %}Could not be read{% elif a.models.open %}<strong>{{ a.models.open }}</strong> {{ 'change' if a.models.open == 1 else 'changes' }} not acknowledged{% if a.models.names %} ({{ a.models.names | join(', ') }}){% endif %}{% else %}Nothing to acknowledge{% endif %}</dd>
+      <dt>Spending</dt>
+      <dd data-fact="spend">{{ a.spend.spent | money }} {{ a.spend.period }}{% if a.spend.limit is not none %} of {{ a.spend.limit | money }} ({{ (a.spend.share * 100) | round | int }}%){% if a.spend.near_limit %} <span class="badge failure">Near the limit</span>{% endif %}{% else %}; no limit set{% endif %}</dd>
+      <dt>Requests waiting</dt>
+      <dd data-fact="requests">{% if not a.waiting.readable %}Could not be read{% elif a.waiting.count %}<strong>{{ a.waiting.count }}</strong> waiting for a decision{% if can_approve %}. <a href="/approvals">Decide in Approvals</a>{% else %}. Only an approver can decide them{% endif %}{% else %}None{% endif %}</dd>
+      <dt>Access key</dt>
+      <dd data-fact="key">{% if not a.key.readable %}Could not be read{% elif a.key.state == 'ended' %}Ended {{ a.key.expires_at | datetime }}{% elif a.key.state == 'ending' %}Ends {{ a.key.expires_at | datetime }}{% elif a.key.expires_at %}Ends {{ a.key.expires_at | datetime }}{% else %}{{ a.key.label }}{% endif %}</dd>
+    </dl>
+    <p style="margin: var(--space-3) 0 0;">
+      <a class="btn btn--ghost" href="/external-agents/{{ a.id | urlencode }}">Open the agent page</a>
+      {% if can_respond %}<a class="btn btn--ghost" href="/agent-control-plane">Pause or resume</a>{% endif %}
+    </p>
+    {% if not can_admin %}<p class="muted" style="margin: var(--space-2) 0 0; font-size: var(--text-sm);">Read only for you. An administrator can change this agent.</p>{% endif %}
+  </section>
+  {% endfor %}
+  {% endif %}
+{% endblock %}

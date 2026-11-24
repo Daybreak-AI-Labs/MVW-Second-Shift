@@ -437,6 +437,24 @@ async def _expiry_reminder_loop() -> None:
         await asyncio.sleep(300)
 
 
+async def _owner_note_loop() -> None:
+    """Send each agent owner the weekly note of what needs them.
+
+    What was sent is recorded by the pass itself, so a restart sends nothing
+    twice. A failed pass is logged and the loop carries on."""
+    await asyncio.sleep(90)
+    while True:
+        try:
+            from maverick import owner_note
+
+            await run_in_threadpool(owner_note.run_due)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.warning("scheduled owner note failed", exc_info=True)
+        await asyncio.sleep(300)
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     """Start-up and shut-down for the web app.
@@ -470,7 +488,7 @@ async def _lifespan(app: FastAPI):
         except Exception:  # pragma: no cover -- a warning must never block startup
             pass
         timers = [asyncio.create_task(_drift_check_loop()), asyncio.create_task(_platform_check_loop()),
-                  asyncio.create_task(_expiry_reminder_loop())]
+                  asyncio.create_task(_expiry_reminder_loop()), asyncio.create_task(_owner_note_loop())]
         try:
             yield
         finally:
@@ -711,6 +729,9 @@ from .settings_page import create_settings_page_router  # noqa: E402
 
 app.include_router(settings_router)
 app.include_router(create_settings_page_router(templates))
+from .my_agents_page import create_my_agents_page_router  # noqa: E402
+
+app.include_router(create_my_agents_page_router(templates))
 from .agent_control_plane_api import router as agent_control_plane_router  # noqa: E402
 
 app.include_router(agent_control_plane_router, prefix="/api/v1")

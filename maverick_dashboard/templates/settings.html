@@ -34,6 +34,8 @@
     {% for test in section.tests %}<p class="muted" id="result-{{ section.id }}-{{ loop.index }}" role="status" aria-live="polite" hidden></p>{% endfor %}
     {% endif %}
 
+    {% for line in section.status %}<p role="status">{{ line }}</p>{% endfor %}
+
     {% if section.secrets %}
     <table>
       <caption class="sr-only">Secrets for {{ section.title }}</caption>
@@ -158,9 +160,10 @@
   }
   async function save(form, payload, path, ask, okText) {
     if (!(await window.mvConfirm(ask, { okText: okText }))) return;
+    say(form, "", false);
     try {
       var row = await window.mvFetchJSON("/api/v1/settings/" + encodeURIComponent(form.dataset.key) + path,
-        { method: "POST", body: payload }, "save this setting");
+        { method: "POST", body: payload, serverDetail: "The change was not saved." }, "save this setting");
       show(form, row);
       var field = form.elements.value;
       if (field && !(form.dataset.kind === "list_choice")) {
@@ -201,7 +204,7 @@
       var line = document.getElementById(button.dataset.result);
       button.disabled = true;
       try {
-        var answer = await window.mvFetchJSON(button.dataset.settingsTest, { method: "POST", body: {} }, "run this test");
+        var answer = await window.mvFetchJSON(button.dataset.settingsTest, { method: "POST", body: {}, serverDetail: "The test did not go through." }, "run this test");
         line.hidden = false;
         text(line, answer.message || answer.summary || "Done.");
         line.className = "muted";
