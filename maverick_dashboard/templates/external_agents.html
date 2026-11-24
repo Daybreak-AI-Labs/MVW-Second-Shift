@@ -39,20 +39,59 @@
     </ol>
   </div>
 
-  <div class="panel">
-    {% if agents %}
+  <div class="section-head"><h2>Your outside agents</h2></div>
+  <div class="panel" id="xa-roster">
+    <p style="margin: 0 0 var(--space-3);">
+      <span class="badge"><strong data-xa-count="watched">{{ roster.counts.watched }}</strong> Watched</span>
+      <span class="badge"><strong data-xa-count="added">{{ roster.counts.added }}</strong> Added</span>
+      <span class="badge active"><strong data-xa-count="connected">{{ roster.counts.connected }}</strong> Connected</span>
+    </p>
+    <p class="muted" style="margin: 0 0 var(--space-3); font-size: var(--text-sm);"><strong>Watched</strong>: found on a platform, not added to Second Shift. <strong>Added</strong>: added here, not heard from yet. <strong>Connected</strong>: it has called Second Shift.</p>
+    {% if platform_checks is none and enabled %}<p class="muted" style="margin: 0 0 var(--space-3);">The record of platform checks could not be read, so agents found on your platforms are not shown. An administrator should look at the server log.</p>{% endif %}
+    <form method="get" action="/external-agents" id="xa-filters" style="display:flex; gap: var(--space-3); flex-wrap: wrap; align-items: end; margin: 0 0 var(--space-3);">
+      <label>Show
+        <select class="select" name="level">
+          <option value="">All levels</option>
+          {% for key, label in [('watched', 'Watched'), ('added', 'Added'), ('connected', 'Connected')] %}
+          <option value="{{ key }}"{% if level_filter == key %} selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Platform
+        <select class="select" name="platform">
+          <option value="">All platforms</option>
+          {% for p in roster.platforms %}
+          <option value="{{ p.key }}"{% if platform_filter == p.key %} selected{% endif %}>{{ p.label }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <button type="submit" class="btn btn--ghost">Show these</button>
+      {% if level_filter or platform_filter %}<a class="btn btn--ghost" href="/external-agents">Show everything</a>{% endif %}
+    </form>
+    {% if roster.rows %}
     <table>
       <thead>
-        <tr><th scope="col">Agent</th><th scope="col">Platform</th><th scope="col">Owner</th><th scope="col">Department</th><th scope="col">Riskiest action allowed</th><th scope="col">Spending</th><th scope="col">Tasks</th><th scope="col">Access key</th><th scope="col">Status</th><th scope="col">Actions</th></tr>
+        <tr><th scope="col">Level</th><th scope="col">Agent</th><th scope="col">Platform</th><th scope="col">Owner</th><th scope="col">Riskiest action allowed</th><th scope="col">Spending</th><th scope="col">Tasks</th><th scope="col">Last heard from</th><th scope="col">Access key</th><th scope="col">Status</th><th scope="col">Actions</th></tr>
       </thead>
       <tbody>
-        {% for a in agents %}
+        {% for a in roster.rows %}
+        {% if a.level == 'watched' %}
+        <tr data-level="watched">
+          <td><span class="badge" title="Found on its platform, not added to Second Shift">Watched</span></td>
+          <td><strong>{{ a.name }}</strong></td>
+          <td><span class="badge">{{ a.platform_label }}</span></td>
+          <td colspan="6" class="muted">{% if a.state %}{{ a.state | humanize }} on its platform{% else %}State on its platform not reported{% endif %}{% if a.last_seen_at %}, last seen {{ a.last_seen_at | datetime }}{% endif %}. It works outside your rules until you add it.</td>
+          <td class="mv-row__actions">
+            <a class="btn btn--ghost" href="/external-agents?add={{ a.external_ref | urlencode }}#xa-add" data-pc-add data-name="{{ a.name }}" data-ref="{{ a.external_ref }}" data-platform="{{ a.add_as }}"{% if not external_agents_can_manage %} aria-disabled="true"{% endif %}>Add this agent</a>
+          </td>
+        </tr>
+        {% else %}
         {% set _name = a.description or (a.id | humanize) %}
-        <tr>
+        <tr data-level="{{ a.level }}">
+          <td>{% if a.level == 'connected' %}<span class="badge active">Connected</span>{% else %}<span class="badge" title="Added here, not heard from yet">Added</span>{% endif %}</td>
           <td><a href="/external-agents/{{ a.id }}"><strong>{{ _name }}</strong></a>{% if a.description %}<br><span class="muted" style="font-size: var(--text-sm)">{{ a.id }}</span>{% endif %}</td>
           <td><span class="badge">{{ a.platform_label }}</span></td>
           <td>{{ (a.owner | identity).name if a.owner else '—' }}</td>
-          <td>{{ (a.department | humanize) if a.department else '—' }}</td>
           <td>{{ (a.max_risk | humanize) if a.max_risk else 'No limit' }}</td>
           <td>
             {{ a.period_spent | money }}{% if a.max_dollars is not none %} of {{ a.max_dollars | money }}{% endif %}
@@ -60,6 +99,7 @@
             {% if a.over_budget %}<span class="badge failure">Over budget</span>{% endif %}
           </td>
           <td>{{ a.runs }}{% if a.wall_violations %} <span class="badge failure" title="Tasks that took longer than allowed">{{ a.wall_violations }} too long</span>{% endif %}</td>
+          <td>{% if a.heard_at %}{{ a.heard_at | datetime }}<br><span class="muted" style="font-size: var(--text-sm)">{{ a.received }}</span>{% else %}<span class="muted">Not yet</span>{% endif %}</td>
           <td>
             {% if a.credentials %}<span class="badge">Active</span>{% else %}<span class="muted">None yet</span>{% endif %}
           </td>
@@ -70,6 +110,7 @@
           </td>
           <td class="mv-row__actions">
             <a class="btn btn--primary" href="/external-agents/{{ a.id }}">View agent</a>
+            <button type="button" class="btn btn--ghost" data-xa-connect="{{ a.id }}" data-xa-label="{{ _name }}" data-xa-platform="{{ a.platform }}" data-xa-gate="{{ a.gate }}" data-xa-level="{{ a.level }}">{{ 'Check the connection' if a.level == 'connected' else 'Connect it' }}</button>
             {% if a.contained %}
             <button type="button" class="btn btn--ghost" data-xa-release="{{ a.id }}" data-xa-label="{{ _name }}"{% if not external_agents_can_manage %} disabled aria-disabled="true"{% endif %}>Let it work again</button>
             {% endif %}
@@ -81,18 +122,24 @@
             <button type="button" class="btn btn--ghost btn--danger" data-xa-remove="{{ a.id }}" data-xa-label="{{ _name }}"{% if not external_agents_can_manage %} disabled aria-disabled="true"{% endif %}>Remove agent</button>
           </td>
         </tr>
+        {% endif %}
         {% endfor %}
       </tbody>
     </table>
+    {% if platform_checks and platform_checks.status.not_enrolled_count > platform_checks.not_enrolled | length and not level_filter and not platform_filter %}<p class="muted" style="margin: var(--space-2) 0 0; font-size: var(--text-sm);">Showing {{ platform_checks.not_enrolled | length }} of {{ platform_checks.status.not_enrolled_count }} agents found on your platforms.</p>{% endif %}
     {% if not external_agents_can_manage %}<p class="muted" style="margin: var(--space-2) 0 0; font-size: var(--text-sm);">{% if enabled %}Only an administrator can change these agents.{% else %}Outside agents is turned off, so agents cannot be added or changed.{% endif %}</p>{% endif %}
+    {% elif roster.counts.total %}
+    <p class="muted" style="margin: 0;">No agent matches these choices. <a href="/external-agents">Show everything</a>.</p>
     {% else %}
     <div class="mv-empty">
       <p class="mv-empty__title">No outside agents yet</p>
-      <p class="mv-empty__body">Bring an agent from another platform under your rules. Add it below and create its access key, and its work starts showing up here.</p>
+      <p class="mv-empty__body">Bring an agent from another platform under your rules. Add it below and create its access key, and its work starts showing up here. Agents your platform checks find will be listed here too.</p>
       <a class="btn btn--primary" href="#xa-add">Add an outside agent</a>
     </div>
     {% endif %}
   </div>
+
+  {% include "_connect_guide.html" %}
 
   {% include "_external_agent_actions.html" %}
 
@@ -104,14 +151,23 @@
     <form id="xa-add">
       <fieldset id="xa-add-controls" data-feature-enabled="{{ 'true' if external_agents_can_manage else 'false' }}"{% if not external_agents_can_manage %} disabled aria-disabled="true"{% endif %} style="display:grid; grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr)); gap: var(--space-3); border:0; margin:0; padding:0; min-width:0;">
       <legend class="sr-only">Add an outside agent</legend>
+      <label style="grid-column: 1 / -1;">Start from a set of rules <span class="muted">(optional; you can change every limit below before saving)</span>
+        <select class="select" name="starter" id="xa-starter">
+          <option value="">I will set the limits myself</option>
+          {% for key, st in starters.items() %}
+          <option value="{{ key }}">{{ st.label }}</option>
+          {% endfor %}
+        </select>
+        <span class="muted" id="xa-starter-note" style="display:block; font-size: var(--text-sm);" aria-live="polite">These are starting points chosen by the developers of Second Shift, not your policy. An administrator should review them.</span>
+      </label>
       <label>Name
-        <input class="input" name="display_name" id="xa-name" required maxlength="64" placeholder="Invoice helper">
+        <input class="input" name="display_name" id="xa-name" required maxlength="64" placeholder="Invoice helper"{% if prefill %} value="{{ prefill.name or prefill.external_id }}"{% endif %}>
         <input type="hidden" name="id" id="xa-id">
       </label>
       <label>Platform
         <select class="select" name="platform">
           {% for key, label in platforms.items() %}
-          <option value="{{ key }}">{{ label }}</option>
+          <option value="{{ key }}"{% if key == prefill_platform %} selected{% endif %}>{{ label }}</option>
           {% endfor %}
         </select>
       </label>
@@ -125,13 +181,21 @@
         <input class="input" name="department" id="xa-department" maxlength="100">
       </label>
       <label>Record on its platform <span class="muted">(optional)</span>
-        <input class="input" name="external_ref" id="xa-external-ref" maxlength="300" placeholder="foundry:resource/project/agent-name" aria-describedby="xa-external-ref-help">
+        <input class="input" name="external_ref" id="xa-external-ref" maxlength="300" placeholder="foundry:resource/project/agent-name" aria-describedby="xa-external-ref-help"{% if prefill %} value="{{ prefill.external_ref }}"{% endif %}>
       </label>
       <label>Riskiest action allowed
         <select class="select" name="max_risk">
           <option value="">No limit</option>
           <option value="low" selected>Low</option>
           <option value="medium">Medium</option>
+          <option value="high">High</option>
+        </select>
+      </label>
+      <label>A person must approve actions rated
+        <select class="select" name="approval_at" id="xa-approval-at">
+          <option value="">As your organisation decides</option>
+          <option value="low">Low or higher</option>
+          <option value="medium">Medium or higher</option>
           <option value="high">High</option>
         </select>
       </label>
@@ -175,6 +239,7 @@
   </div>
   {% if outside_agent_tabs %}</div>{% endif %}
 
+<script type="application/json" id="xa-starters">{{ starters | tojson }}</script>
 <script nonce="{{ csp_script_nonce }}">
 (function () {
   function slug(text) {
@@ -239,14 +304,50 @@
     };
   }
   var form = document.getElementById("xa-add");
+  // A starter rule set fills the limits; the person can change any of them before saving.
+  var starterIn = document.getElementById("xa-starter"), starters = {};
+  try { starters = JSON.parse(document.getElementById("xa-starters").textContent); } catch (e) { starters = {}; }
+  if (starterIn && form) starterIn.addEventListener("change", function () {
+    var st = starters[starterIn.value], note = document.getElementById("xa-starter-note");
+    if (!st) return;
+    var v = st.values;
+    form.elements.max_risk.value = v.max_risk || "";
+    form.elements.approval_at.value = v.approval_at || "";
+    form.elements.max_dollars.value = v.max_dollars == null ? "" : v.max_dollars;
+    form.elements.budget_period.value = v.budget_period || "monthly"; periodPicked = true;
+    form.elements.expires_days.value = v.expires_days == null ? "" : String(v.expires_days);
+    if (note) note.textContent = st.summary + " Change any limit below before you save. These are starting points chosen by the developers, not your policy; an administrator should review them.";
+  });
   if (form) form.addEventListener("submit", function (ev) {
     ev.preventDefault();
     var body = fields(form);
     if (!body.id) { window.mvToast("Give the agent a name.", { error: true }); return; }
+    body.starter = starterIn && starterIn.value ? starterIn.value : null;
     window.xaCall("/api/v1/external-agents", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
-    }, "Agent added.", true, "add the agent");
+    }, "Agent added.", false, "add the agent").then(function (out) {
+      // Straight on to connecting it: the guide opens on the same page.
+      if (out) window.location.assign("/external-agents?connect=" + encodeURIComponent(body.id) + "#xa-connect");
+    });
+  });
+  // "Add this agent" on a Watched row fills the form without leaving the page; the link works without script too.
+  document.addEventListener("click", function (event) {
+    var link = event.target.closest ? event.target.closest("[data-pc-add]") : null;
+    if (!link) return;
+    var name = document.getElementById("xa-name"), ref = document.getElementById("xa-external-ref");
+    var platform = document.querySelector('#xa-add select[name="platform"]');
+    if (!name || !ref) return;
+    event.preventDefault();
+    name.value = link.getAttribute("data-name") || "";
+    name.dispatchEvent(new Event("input", { bubbles: true }));
+    ref.value = link.getAttribute("data-ref") || "";
+    if (platform && link.getAttribute("data-platform")) platform.value = link.getAttribute("data-platform");
+    document.getElementById("xa-add").scrollIntoView({ behavior: "smooth", block: "start" });
+    name.focus();
+  });
+  Array.prototype.forEach.call(document.querySelectorAll("#xa-filters select"), function (sel) {
+    sel.addEventListener("change", function () { sel.form.submit(); });
   });
 })();
 </script>

@@ -601,6 +601,9 @@ app.include_router(alerts_router)
 from .agent_watch_api import router as agent_watch_router  # noqa: E402
 
 app.include_router(agent_watch_router)
+from .connect_agent_api import router as connect_agent_router  # noqa: E402
+
+app.include_router(connect_agent_router)
 from .ekko_ops_api import router as ekko_ops_router  # noqa: E402
 
 app.include_router(ekko_ops_router)
@@ -1627,14 +1630,28 @@ async def tenant_pinning(request: Request, call_next):
 
 
 @app.get("/external-agents", response_class=HTMLResponse)
-async def external_agents_page(request: Request) -> HTMLResponse:
-    """Outside-agent console: enroll agents built on other platforms, issue
-    their credentials, and watch their governed runs and spend."""
+async def external_agents_page(
+    request: Request, level: str = "", platform: str = "", add: str = "", connect: str = "",
+) -> HTMLResponse:
+    """Outside-agent console: one roster of agents found on other platforms,
+    added here and connected, with the add form, access keys and the guided
+    connect path. ``level`` and ``platform`` filter the roster; ``add`` is the
+    platform record of a found agent whose details pre-fill the add form;
+    ``connect`` is an added agent whose guided connect path opens."""
+    from maverick import connect_guide, outside_roster, starter_rules
     from maverick import external_agents as xa
 
     enabled = xa.enabled()
     agents = xa.roster()
     claimed = frozenset(str(agent.get("external_ref") or "").casefold() for agent in agents) - {""}
+    checks = await run_in_threadpool(_platform_checks_view, claimed) if enabled else None
+    found = (checks or {}).get("not_enrolled") or []
+    roster = outside_roster.build(agents, found, level=level, platform=platform)
+    for row in roster["rows"]:
+        row["gate"] = connect_guide.gate_for(row["platform_key"], str(row.get("external_ref") or ""))
+    prefill = next((entry for entry in found if entry["external_ref"] == add), None)
+    connect_agent = next((dict(a, gate=connect_guide.gate_for(a["platform"], str(a.get("external_ref") or "")))
+                          for a in agents if a["id"] == connect), None)
     return templates.TemplateResponse(
         request,
         "external_agents.html",
@@ -1643,10 +1660,18 @@ async def external_agents_page(request: Request) -> HTMLResponse:
             "external_agents_can_manage": enabled and has_permission(request, "admin"),
             "status": xa.status(),
             "agents": agents,
+            "roster": roster,
+            "level_filter": level if level in outside_roster.LEVELS else "",
+            "platform_filter": platform if platform in {p["key"] for p in roster["platforms"]} else "",
+            "prefill": prefill,
+            "connect_agent": connect_agent,
+            "prefill_platform": outside_roster.CHECK_PLATFORMS.get(prefill["platform"], "") if prefill else "",
+            "starters": starter_rules.STARTERS,
+            "guides": connect_guide.all_guides(),
             "platforms": xa.PLATFORMS,
             "surfaces": xa.TOKEN_SURFACES,
             "outside_agent_tabs": None,
-            "platform_checks": await run_in_threadpool(_platform_checks_view, claimed) if enabled else None,
+            "platform_checks": checks,
             "platform_checks_shown": enabled,
             "alert_delivery": await run_in_threadpool(_alert_delivery_view),
         },
