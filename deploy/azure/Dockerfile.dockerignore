@@ -1,0 +1,11 @@
+**
+!pyproject.toml
+!maverick/
+!maverick/**
+!maverick_dashboard/
+!maverick_dashboard/**
+!deploy/
+!deploy/azure/
+!deploy/azure/service.toml
+**/__pycache__/
+**/*.pyc
