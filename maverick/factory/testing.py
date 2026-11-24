@@ -51,7 +51,7 @@ class StandInGovernance:
         self.stop_reason: str | None = None
         self.goal_id = 0
 
-    def start(self, title: str, summary: str = "") -> int:
+    def start(self, title: str, summary: str = "", declared: dict[str, str] | None = None) -> int:
         return 0
 
     def start_beating(self) -> None:
@@ -65,7 +65,8 @@ class StandInGovernance:
 
         allowed = self.ratings.get(tool) == risk
         self.screens.append({"tool": tool, "risk": risk, "detail": detail[:300], "allowed": allowed})
-        return Decision(allowed, "allowed" if allowed else "The tool is not in this agent's definition at that rating.")
+        return Decision(allowed, "allowed" if allowed else "The tool is not in this agent's definition at that rating.",
+                        "" if allowed else "denied")
 
     def finish(self, report: dict[str, Any]) -> dict[str, Any]:
         self.report = report

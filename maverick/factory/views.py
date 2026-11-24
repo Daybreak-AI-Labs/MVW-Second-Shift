@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from . import store
+from . import export, store
 
 
 def tests_view(record: dict[str, Any], version: dict[str, Any]) -> dict[str, Any] | None:
@@ -41,6 +41,7 @@ def agent_view(record: dict[str, Any]) -> dict[str, Any]:
         "tip": tip["number"], "released": released["number"] if released else None, "enrollment": record.get("enrollment"),
         "cases": record.get("cases") or [], "versions": [version_view(record, v) for v in record["versions"]],
         "revision": record["revision"], "updated_at": record.get("updated_at"),
+        "foundry": record.get("foundry"), "foundry_agent_name": export.foundry_agent_name(record),
     }
 
 

@@ -38,7 +38,7 @@ maverick_dashboard = ["templates/*.html", "static/*", "static/fonts/*"]
 testpaths = ["tests"]
 python_files = "test_*.py"
 addopts = "--import-mode=importlib"
-pythonpath = ["."]
+pythonpath = [".", "runtime"]
 asyncio_mode = "strict"
 
 [tool.ruff]
