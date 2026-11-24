@@ -15,7 +15,8 @@ longer matches the approved one"), and what happens next follows your drift
 settings.
 
 Platform checks are off until you turn them on. Nothing in this note has been
-run against a live Microsoft tenant; see "Limits" for what that means.
+run against a live Microsoft tenant, ServiceNow instance or Workday tenant; see
+"Limits" for what that means.
 
 ## What one check does
 
@@ -68,6 +69,23 @@ client_secret_env = "SS_MS_CLIENT_SECRET"
 environments = ["https://contoso.crm4.dynamics.com"]
 ```
 
+For ServiceNow and Workday, add `"servicenow"` or `"workday"` to `platforms`
+and a section for each:
+
+```toml
+[agent_watch.servicenow]
+instances = ["https://contoso.service-now.com"]
+client_id_env = "SS_SN_CLIENT_ID"
+client_secret_env = "SS_SN_CLIENT_SECRET"
+
+[agent_watch.workday]
+region = "us"
+tenant = "contoso"
+client_id_env = "SS_WD_CLIENT_ID"
+client_secret_env = "SS_WD_CLIENT_SECRET"
+refresh_token_env = "SS_WD_REFRESH_TOKEN"
+```
+
 List only the platforms you use. The variable names above are examples; use
 any names you like.
 
@@ -102,6 +120,12 @@ never written to disk, to the log or to the saved record.
 
 You can use one app registration for all three checks, or one per check.
 
+The ServiceNow and Workday checks follow the same rule with their own
+credentials: the settings hold only the names of environment variables, the
+values are read at the moment of each check, and a section that contains the
+secret itself (`client_secret = "..."`, or for Workday `refresh_token = "..."`)
+is refused. What each one signs in as is described in its own section below.
+
 ## Linking an enrolled agent to its platform agent
 
 A check matches a platform agent to an enrolled agent through the enrolled
@@ -112,6 +136,8 @@ agent's external reference, written as `<platform>:<id on that platform>`:
 | `entra_agent_id` | the agent identity's object id | `entra_agent_id:1b7313c4-05d0-4a08-88e3-7b76c003a0a2` |
 | `foundry` | resource, project and agent name | `foundry:contoso-ai/sales/quote-agent` |
 | `copilot_studio` | environment host and agent (bot) id | `copilot_studio:contoso.crm4.dynamics.com/49b0be2e-d01c-ed11-b83e-000d3a572421` |
+| `servicenow` | instance host and the agent record's `sys_id` | `servicenow:contoso.service-now.com/0a1b2c3d4e5f60718293a4b5c6d7e8f9` |
+| `workday` | tenant and agent definition id | `workday:contoso/9a1f0c2e4b6d8f00112233445566aabb` |
 
 Capital and small letters are treated as the same. The "not enrolled" list
 shows the exact reference to use for each agent it found.
@@ -202,6 +228,168 @@ are not seen: Microsoft's tenant-wide inventory needs a signed-in person, not
 an app. Agents built for Microsoft 365 Copilot without Copilot Studio are not
 covered.
 
+## The ServiceNow check (`servicenow`)
+
+**Reads:** the AI agents built in AI Agent Studio on each instance you list,
+from four tables, through the ServiceNow Table API:
+
+| Table | What the check takes from it |
+| --- | --- |
+| `sn_aia_agent` | the agents: name, role, description, type, channel |
+| `sn_aia_agent_config` | each agent's settings record, with its "active" switch |
+| `sn_aia_version` | each agent's versions, with their instructions and state |
+| `sn_aia_agent_tool_m2m` | which tools each agent may use |
+
+Each table is read with
+`GET https://<instance>.service-now.com/api/now/table/<table>?sysparm_query=ORDERBYsys_id&sysparm_fields=<a fixed list of columns>&sysparm_display_value=false&sysparm_exclude_reference_link=true&sysparm_limit=100&sysparm_offset=<n>`,
+100 records at a time, until a page comes back empty. An instance therefore
+takes at least four requests, and normally eight or more.
+
+**Settings:**
+
+- `instances`: a list of 1 to 20 addresses of the form
+  `https://<instance>.service-now.com`. Use the instance's own address.
+  ServiceNow lets a company add branded "custom URLs" (such as
+  `https://support.example.com`). Each of those is only another name for the
+  same instance, so the check does not accept them: the client secret is then
+  never sent to anything but a ServiceNow address.
+- `client_id_env` and `client_secret_env`: the names of the environment
+  variables that hold the OAuth client id and client secret.
+- `scope` (optional): OAuth scope names separated by spaces, if your
+  integration only gives tokens for named scopes. Leave it out otherwise.
+
+Every instance you list is signed in to with the same client id and secret.
+Instances cloned from one another usually share them. If yours do not, list
+one instance only.
+
+**Permission to grant,** on each instance:
+
+1. Turn on client-credentials sign-in for inbound requests. ServiceNow keeps it
+   off by default: set the system property
+   `glide.oauth.inbound.client.credential.grant_type.enabled` to `true`.
+2. Create the integration: Machine Identity Console > Inbound integrations >
+   New integration > OAuth - Client credential grant (this needs the role
+   `oauth_admin`, `mi_admin` or `admin`). Its *OAuth application user* is the
+   account the check acts as.
+3. Give that OAuth application user the role **`sn_aia.viewer`** (AI Agent
+   Viewer), which ServiceNow describes as read-only access to the AI agent
+   tables. Do not give it `sn_aia.admin`; the check never needs to change
+   anything.
+
+**What counts as a change:**
+
+- on the agent: its name, type, channel, record type, parent agent, and its
+  role, description, condition and context-processing script;
+- on its settings record: whether it is active, whether it is public, the user
+  it runs as, advanced mode and agent learning;
+- on its versions: a version being added, published, withdrawn or renamed, or
+  the instructions or condition of any version that is not a draft changing;
+- on its tools: a tool being added or removed, or a tool link being edited
+  (for example how the tool may be run).
+
+Role text, descriptions, scripts and instructions are turned into fingerprints
+as they are read and are never kept. Editing a draft version is not a change,
+because a draft is not what runs; publishing it is. The status shows the name
+of the published version, whether the agent is active, and when its record was
+last updated.
+
+**Cannot see:** what an agent did (runs, messages and logs are not read); what
+a tool itself does (an edit inside a tool is not seen, only the link between
+agent and tool); agentic workflows, triggers and teams; the access roles an
+agent takes on; ServiceNow's AI assets inventory; and agents on instances you
+did not list.
+
+**Not confirmed.** Nothing was run against a live ServiceNow instance.
+
+- ServiceNow's pages name these tables, their columns and the read-only role,
+  but do not say in so many words that the Table API serves them. If an
+  instance refuses, the status says which table.
+- If a ServiceNow release names a column differently, the instance leaves it
+  out without saying so, and the check reads that value as "not set". Only
+  each record's `sys_id` is required. The effect would be a blank state or
+  version in the status, and a weaker fingerprint, not a wrong one.
+- ServiceNow applies the page size before its access rules, so a page can come
+  back short while more records remain. The check therefore stops only at an
+  empty page. If the account could not read 100 agent records in a row, the
+  records after them would not be seen. The `sn_aia.viewer` role can read them
+  all.
+- The sign-in always sends a `scope` field, empty unless you set `scope`. The
+  OAuth standard says an empty field counts as left out; we could not confirm
+  that ServiceNow treats it so.
+- Government and other separately hosted instances whose address does not end
+  in `.service-now.com` are refused in the settings.
+- The agents ServiceNow ships ready-made are records in the same table as your
+  own, so they are listed too and will appear on the "not enrolled" list. The
+  check does not guess which of them can run.
+- `max_agents` counts every record this check reads (agents, settings records,
+  versions and tool links), not agents alone. Raise it if a large instance is
+  refused for listing too many.
+
+## The Workday check (`workday`)
+
+**Reads:** the agent definitions registered in your tenant's Agent System of
+Record, with one call through Workday's Agent Gateway:
+`GET https://<region>.agent.workday.com/asor/v1/agentDefinition`, sent with
+the header `wd-agent-tenant-alias: <tenant>`.
+
+**Settings:**
+
+- `region`: the Agent Gateway region that hosts your tenant. One of `us`,
+  `eu`, `uk`, `ca`, `au`, `sg`, `in`, `jp`.
+- `tenant`: your tenant alias (normally the tenant name).
+- `client_id_env`, `client_secret_env` and `refresh_token_env`: the names of
+  the environment variables that hold the API client's id, its secret, and the
+  refresh token.
+
+One section covers one tenant.
+
+**Permission to grant,** in Workday:
+
+1. Create an integration system user (task *Create Integration System User*),
+   or reuse one, and put it in a security group that can view the
+   **Setup: Agents** domain in the Agent System of Record functional area.
+2. Run the task *Register API Client for Integrations*: choose **Agent System
+   of Record** as the scope (functional area) and tick *Include Workday Owned
+   Scopes*. Save the client ID and client secret it shows.
+3. On that API client choose Related Actions > *Manage Refresh Tokens*, pick
+   the integration system user, and generate a refresh token.
+
+The check signs in with the refresh token (Workday documents no sign-in for
+this API that uses a client id and secret alone). It asks for a new access
+token at each check and keeps it only for that check.
+
+**What counts as a change:** the definition's name, version label, address
+(`url`), provider, platform, external agent and tenant ids, description,
+capabilities, input and output types, its skills, and its Workday set-up: which
+Workday resources each skill may use, and whether a skill runs on its own
+("ambient") or on behalf of a person ("delegate"). Descriptions, skills and
+resource lists are turned into fingerprints as they are read and are never
+kept. The overview message, icon and documentation link are left out.
+
+**Cannot see:** whether an agent is activated or deactivated, which of its
+skills are switched on, and which security groups it is available to. Those
+are set in the Agent Management Hub and Workday offers no call to read them, so
+the state is shown blank. Workday also gives no "last changed" time and nothing
+about what an agent did.
+
+**Not confirmed.** Nothing was run against a live Workday tenant.
+
+- Workday documents no way to read this list in parts. Its answer carries a
+  count, and the check requires the count to equal the number of definitions
+  sent. If Workday ever sends only the first part of a long list, the check
+  fails with a plain message instead of treating the part as the whole. Tell
+  us if you see this.
+- If Workday lists the same definition id twice (its pages suggest the id may
+  link several versions of one agent), the check fails instead of picking one.
+- We could not confirm whether Workday replaces the refresh token each time it
+  is used. The check never stores a token, so if yours is replaced on use the
+  second check will be refused. Workday's *Register API Client for
+  Integrations* task has a *Non-Expiring Refresh Tokens* option; use it.
+- We could not confirm the exact name of the permission the security group
+  needs on the Setup: Agents domain. Workday's API description says only that
+  the list is "secured by" that domain.
+- Only the eight regions above are accepted, as Workday lists them.
+
 ## Limits
 
 - **Not run against a live tenant.** The checks follow Microsoft's published
@@ -231,14 +419,20 @@ covered.
 - **Microsoft public cloud only.** The sign-in, Graph, Foundry and Dataverse
   addresses are fixed. Government and other national clouds are refused in the
   settings.
-- **Direct connections only.** The checks connect straight to Microsoft and do
-  not use an outbound proxy. If your installation restricts outbound
+- **Direct connections only.** The checks connect straight to each platform and
+  do not use an outbound proxy. If your installation restricts outbound
   connections, allow `login.microsoftonline.com`, `graph.microsoft.com`, your
   `<resource>.services.ai.azure.com` and your `<name>.crm*.dynamics.com`
-  hosts. A resource reachable only through a private endpoint is refused
-  unless you have allowed private addresses for fetches.
+  hosts, and for the other platforms your `<instance>.service-now.com` hosts
+  and `<region>.agent.workday.com`. A resource reachable only through a
+  private endpoint is refused unless you have allowed private addresses for
+  fetches.
 - **Client secrets only.** Certificates and managed identities are not
-  supported for sign-in.
+  supported for sign-in. (The Workday check also needs a refresh token.)
+- **ServiceNow and Workday have not been run against a live instance or
+  tenant either.** Both follow the vendors' published pages (listed below),
+  and both have points the pages leave open; each section above says which
+  under "Not confirmed".
 - **The "not enrolled" list keeps at most 500 agents per platform.** The status
   shows the full count next to the number shown.
 
@@ -267,10 +461,13 @@ ones:
 | the environment variable named by a setting is not set | Set the variable, or correct its name in the settings. |
 | the sign-in service refused the sign-in | Check the tenant id, client id and secret, and that the secret has not expired. |
 | the platform refused this check (HTTP 403) | Grant the permission described above for that platform. |
-| nothing at the address (HTTP 404) | Check the project endpoint or environment address. |
+| nothing at the address (HTTP 404) | Check the project endpoint, the environment or instance address, or the region. |
 | the platform listed more than N agents / did not end within N pages | Raise `max_agents` or `max_pages` if the number is expected. |
-| the answer was not in the expected form | Microsoft's answer did not match its documentation. Nothing from that check was used; report it. |
+| the answer was not in the expected form | The platform's answer did not match its documentation. Nothing from that check was used; report it. |
 | network rules do not allow connections | Allow the hosts listed under "Limits". |
+| ServiceNow sent records it had already sent (a repeat) | The instance did not move on to the next page. Nothing from that check was used; report it. |
+| Workday's count of agent definitions does not match the number it sent | Workday sent only part of its list. Nothing from that check was used; see "Not confirmed" in the Workday section and report it. |
+| Workday refused this check's sign-in | Check the region, tenant, client id, client secret and refresh token. Generate a new refresh token if the old one was replaced or has expired. |
 
 ## For integrators
 
@@ -299,3 +496,24 @@ Both answer 404 while outside-agent governance is off.
 - Dataverse sign-in as an app: https://learn.microsoft.com/en-us/power-apps/developer/data-platform/authenticate-oauth
 - Application users in an environment: https://learn.microsoft.com/en-us/power-platform/admin/manage-application-users
 - Why the tenant-wide Copilot Studio inventory is not used (it needs a signed-in person): https://learn.microsoft.com/en-us/power-platform/admin/inventory-api
+
+## ServiceNow pages this check follows
+
+- Sign-in (OAuth 2.0 client credentials, `POST /oauth_token.do`): https://www.servicenow.com/docs/r/platform-security/authentication/client-credentials-grant-workflow.html
+- Setting up the client-credentials integration and its roles: https://www.servicenow.com/docs/r/platform-security/authentication/configure-an-oauth-client-credential-grant.html
+- The property that turns the client-credentials sign-in on: https://www.servicenow.com/docs/r/platform-security/authentication/client-credentials.html
+- The Table API (`sysparm_fields`, `sysparm_limit`, `sysparm_offset`, sorting, and the page size being applied before access rules): https://www.servicenow.com/docs/r/api-reference/rest-apis/c_TableAPI.html
+- The AI agent tables and the `sn_aia.viewer` role: https://www.servicenow.com/docs/r/intelligent-experiences/na-aia-reference.html
+- The columns of those tables ("Field Mapping" and "Coalesce Keys" in the ServiceNow SDK reference): https://servicenow.github.io/sdk/api/aiagent-api
+- The record id (`sys_id`): https://www.servicenow.com/docs/r/platform-administration/c_UniqueRecordIdentifier.html
+- Custom instance URLs, and why they are not accepted: https://www.servicenow.com/docs/r/platform-security/authentication/custom-url.html
+
+## Workday pages this check follows
+
+- The Agent System of Record endpoint, its token endpoint and the `wd-agent-tenant-alias` header: https://doc.workday.com/admin-guide/en-us/workday-ai/agents/external-agents/register-and-authenticate-external-agents.html
+- The Agent Gateway and its regional addresses: https://doc.workday.com/admin-guide/en-us/workday-ai/agents/workday-agent-gateway-for-partner-agents.html
+- The integration system user, its API client and the refresh-token sign-in: https://doc.workday.com/admin-guide/en-us/workday-ai/agents/external-agents/connect-custom-agents-to-external-agents-using-a2a.html
+- The other documented sign-in, which needs a person (authorization code): https://doc.workday.com/admin-guide/en-us/workday-ai/agents/external-agents/register-an-external-agent-using-the-asor-api.html
+- Token lifetimes: https://doc.workday.com/admin-guide/en-us/workday-ai/agents/external-agents/concept--external-agent-asu-considerations.html
+- The API description (the list answers with `total` and `data`; the fields of a definition): https://workday.github.io/asor/versions/v1.2.json and https://workday.github.io/asor/versions/v1.2.html
+- A sample definition and answer: https://developer.workday.com/documentation/GUID-371cf3b1-eb6d-457d-8ba3-b36d5dbcf633/SampleASORAPIAgentDefinition

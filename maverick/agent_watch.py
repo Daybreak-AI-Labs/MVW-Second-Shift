@@ -70,7 +70,7 @@ _BINDINGS = (IMMUTABLE_REVISION, OBSERVED_SNAPSHOT)
 _STATES = ("enabled", "disabled", "")
 
 #: Modules that register the built-in watchers when imported.
-_WATCHER_MODULES = ("agent_watch_microsoft",)
+_WATCHER_MODULES = ("agent_watch_microsoft", "agent_watch_servicenow", "agent_watch_workday")
 
 #: Storage bounds. Platforms follow the settings cap, per-agent views follow
 #: enrollment, and each platform keeps a capped not-enrolled list.

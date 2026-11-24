@@ -29,9 +29,11 @@ Early. What works today:
   (`tools`) and the agent's own version, configuration digest and model
   (`declared`).
 - **Platform checks.** Second Shift can ask Microsoft Entra Agent ID,
-  Microsoft Foundry and Copilot Studio which agents exist and how each is set
-  up, so a change is noticed even when the agent reports nothing and agents
-  nobody enrolled are listed. See [docs/platform-checks.md](docs/platform-checks.md).
+  Microsoft Foundry, Copilot Studio, ServiceNow and Workday which agents exist
+  and how each is set up, so a change is noticed even when the agent reports
+  nothing and agents nobody enrolled are listed. Read-only. Each check was
+  written from the vendor's documentation; the parts that documentation does
+  not settle are listed in [docs/platform-checks.md](docs/platform-checks.md).
 - **Alerts.** To a Microsoft Teams channel and by email, with a test call for
   administrators. See [docs/alerts.md](docs/alerts.md).
 - **Sign-in and roles.** OpenID Connect (for example Microsoft Entra ID), or a
@@ -45,14 +47,14 @@ Early. What works today:
   `[ekko] enable` is set. The page, and recordings arriving from a person's
   computer on their own, are not here yet.
 
-Not here yet: the agent factory, the AI asset inventory, the Ekko page and
-its recorder hand-over, and platform checks for ServiceNow and Workday.
+Not here yet: the agent factory, the AI asset inventory, and the Ekko page
+and its recorder hand-over.
 
 Proven against a live PostgreSQL 16 server: the Postgres tests, the whole suite
 with the database connected, and the app itself (start, enroll, run report,
 parked request, approval). Not yet proven outside this repository's tests:
-nothing has been run against a live Microsoft tenant, a real Teams channel or
-a real mail server.
+nothing has been run against a live Microsoft tenant, ServiceNow instance or
+Workday tenant, a real Teams channel or a real mail server.
 
 Enrollment, drift and platform-check records are files in the data folder, not
 database rows: run one instance of the app, on storage that persists.
