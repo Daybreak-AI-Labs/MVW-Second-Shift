@@ -25,6 +25,9 @@ def _isolated(tmp_path, monkeypatch):
     monkeypatch.setenv("MAVERICK_EXTERNAL_AGENTS", "1")
     monkeypatch.setenv("MAVERICK_ENCRYPT_AT_REST", "0")
     monkeypatch.delenv("MAVERICK_AGENT_DRIFT", raising=False)
+    # These tests judge findings straight after approving a baseline; the
+    # learning period has its own tests (test_defaults_learning_period.py).
+    monkeypatch.setitem(drift._NUMBER_SETTINGS, "learning_days", (int, 0, 0, 365))
     from maverick import config, world_model
     from maverick.audit import writer as audit_writer
     monkeypatch.setattr(world_model, "DEFAULT_DB", tmp_path / "world.db")

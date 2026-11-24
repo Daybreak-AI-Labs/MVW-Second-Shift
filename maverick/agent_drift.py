@@ -119,6 +119,9 @@ _NUMBER_SETTINGS: dict[str, tuple[type, float, float, float]] = {
     "check_minutes": (int, 15, 1, 1440),
     # how long an agent that used to report may stay quiet before it is flagged
     "silent_hours": (int, 48, 1, 720),
+    # days after a baseline is approved when findings are recorded but neither
+    # alerted nor allowed to contain the agent (0 turns the learning period off)
+    "learning_days": (int, 14, 0, 365),
 }
 
 _NOT_RECORDED = ("This could not be written to the audit log, so nothing was changed. "
@@ -190,6 +193,8 @@ def settings() -> dict:
     ``enable`` (default on), ``baseline_days``, ``window_days``, ``min_runs``,
     ``min_screens``, ``tool_mix_min_samples``, ``check_minutes``, ``silent_hours``, one threshold per
     finding, and
+    ``learning_days`` (days after a baseline is approved when findings are
+    recorded but not alerted or acted on; 14, 0 turns it off) and
     ``on_drift`` ("alert", the default, or "contain"). Numbers outside their
     range are clamped; anything malformed, or a section that cannot be read,
     falls back to the default. ``MAVERICK_AGENT_DRIFT=0/1`` overrides
@@ -814,6 +819,9 @@ def _evaluate_record(agent_id: str, record: dict | None, cfg: dict, moment: floa
     if not isinstance(approved, dict):
         return _without_baseline(out, days, cfg, moment, active=active)
     out["baseline"] = _baseline_view(approved)
+    ends = _learning_ends_at(approved, cfg)
+    out["learning_period"] = {"active": moment < ends, "ends_at": ends if ends > 0 else None,
+                              "days": cfg["learning_days"]}
     # Drift is movement after approval, so the window never reaches back
     # before the day the baseline was approved.
     first = max(today - cfg["window_days"] + 1,
@@ -838,8 +846,25 @@ def _evaluate_record(agent_id: str, record: dict | None, cfg: dict, moment: floa
                                      _dict(record.get("config"))))
     _apply_acknowledgements(findings, _dict(record.get("acknowledged")),
                             _dict(record.get("reported")))
+    for finding in findings:
+        finding["learning"] = out["learning_period"]["active"] and not _always_alerts(finding)
     _settle_state(out, findings, base, current)
     return out
+
+
+def _learning_ends_at(approved: dict, cfg: dict) -> float:
+    """When the learning period after the baseline's approval ends (0.0 with
+    none)."""
+    if not cfg["learning_days"]:
+        return 0.0
+    return _amount(approved.get("approved_at")) + cfg["learning_days"] * _DAY_SECONDS
+
+
+def _always_alerts(finding: dict) -> bool:
+    """A high-severity change to the agent's set-up on its home platform is
+    alerted (and may contain the agent) even in the learning period."""
+    return (finding["kind"] == "config_changed" and finding.get("source") == "discovery"
+            and finding["severity"] == HIGH)
 
 
 def _without_baseline(out: dict, days: dict, cfg: dict, moment: float, *, active: bool) -> dict:
@@ -1150,12 +1175,15 @@ def check(agent_id: str, *, now: float | None = None) -> dict:
     # Containment comes first and outside the store lock: if this process
     # stops before the finding is remembered, the next check contains again
     # instead of believing it was already handled.
-    if cfg["on_drift"] == "contain" and (waiting or any(f["severity"] == HIGH for f in fresh)):
+    if cfg["on_drift"] == "contain" and (
+            waiting or any(f["severity"] == HIGH and not f.get("learning") for f in fresh)):
         contained, failed = _contain(agent_id)
     new = _report_new(agent_id, cfg, moment, contained=contained, failed=failed,
                       seen={f["key"] for f in fresh})
-    if new:
-        _alert(agent_id, new, contained=contained, failed=failed)
+    # Findings from the learning period are recorded above but not alerted.
+    loud = [f for f in new if not f.get("learning")]
+    if loud:
+        _alert(agent_id, loud, contained=contained, failed=failed)
     elif contained and waiting:
         # the earlier report said it could not be contained; say that it now is
         _audit("agent_drift_contained", agent_id, findings=[f["key"] for f in waiting])
@@ -1227,8 +1255,14 @@ def _audit(kind: str, agent_id: str, **payload: Any) -> bool:
 
 def _new_findings(findings: list[dict], reported: dict) -> list[dict]:
     """Open findings not reported before, or reported at a lower severity."""
-    return [f for f in findings if not f["acknowledged"]
-            and _RANK[f["severity"]] > _rank(_dict(reported.get(f["key"])).get("severity"))]
+    out = []
+    for f in findings:
+        entry = _dict(reported.get(f["key"]))
+        # A finding recorded in the learning period is reported again, once, when it ends.
+        if not f["acknowledged"] and (_RANK[f["severity"]] > _rank(entry.get("severity"))
+                                      or (entry.get("learning") and not f.get("learning"))):
+            out.append(f)
+    return out
 
 
 def _contain(agent_id: str) -> tuple[bool, bool]:
@@ -1273,7 +1307,8 @@ def _report_new(agent_id: str, cfg: dict, moment: float, *, contained: bool,
                     "agent_drift_detected", agent_id, finding=finding["key"],
                     finding_kind=finding["kind"], severity=finding["severity"],
                     baseline=finding["baseline"], current=finding["current"],
-                    summary=finding["summary"], reaction=cfg["on_drift"], contained=contained):
+                    summary=finding["summary"], reaction=cfg["on_drift"], contained=contained,
+                    learning_period=bool(finding.get("learning"))):
                 recorded.append(finding)
         hold = {f["key"] for f in unreported} - {f["key"] for f in recorded}
         record["reported"] = _remember(reported, result["findings"], moment,
@@ -1294,12 +1329,15 @@ def _remember(reported: dict, findings: list[dict], moment: float, *, hold: set[
         if finding["acknowledged"] or key in hold:
             continue
         entry = _dict(reported.get(key))
-        if _RANK[finding["severity"]] > _rank(entry.get("severity")):
+        if (_RANK[finding["severity"]] > _rank(entry.get("severity"))
+                or (entry.get("learning") and not finding.get("learning"))):
             entry = {"at": moment, "seen": moment, "severity": finding["severity"]}
+            if finding.get("learning"):
+                entry["learning"] = True
             reported[key] = entry
         elif moment - _amount(entry.get("seen")) >= _SEEN_REFRESH_SECONDS:
             entry["seen"] = moment
-        if finding["severity"] == HIGH and pending:
+        if finding["severity"] == HIGH and pending and not finding.get("learning"):
             entry["containment_pending"] = True
         else:
             entry.pop("containment_pending", None)
