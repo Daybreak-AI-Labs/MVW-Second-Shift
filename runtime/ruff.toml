@@ -1,0 +1,6 @@
+# The runtime is its own package: same rules as the repository, but it knows its own import name.
+extend = "../pyproject.toml"
+
+[lint.isort]
+known-first-party = ["second_shift_runtime"]
+known-local-folder = ["fakes"]
