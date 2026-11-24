@@ -15,7 +15,8 @@ Safety invariants (see maverick_dashboard.auth):
     or tampered store can never lock every admin out.
   * The roster is control-plane data: one GLOBAL file, never per-tenant.
 
-Store: ``~/.maverick/dashboard-users.json`` (0600), ``{principal: role}``.
+Store: ``~/.maverick/dashboard-users.json`` (0600), ``{principal: role}``, kept with
+the other records (``maverick.record_documents``).
 Once any role is written, a private sibling marker
 (``dashboard-users.json.present``) records that a roster exists. A missing
 roster is then a refusal (:class:`RosterMissingError`), never a silent return
@@ -209,22 +210,42 @@ def _validate_custom_role(name: object, rec: object) -> tuple[str, dict]:
     return name, {"permissions": ordered, "description": description}
 
 
-def _load_custom() -> dict[str, dict]:
-    from maverick.file_lock import (
-        atomic_read_text,
-        ensure_private_directory,
-        ensure_private_file,
-    )
-    from maverick.paths import maverick_home
+def _read_store(p: Path):
+    """The record at ``p`` as a document, or None when there is none. Files get
+    their private-folder and private-file checks; Postgres has neither."""
+    from maverick import record_documents
 
+    if not record_documents.using_postgres():
+        from maverick.file_lock import ensure_private_directory
+        from maverick.paths import maverick_home
+
+        ensure_private_directory(maverick_home())
+        ensure_private_directory(p.parent)
+    doc = record_documents.at(p)
+    return doc if doc.exists() else None
+
+
+def _read_text(doc, p: Path) -> str:
+    """The text of an existing record; a record that has gone is unreadable."""
+    from maverick import record_documents
+
+    if not record_documents.using_postgres():
+        from maverick.file_lock import ensure_private_file
+
+        ensure_private_file(p)
+    text = doc.read_text()
+    if text is None:
+        raise FileNotFoundError("the saved record is missing")
+    return text
+
+
+def _load_custom() -> dict[str, dict]:
     p = custom_roles_path()
-    ensure_private_directory(maverick_home())
-    ensure_private_directory(p.parent)
-    if not p.exists():
+    doc = _read_store(p)
+    if doc is None:
         return {}
     try:
-        ensure_private_file(p)
-        data = _decode_json_object(atomic_read_text(p), label="custom role store")
+        data = _decode_json_object(_read_text(doc, p), label="custom role store")
     except RbacStoreError:
         raise
     except (OSError, ValueError) as exc:
@@ -255,6 +276,13 @@ def _presence_marker(path: Path) -> Path:
 
 
 def _roster_recorded(path: Path) -> bool:
+    from maverick import record_documents
+
+    if record_documents.using_postgres():
+        try:
+            return record_documents.at(_presence_marker(path)).exists()
+        except OSError as exc:
+            raise RbacStoreError(f"RBAC roster state unreadable: {exc}") from exc
     try:
         _presence_marker(path).lstat()  # a dangling or odd entry still counts
     except FileNotFoundError:
@@ -266,11 +294,11 @@ def _roster_recorded(path: Path) -> bool:
 
 def _record_roster(path: Path) -> None:
     """Durably note that ``path`` holds assigned roles (idempotent)."""
-    from maverick.file_lock import atomic_write_text
+    from maverick import record_documents
 
     if not _roster_recorded(path):
-        atomic_write_text(_presence_marker(path),
-                          json.dumps({"schema": 1, "roster": path.name}, sort_keys=True))
+        record_documents.at(_presence_marker(path)).write_text(
+            json.dumps({"schema": 1, "roster": path.name}, sort_keys=True))
 
 
 def _missing_roster(path: Path, label: str) -> dict:
@@ -292,21 +320,12 @@ def _backfill_record(path: Path) -> None:
 
 
 def _load() -> dict[str, str]:
-    from maverick.file_lock import (
-        atomic_read_text,
-        ensure_private_directory,
-        ensure_private_file,
-    )
-    from maverick.paths import maverick_home
-
     p = store_path()
-    ensure_private_directory(maverick_home())
-    ensure_private_directory(p.parent)
-    if not p.exists():
+    doc = _read_store(p)
+    if doc is None:
         return _missing_roster(p, "The role list")
     try:
-        ensure_private_file(p)
-        data = _decode_json_object(atomic_read_text(p), label="RBAC roster")
+        data = _decode_json_object(_read_text(doc, p), label="RBAC roster")
     except RbacStoreError:
         raise
     except (OSError, ValueError) as exc:
@@ -358,21 +377,12 @@ def tenant_store_path() -> Path:
 
 
 def _load_tenant() -> dict[str, dict[str, str]]:
-    from maverick.file_lock import (
-        atomic_read_text,
-        ensure_private_directory,
-        ensure_private_file,
-    )
-    from maverick.paths import maverick_home
-
     p = tenant_store_path()
-    ensure_private_directory(maverick_home())
-    ensure_private_directory(p.parent)
-    if not p.exists():
+    doc = _read_store(p)
+    if doc is None:
         return _missing_roster(p, "The workspace role list")
     try:
-        ensure_private_file(p)
-        data = _decode_json_object(atomic_read_text(p), label="tenant RBAC roster")
+        data = _decode_json_object(_read_text(doc, p), label="tenant RBAC roster")
     except RbacStoreError:
         raise
     except (OSError, ValueError) as exc:
@@ -418,8 +428,10 @@ def tenant_role_scope_initialized() -> bool:
     Keep the roster even when its last grant is revoked. A missing recorded
     roster raises rather than silently restoring installation-wide defaults.
     """
+    from maverick import record_documents
+
     _load_tenant()
-    return tenant_store_path().exists()
+    return record_documents.at(tenant_store_path()).exists()
 
 
 def get_tenant_role(tenant: str, principal: str) -> str | None:

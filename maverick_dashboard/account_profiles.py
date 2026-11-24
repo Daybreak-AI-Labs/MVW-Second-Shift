@@ -9,7 +9,9 @@ neither removes the record.
 
 Store: ``<maverick_home>/account-profiles.json`` (0600), one installation-wide
 file keyed by sign-in, written atomically under a cross-process lock and
-sealed with the deployment key when at-rest encryption is on. Bounded to
+sealed with the deployment key when at-rest encryption is on. With Postgres as the
+main database it is kept with the other records (``maverick.record_documents``)
+and the database's own encryption applies instead. Bounded to
 ``_MAX_ENTRIES`` by last sign-in. It grants nothing: it only names people
 where they are already shown. My data exports it and its reviewed deletion
 erases it; deleting the account in the company directory (SCIM) erases it too.
@@ -28,7 +30,7 @@ import unicodedata
 from contextlib import contextmanager
 from pathlib import Path
 
-from maverick.file_lock import atomic_write_bytes, cross_process_lock, ensure_private_directory
+from maverick import record_documents
 from maverick.paths import maverick_home
 
 _MAX_ENTRIES = 50_000
@@ -58,18 +60,24 @@ def enabled() -> bool:
 
 @contextmanager
 def _locked():
-    ensure_private_directory(maverick_home())
-    with _LOCK, cross_process_lock(_path()):
+    with _LOCK, record_documents.at(_path()).locked():
         yield
 
 
 def _read() -> dict[str, dict]:
     from maverick import crypto_at_rest
 
-    try:
-        raw = _path().read_bytes()
-    except FileNotFoundError:
-        return {}
+    if record_documents.using_postgres():
+        # The database keeps the record (its own encryption at rest applies).
+        text = record_documents.at(_path()).read_text()
+        if text is None:
+            return {}
+        raw = text.encode("utf-8")
+    else:
+        try:
+            raw = _path().read_bytes()
+        except FileNotFoundError:
+            return {}
     if crypto_at_rest.is_sealed(raw):
         with crypto_at_rest.deployment_key_scope():
             raw = crypto_at_rest.unseal(raw)
@@ -87,9 +95,15 @@ def _write(profiles: dict[str, dict]) -> None:
         newest = sorted(profiles, key=lambda key: profiles[key].get("at", 0), reverse=True)[:_MAX_ENTRIES]
         profiles = {key: profiles[key] for key in newest}
     payload = json.dumps({"schema": 1, "profiles": profiles}, sort_keys=True).encode("utf-8")
+    if record_documents.using_postgres():
+        record_documents.at(_path()).write_text(payload.decode("utf-8"))
+        return
+    from maverick.file_lock import atomic_write_bytes, ensure_private_directory
+
     if crypto_at_rest.deployment_at_rest_enabled():
         with crypto_at_rest.deployment_key_scope():
             payload = crypto_at_rest.seal(payload)
+    ensure_private_directory(maverick_home())
     atomic_write_bytes(_path(), payload, mode=0o600)
 
 
