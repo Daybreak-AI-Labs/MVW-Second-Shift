@@ -608,6 +608,14 @@ app.include_router(connect_agent_router)
 from .ekko_ops_api import router as ekko_ops_router  # noqa: E402
 
 app.include_router(ekko_ops_router)
+# The signed-in person's Ekko page and recorder key, and the recorder's own two
+# calls (a device key is the only credential those accept).
+from .ekko_handover_api import router as ekko_handover_router  # noqa: E402
+
+app.include_router(ekko_handover_router)
+from .ekko_page import router as ekko_page_router  # noqa: E402
+
+app.include_router(ekko_page_router)
 
 
 def _compress_enabled() -> bool:
