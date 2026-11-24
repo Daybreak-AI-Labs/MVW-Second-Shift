@@ -45,8 +45,8 @@ def _enroll(**kw):
     return xa.enroll("sf-quotebot", "agentforce", **args)
 
 
-def test_exception_text_redacts_lightwork_agent_credentials():
-    token = "lw-rest-" + "A" * 43
+def test_exception_text_redacts_second_shift_agent_credentials():
+    token = "ss-rest-" + "A" * 43
 
     visible = xa._safe_exception_text(
         RuntimeError(f"provider rejected credential {token}"),
@@ -83,7 +83,7 @@ def test_enroll_rejects_unknown_platform_and_bad_expiry():
 def test_minted_token_resolves_and_is_shown_once():
     _enroll()
     token = xa.mint_token("sf-quotebot", "rest")
-    assert token.startswith("lw-rest-")
+    assert token.startswith("ss-rest-")
     resolved = agent_for_token(token, "rest")
     assert resolved is not None and resolved.id == "sf-quotebot"
     # The roster names the surface but never the value.
@@ -111,7 +111,7 @@ def _mint_gate_on(tmp_path):
 def test_mint_gate_off_by_default_mints_directly():
     _enroll()
     token = xa.mint_token("sf-quotebot", "rest")
-    assert token.startswith("lw-rest-")
+    assert token.startswith("ss-rest-")
     from maverick.world_model import WorldModel
     count = WorldModel().conn.execute(
         "SELECT COUNT(*) FROM approvals").fetchone()[0]
@@ -255,7 +255,7 @@ def test_screen_treats_an_undeclared_unrated_risk_as_high():
     assert xa.screen("sf-quotebot", "research")["rule"] == "allow"
 
 
-def test_screen_uses_lightworks_own_rating_when_the_risk_is_undeclared():
+def test_screen_uses_second_shifts_own_rating_when_the_risk_is_undeclared():
     _enroll(allow_tools=[*_RATED_TOOLS, "web_search"])  # default ceiling: medium
     for _ in range(6):
         verdict = xa.screen("sf-quotebot", "web_search", detail="look it up")
@@ -448,10 +448,10 @@ def test_minted_tokens_are_hashed_at_rest_and_legacy_plaintext_still_works():
     assert agent_for_token(token, "rest").id == "sf-quotebot"
     # Hand-edited plaintext entries (operator TOML style) keep working.
     put_agent({"id": "legacy-bot", "direction": "inbound",
-               "rest_token": "lw-rest-legacy-plaintext"})
-    assert agent_for_token("lw-rest-legacy-plaintext",
+               "rest_token": "ss-rest-legacy-plaintext"})
+    assert agent_for_token("ss-rest-legacy-plaintext",
                            "rest").id == "legacy-bot"
-    assert agent_for_token("lw-rest-wrong", "rest") is None
+    assert agent_for_token("ss-rest-wrong", "rest") is None
 
 
 def test_seat_limit_is_configurable(monkeypatch, tmp_path):
@@ -681,7 +681,7 @@ def test_parked_approval_notifies_and_fires_webhook(monkeypatch, tmp_path):
     _enroll(max_risk="high")
     (tmp_path / "config.toml").write_text(
         '[external_agents]\nenable = true\n'
-        'approval_webhook = "https://hooks.corp.test/lw"\n',
+        'approval_webhook = "https://hooks.corp.test/ss"\n',
         encoding="utf-8")
     from maverick import config
     config.reset_config_cache()
@@ -707,7 +707,7 @@ def test_parked_approval_notifies_and_fires_webhook(monkeypatch, tmp_path):
     assert payload["agent_id"] == "sf-quotebot"
     assert "detail" not in payload  # untrusted text never leaves
     assert all("detail" not in f[1] for f in fired)
-    assert external[0][2]["urls"] == ["https://hooks.corp.test/lw"]
+    assert external[0][2]["urls"] == ["https://hooks.corp.test/ss"]
 
 
 def test_status_aggregates_containment_and_wall_violations():

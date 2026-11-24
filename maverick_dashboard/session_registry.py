@@ -1,6 +1,6 @@
 """Server-side record of browser sign-in sessions.
 
-The ``mvk_session`` cookie is a signed, self-contained token (sub, iat, exp).
+The ``ss_session`` cookie is a signed, self-contained token (sub, iat, exp).
 That is enough to authenticate, but not to *list* a person's sessions or end
 one device without ending them all (the revocation epoch in
 :mod:`session_revocation` is per person). Every cookie minted by the OIDC

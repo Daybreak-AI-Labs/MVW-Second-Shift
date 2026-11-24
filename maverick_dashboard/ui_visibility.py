@@ -311,7 +311,7 @@ def group_title(group: str) -> str:
 # person reads on the page finds it. SYNONYMS holds the plain words people
 # type for a job ("approve" -> Approvals). The finder ranks an exact label,
 # then an exact heading, then an exact synonym first (see
-# static/lightwork-navfinder.js). Neither ever changes who can see a page.
+# static/second-shift-navfinder.js). Neither ever changes who can see a page.
 HEADINGS: dict[str, str] = {
     "/legal": "Your digital legal team",
     "/budget": "Your budget before work starts",

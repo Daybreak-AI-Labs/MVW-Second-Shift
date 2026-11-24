@@ -35,7 +35,7 @@ def test_connection_timeouts_and_operator_options_survive_real_reconnect(monkeyp
     from maverick.world_model_backends.postgres import PostgresWorldModel
 
     monkeypatch.setenv("MAVERICK_PG_IDLE_TX_TIMEOUT_MS", "60000")
-    dsn = make_conninfo(_DSN, options="-c statement_timeout=12345 -c application_name=lightwork-test")
+    dsn = make_conninfo(_DSN, options="-c statement_timeout=12345 -c application_name=second-shift-test")
     with PostgresWorldModel(dsn) as database:
         for reconnect in (False, True):
             if reconnect:
@@ -44,7 +44,7 @@ def test_connection_timeouts_and_operator_options_survive_real_reconnect(monkeyp
                 cursor.execute("SELECT current_setting('statement_timeout'), "
                                "current_setting('idle_in_transaction_session_timeout'), "
                                "current_setting('application_name')")
-                assert cursor.fetchone() == ("12345ms", "1min", "lightwork-test")
+                assert cursor.fetchone() == ("12345ms", "1min", "second-shift-test")
 
 
 def test_status_only_update_preserves_result(world):

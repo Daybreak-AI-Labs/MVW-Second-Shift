@@ -158,7 +158,7 @@ def _looks_like_jwt(token: str) -> bool:
     """Route an Authorization bearer: exactly three dot-separated segments
     whose first decodes to a JSON object is a JWT for the platform-identity
     verifier; everything else stays on the minted-bearer path. Minted tokens
-    (``lw-rest-<urlsafe>``) can never contain a dot, so no collision."""
+    (``ss-rest-<urlsafe>``) can never contain a dot, so no collision."""
     if token.count(".") != 2:
         return False
     header = token.split(".", 1)[0]

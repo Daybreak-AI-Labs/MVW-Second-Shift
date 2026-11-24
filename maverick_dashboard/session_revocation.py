@@ -1,6 +1,6 @@
 """Per-principal session/bearer revocation epoch.
 
-A leaked ``mvk_session`` cookie or a still-valid OIDC bearer is otherwise good
+A leaked ``ss_session`` cookie or a still-valid OIDC bearer is otherwise good
 until its natural expiry (<=12h), with no way for an admin to force-invalidate
 it -- and a SCIM-deprovisioned user keeps a live dashboard session. This keeps a
 per-principal **revocation epoch** (a UTC timestamp): any credential whose

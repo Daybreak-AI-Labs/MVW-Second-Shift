@@ -27,8 +27,8 @@ def test_secret_detector_and_secrets_agree_on_colon():
     assert "abcdEFGH1234567890zz" not in scrub(payload)
 
 
-def test_secret_detector_redacts_lightwork_capability_tokens():
-    agent_token = "lw-rest-" + "A" * 43
+def test_secret_detector_redacts_second_shift_capability_tokens():
+    agent_token = "ss-rest-" + "A" * 43
     flow_token = "eyJ" + "B" * 40 + "." + "c" * 64
 
     redacted, matches = sd_redact(

@@ -556,7 +556,7 @@ def mint_token(
             approved_id = _consume_mint_approval(
                 agent_id, surface, mint_approval_id, authority=authority,
             )
-        token = f"lw-{surface}-{secrets.token_urlsafe(32)}"
+        token = f"ss-{surface}-{secrets.token_urlsafe(32)}"
         entry = _entry_from_agent(agent)
         # At rest the registry holds only the hash — a leaked overlay backup
         # must never authenticate. The raw value exists in this return alone.

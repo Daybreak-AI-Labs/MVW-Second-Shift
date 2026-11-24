@@ -56,7 +56,7 @@ def _structured_card(
 
 def test_legacy_approval_tokens_are_redacted_from_page_and_api(monkeypatch, tmp_path):
     _isolate(monkeypatch, tmp_path)
-    token = "lw-rest-" + "A" * 43
+    token = "ss-rest-" + "A" * 43
     _world(tmp_path).create_approval(
         f"click {token}",
         risk="high",

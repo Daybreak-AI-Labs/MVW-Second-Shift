@@ -601,7 +601,7 @@ def test_one_persons_claim_role_is_never_applied_to_another_principal(mapped, cl
     from maverick_dashboard import auth, rbac, sign_in_roles
 
     _sign_in(client, monkeypatch, token, sub="alice", roles=["SecondShift.Admin"])
-    alice = _request(session=client.cookies.get("mvk_session"))
+    alice = _request(session=client.cookies.get("ss_session"))
     assert auth.caller_principal(alice) == "user:alice"
     assert auth.role_for_principal("user:alice", request=alice) == "admin"
 
@@ -634,7 +634,7 @@ def test_background_lookups_with_no_request_get_no_claim_role(mapped, client, mo
     from maverick_dashboard import auth, sign_in_roles
 
     _sign_in(client, monkeypatch, token, sub="alice", roles=["SecondShift.Admin"])
-    alice = _request(session=client.cookies.get("mvk_session"))
+    alice = _request(session=client.cookies.get("ss_session"))
     assert auth.caller_role(alice) == "admin"
 
     # No request: the same person resolves to the default role.
@@ -779,7 +779,7 @@ def test_a_session_cookie_signed_with_another_secret_is_not_a_session(mapped, cl
 
     now = int(time.time())
     forged = sign_session({"sub": "mallory", "iat": now, "exp": now + 600, "claim_role": "admin"}, "not-the-secret")
-    client.cookies.set("mvk_session", forged)
+    client.cookies.set("ss_session", forged)
     assert client.get(f"{BASE}/status").status_code == 401
 
 

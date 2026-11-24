@@ -1,5 +1,5 @@
 /* Second Shift dashboard shell behaviors, kept apart from templates/base.html;
-   served by GET /static/lightwork-ui.js. Loaded at the end of <body>, so
+   served by GET /static/second-shift-ui.js. Loaded at the end of <body>, so
    the DOM is ready without defer. First section: reusable feedback
    primitives (mvToast/mvConfirm/mvForm/mvCopy). Second: halt pill, goal
    form, sidebar + preferences behaviors. */
@@ -7,7 +7,7 @@
     // was rendered under. A selection changed in another tab then receives a
     // server-side 409 instead of writing into the newly selected tenant.
     (function () {
-      var meta = document.querySelector('meta[name="lightwork-workspace-tenant"]');
+      var meta = document.querySelector('meta[name="second-shift-workspace-tenant"]');
       var expected = meta ? String(meta.getAttribute('content') || '').trim() : '';
       window.mvWorkspaceTenant = expected;
       if (!expected) return;
@@ -19,11 +19,11 @@
         var notice = document.createElement('section');
         notice.className = 'panel'; notice.setAttribute('role', 'alert');
         var message = 'Your workspace changed in another tab. Changes here are paused. Keep any draft you need, then reopen this page in the current workspace.';
-        if (window.LightworkI18n) window.LightworkI18n.set(notice, message);
+        if (window.SecondShiftI18n) window.SecondShiftI18n.set(notice, message);
         else notice.textContent = message;
         notice.appendChild(document.createTextNode(' '));
         var reopen = document.createElement('a'); reopen.href = window.location.href;
-        if (window.LightworkI18n) window.LightworkI18n.set(reopen, 'Reopen in current workspace');
+        if (window.SecondShiftI18n) window.SecondShiftI18n.set(reopen, 'Reopen in current workspace');
         else reopen.textContent = 'Reopen in current workspace';
         notice.appendChild(reopen);
         // Keep recovery inside the content layout so the fixed sidebar cannot
@@ -31,17 +31,17 @@
         // away from a draft the person may still need to copy.
         var content = document.querySelector('main') || document.body;
         content.insertBefore(notice, content.firstChild);
-        window.dispatchEvent(new CustomEvent('lightwork:context-changed'));
+        window.dispatchEvent(new CustomEvent('second-shift:context-changed'));
         // Pages clear what they showed for the previous workspace or account
         // on these. Sent from document and bubbling, so listeners on document
         // and on window both hear them.
-        ['lightwork:workspace-changed', 'lightwork:account-context-changed', 'lightwork:authority-changed',
-         'lightwork:draft-context-changed', 'lightwork:copilot-context-changed'].forEach(function (name) {
+        ['second-shift:workspace-changed', 'second-shift:account-context-changed', 'second-shift:authority-changed',
+         'second-shift:draft-context-changed', 'second-shift:copilot-context-changed'].forEach(function (name) {
           document.dispatchEvent(new CustomEvent(name, {bubbles: true}));
         });
       }
       window.addEventListener('storage', function (event) {
-        if (event.key === 'lightwork-workspace-changed') invalidateWorkspace();
+        if (event.key === 'second-shift-workspace-changed') invalidateWorkspace();
       });
       var nativeFetch = window.fetch.bind(window);
       window.fetch = function (input, init) {
@@ -112,7 +112,7 @@
         // own status line or a focus move), so the toast is shown, not read
         // a second time.
         if (opts.quiet) t.setAttribute('aria-hidden', 'true');
-        if(window.LightworkI18n){t.lang=window.LightworkI18n.languageFor(String(message));t.dir='auto';}
+        if(window.SecondShiftI18n){t.lang=window.SecondShiftI18n.languageFor(String(message));t.dir='auto';}
         target.appendChild(t);
         setTimeout(function () {
           t.style.transition = 'opacity 200ms'; t.style.opacity = '0';
@@ -141,10 +141,10 @@
         // The words go through the translator like other product copy; a
         // name in opts.values ({name}) is shown as written, never translated.
         var words = document.createElement('span');
-        if (window.LightworkI18n) window.LightworkI18n.set(words, String(message), opts.values); else words.textContent = String(message).replace(/\{([A-Za-z0-9_]+)\}/g, function (whole, key) { return opts.values && Object.prototype.hasOwnProperty.call(opts.values, key) ? String(opts.values[key]) : whole; });
+        if (window.SecondShiftI18n) window.SecondShiftI18n.set(words, String(message), opts.values); else words.textContent = String(message).replace(/\{([A-Za-z0-9_]+)\}/g, function (whole, key) { return opts.values && Object.prototype.hasOwnProperty.call(opts.values, key) ? String(opts.values[key]) : whole; });
         var undoBtn = document.createElement('button'); undoBtn.type = 'button';
         undoBtn.className = 'mv-toast__undo'; undoBtn.setAttribute('aria-keyshortcuts', 'Control+Z Meta+Z');
-        if (window.LightworkI18n) window.LightworkI18n.set(undoBtn, 'Undo'); else undoBtn.textContent = 'Undo';
+        if (window.SecondShiftI18n) window.SecondShiftI18n.set(undoBtn, 'Undo'); else undoBtn.textContent = 'Undo';
         toast.append(words, document.createTextNode(' '), undoBtn);
         if (region) region.appendChild(toast);
         var settled = false, timer = null, startedAt = 0, hard = null;
@@ -209,13 +209,13 @@
       window.mvConfirm = function (message, opts) {
         opts = opts || {};
         if (!dlg || typeof dlg.showModal !== 'function') {
-          return Promise.resolve(window.confirm(opts.productCopy && window.LightworkI18n ? window.LightworkI18n.text(String(message), opts.values) : String(message)));
+          return Promise.resolve(window.confirm(opts.productCopy && window.SecondShiftI18n ? window.SecondShiftI18n.text(String(message), opts.values) : String(message)));
         }
         if (dlg.open) return Promise.resolve(false);   // not re-entrant (shared dialog)
         var opener = document.activeElement;           // restore focus on close
-        if (opts.productCopy && window.LightworkI18n) window.LightworkI18n.set(msgEl, String(message), opts.values);
+        if (opts.productCopy && window.SecondShiftI18n) window.SecondShiftI18n.set(msgEl, String(message), opts.values);
         else { msgEl.textContent = String(message); msgEl.lang = 'und'; msgEl.dir = 'auto'; }
-        if (window.LightworkI18n) { window.LightworkI18n.set(okBtn, opts.okText || 'Confirm'); window.LightworkI18n.set(cancelBtn, opts.cancelText || 'Cancel'); }
+        if (window.SecondShiftI18n) { window.SecondShiftI18n.set(okBtn, opts.okText || 'Confirm'); window.SecondShiftI18n.set(cancelBtn, opts.cancelText || 'Cancel'); }
         else { okBtn.textContent = opts.okText || 'Confirm'; cancelBtn.textContent = opts.cancelText || 'Cancel'; }
         okBtn.classList.toggle('btn--danger', !!opts.danger);
         okBtn.classList.toggle('btn--primary', !opts.danger);
@@ -226,7 +226,7 @@
         if (opts.typed) {
           typedWrap = document.createElement('p'); typedWrap.id = 'mv-confirm-typed'; typedWrap.className = 'mv-confirm__typed';
           var typedLabel = document.createElement('label'); typedLabel.setAttribute('for', 'mv-confirm-typed-input');
-          typedLabel.textContent = window.LightworkI18n ? window.LightworkI18n.text('Type {word} to confirm', {word: String(opts.typed)}) : 'Type ' + String(opts.typed) + ' to confirm';
+          typedLabel.textContent = window.SecondShiftI18n ? window.SecondShiftI18n.text('Type {word} to confirm', {word: String(opts.typed)}) : 'Type ' + String(opts.typed) + ' to confirm';
           typedInput = document.createElement('input'); typedInput.id = 'mv-confirm-typed-input'; typedInput.className = 'input';
           typedInput.autocomplete = 'off'; typedInput.spellcheck = false;
           typedWrap.append(typedLabel, typedInput);
@@ -263,10 +263,10 @@
       // prompts where <dialog> is unsupported.
       var fdlg = document.getElementById('mv-form');
       function productText(source, values) {
-        return window.LightworkI18n ? window.LightworkI18n.text(source, values) : source;
+        return window.SecondShiftI18n ? window.SecondShiftI18n.text(source, values) : source;
       }
       function productSet(element, source, values) {
-        if (window.LightworkI18n) window.LightworkI18n.set(element, source, values);
+        if (window.SecondShiftI18n) window.SecondShiftI18n.set(element, source, values);
         else element.textContent = source;
       }
       function booleanDefault(value) {
@@ -385,7 +385,7 @@
               if (val || c.f.allowEmpty) out[c.f.key] = val;
             });
             if (missing.length) {
-              if (window.LightworkI18n) window.LightworkI18n.set(errEl, 'Required: {fields}', {fields: missing.join(', ')});
+              if (window.SecondShiftI18n) window.SecondShiftI18n.set(errEl, 'Required: {fields}', {fields: missing.join(', ')});
               else errEl.textContent = 'Required: ' + missing.join(', ');
               firstMissing.focus(); return null;
             }
@@ -543,7 +543,7 @@
         return what + 'Something went wrong. Try again.';
       }
       window.mvErrorText = function (failure, action) {
-        var value = plainErrorText(failure, action), locale = window.LightworkI18n;
+        var value = plainErrorText(failure, action), locale = window.SecondShiftI18n;
         if (!locale || locale.language === 'en') return value;
         var prefix = action ? 'Could not ' + action + '. ' : '';
         var reason = prefix && value.startsWith(prefix) ? value.slice(prefix.length) : value;
@@ -833,7 +833,7 @@
               box.setAttribute('data-mv-loading-error', ''); box.setAttribute('role', 'alert');
               box.appendChild(document.createTextNode(window.mvErrorText(failure, o.action)));
               if (typeof o.retry === 'function') {
-                var again = window.mvEl('button', 'btn btn--ghost', window.LightworkI18n ? window.LightworkI18n.text('Try again') : 'Try again');
+                var again = window.mvEl('button', 'btn btn--ghost', window.SecondShiftI18n ? window.SecondShiftI18n.text('Try again') : 'Try again');
                 again.type = 'button';
                 again.addEventListener('click', function () { box.remove(); o.retry(); });
                 box.appendChild(document.createTextNode(' ')); box.appendChild(again);
@@ -880,7 +880,7 @@
       // Each reader sees one style, their browser's regional setting: an en-US
       // browser reads "Oct 4, 2026, 2:01 PM EDT", an en-GB one "4 Oct 2026,
       // 19:01 BST"; a translated interface uses its own locale. The same
-      // choice is made in lightwork-i18n.js (formatDate), so both agree.
+      // choice is made in second-shift-i18n.js (formatDate), so both agree.
       function mvBrowserLocale() {
         var wanted = [].concat(navigator.languages || [], navigator.language || []);
         for (var i = 0; i < wanted.length; i++) {
@@ -889,14 +889,14 @@
         return 'en-GB';
       }
       function mvFormatLocale() {
-        var i18n = window.LightworkI18n;
+        var i18n = window.SecondShiftI18n;
         return i18n && i18n.language && i18n.language !== 'en' ? (i18n.locale || i18n.language) : mvBrowserLocale();
       }
       // Phrases ("2 minutes ago") are words, so they stay in the interface
       // language even when the browser's regional style is another language.
       function mvPhraseLocale() {
         var locale = mvFormatLocale();
-        return /^en\b/i.test(locale) || (window.LightworkI18n && window.LightworkI18n.language && window.LightworkI18n.language !== 'en') ? locale : 'en';
+        return /^en\b/i.test(locale) || (window.SecondShiftI18n && window.SecondShiftI18n.language && window.SecondShiftI18n.language !== 'en') ? locale : 'en';
       }
       function mvParseTime(raw) {
         if (raw === null || raw === undefined || raw === '') return null;
@@ -937,7 +937,7 @@
         if (!isFinite(amount)) return '';
         var decimals = options && typeof options.decimals === 'number' ? options.decimals : 2;
         var currency = String((options && options.currency) || 'USD').toUpperCase();
-        var i18n = window.LightworkI18n;
+        var i18n = window.SecondShiftI18n;
         var locale = i18n && i18n.language && i18n.language !== 'en' ? (i18n.locale || i18n.language) : 'en-US';
         function format(n) {
           try {
@@ -1014,7 +1014,7 @@
       // toast, so feedback lands where the person is looking, not above the
       // fold. <div data-mv-toast="Workspace limit saved." ...>.
       // A page that reloads right after a change hands its toast to the next load.
-      var FLASH = 'lightwork.flash-toast';
+      var FLASH = 'second-shift.flash-toast';
       window.mvToastAfterReload = function (message) {
         try { sessionStorage.setItem(FLASH, String(message)); } catch (e) { window.mvToast(message); }
       };
@@ -1030,7 +1030,7 @@
       }
       // Navigation and submit protection initialize before localization downloads;
       // initial announcements wait for their language helpers or honest fallback.
-      if (document.readyState === 'loading' && !window.LightworkI18n) {
+      if (document.readyState === 'loading' && !window.SecondShiftI18n) {
         document.addEventListener('DOMContentLoaded', showInitialToasts, {once: true});
       } else showInitialToasts();
     })();
@@ -1059,7 +1059,7 @@
         return;
       }
       const canHalt = pill.dataset.canHalt === 'true';
-      function productText(source) { return window.LightworkI18n ? window.LightworkI18n.text(source) : source; }
+      function productText(source) { return window.SecondShiftI18n ? window.SecondShiftI18n.text(source) : source; }
       const configuredTimeout = Number(pill.dataset.haltTimeoutMs);
       const haltTimeoutMs = Number.isFinite(configuredTimeout) && configuredTimeout > 0
         ? Math.min(configuredTimeout, 10000)
@@ -1125,7 +1125,7 @@
         // must not repeat the same announcement from the live label.
         if (label.dataset.i18n !== copy) {
           label.dataset.i18n = copy;
-          if (window.LightworkI18n) window.LightworkI18n.set(label, copy);
+          if (window.SecondShiftI18n) window.SecondShiftI18n.set(label, copy);
           else { label.textContent = copy; label.lang = 'en'; label.dir = 'ltr'; }
         }
         renderBanner(armed && !pending);
@@ -1318,7 +1318,7 @@
         const accountSelection=(form.querySelector('[name="connection_references"]')||{}).value||'[]';
         if(kind!=='goal'&&accountSelection!=='[]'){
           var accountNotice='This draft has selected accounts. Run it as a task, or return to Templates to prepare a new reusable draft without private account selections.';
-          if(window.LightworkI18n)window.LightworkI18n.set(errBox,accountNotice);else errBox.textContent=accountNotice;
+          if(window.SecondShiftI18n)window.SecondShiftI18n.set(errBox,accountNotice);else errBox.textContent=accountNotice;
           errBox.style.display='block';return;
         }
 
@@ -1358,7 +1358,7 @@
                 kind !== (kindEl ? kindEl.value : 'goal') || (files && files.files.length)) {
               throw new Error('Your brief changed while the editor was opening. Review it and continue again.');
             }
-            sessionStorage.setItem('lightwork.authoring-handoff', JSON.stringify({
+            sessionStorage.setItem('second-shift.authoring-handoff', JSON.stringify({
               kind: kind, brief: brief, context: contextData.context, created_at: Date.now()
             }));
             window.location.href = kind === 'flow' ? '/flows/designer' : '/workflow-builder';
@@ -1403,12 +1403,12 @@
           if (resp.redirected && new URL(resp.url).pathname.startsWith('/chat/goal/') &&
               (resp.ok || resp.status === 409 || resp.status === 503)) {
             if (form.mvRecovery) await form.mvRecovery.clear();
-            window.dispatchEvent(new CustomEvent('lightwork:composer-sent', {detail: {form: form, recoveryCleared: true}}));
+            window.dispatchEvent(new CustomEvent('second-shift:composer-sent', {detail: {form: form, recoveryCleared: true}}));
             startPending = 'opening'; window.location.href = resp.url; return;
           }
           if (resp.ok && !resp.redirected) {
             if (form.mvRecovery) await form.mvRecovery.clear();
-            window.dispatchEvent(new CustomEvent('lightwork:composer-sent', {detail: {form: form, recoveryCleared: true}}));
+            window.dispatchEvent(new CustomEvent('second-shift:composer-sent', {detail: {form: form, recoveryCleared: true}}));
             window.location.reload(); return;
           }
           let serverDetail = '', payload = null;
@@ -1437,7 +1437,7 @@
             const settingsLink = document.createElement('a');
             settingsLink.href = '/settings/all?id=agent.max_steps';
             settingsLink.className = 'btn btn--ghost';
-            if (window.LightworkI18n) window.LightworkI18n.set(settingsLink, 'Review task settings');
+            if (window.SecondShiftI18n) window.SecondShiftI18n.set(settingsLink, 'Review task settings');
             else settingsLink.textContent = 'Review task settings';
             errBox.append(document.createTextNode(' '), settingsLink);
           }
@@ -1461,7 +1461,7 @@
     // missed click. The page that loads next shows what happened.
     (function () {
       function say(status, text) {
-        if (window.LightworkI18n && text) window.LightworkI18n.set(status, text); else status.textContent = text;
+        if (window.SecondShiftI18n && text) window.SecondShiftI18n.set(status, text); else status.textContent = text;
       }
       function clear(form, button) {
         var status = form.querySelector('[data-mv-save-status]');
@@ -1533,7 +1533,7 @@
         if (fields && business && business.field_errors) {
           var errors = Object.keys(business.field_errors).filter(function (name) { return form.elements[name]; })
             .map(function (name) { return {field: name, message: business.field_errors[name]}; });
-          var kept = window.LightworkI18n ? window.LightworkI18n.text('What you entered is still here.') : 'What you entered is still here.';
+          var kept = window.SecondShiftI18n ? window.SecondShiftI18n.text('What you entered is still here.') : 'What you entered is still here.';
           fields.show(form, errors, {message: errors.length ? '' : business.message + ' ' + kept});
         } else if (fields) {
           fields.fail(form, failure, what);
@@ -1698,7 +1698,7 @@
       var TITLE_PREFIX = 'Error: ';
       var KEEP_HOURS = 24;
       var SECRET = /(pass(word|phrase)?|secret|token|api[_-]?key|credential|private[_-]?key|authorization|cookie|otp|mfa[_-]?code)/i;
-      function t(source, values) { return window.LightworkI18n ? window.LightworkI18n.text(source, values) : source.replace(/\{(\w+)\}/g, function (_m, k) { return values && values[k] != null ? values[k] : ''; }); }
+      function t(source, values) { return window.SecondShiftI18n ? window.SecondShiftI18n.text(source, values) : source.replace(/\{(\w+)\}/g, function (_m, k) { return values && values[k] != null ? values[k] : ''; }); }
       function controls(form) {
         return Array.prototype.filter.call(form.elements, function (c) {
           return c.matches && c.matches('input, select, textarea') && c.type !== 'hidden' && !c.disabled;
@@ -2024,7 +2024,7 @@
     // in localStorage. Progressive enhancement: with no JS the markup leaves
     // every group open (aria-expanded="true"), so nothing is hidden without JS.
     (function() {
-      const KEY = 'mvk_nav_expanded';
+      const KEY = 'ss_nav_expanded';
       let expanded = null;
       try { expanded = JSON.parse(localStorage.getItem(KEY) || 'null'); } catch (e) {}
       // No remembered choice yet (a fresh sign-in): open the two groups a new
@@ -2063,7 +2063,7 @@
           badge.textContent = count > 99 ? '99+' : String(count);
           badge.setAttribute('aria-hidden', 'true');
           if (count > 0) {
-            const i18n = window.LightworkI18n, values = {page: label.textContent.trim(), count: badge.textContent};
+            const i18n = window.SecondShiftI18n, values = {page: label.textContent.trim(), count: badge.textContent};
             link.setAttribute('aria-label', i18n ? i18n.text('{page}, {count} waiting', values)
               : values.page + ', ' + values.count + ' waiting');
           } else {
@@ -2087,7 +2087,7 @@
         queued = true;
         setTimeout(function() { queued = false; read(); }, 0);
       }
-      document.addEventListener('lightwork:approval-decided', reread);
+      document.addEventListener('second-shift:approval-decided', reread);
       const queue = document.getElementById('approval-queue');
       if (queue && typeof MutationObserver === 'function') new MutationObserver(reread).observe(queue, {childList: true});
     })();
@@ -2124,7 +2124,7 @@
       const backdrop = document.getElementById('nav-backdrop');
       const sidebar = document.getElementById('sidebar');
       if (!btn) return;
-      const KEY = 'mvk_sidebar_collapsed';
+      const KEY = 'ss_sidebar_collapsed';
       const mobile = window.matchMedia('(max-width: 880px)');
       const covered = Array.from(document.querySelectorAll('main, body > footer')).map(function(element) {
         return {element: element, wasInert: element.hasAttribute('inert')};
@@ -2135,7 +2135,7 @@
         const height = Math.ceil(topbar.getBoundingClientRect().height) + 'px';
         body.style.setProperty('--shell-topbar-h', height);
         // The root reads it too: scroll-padding-top keeps focused elements
-        // and in-page link targets below the sticky bar (lightwork.css).
+        // and in-page link targets below the sticky bar (second-shift.css).
         document.documentElement.style.setProperty('--shell-topbar-h', height);
       }
       // Status messages, display fonts and phone wrapping can grow the header.
@@ -2220,9 +2220,9 @@
         var chrome = key === 'theme' && document.querySelector('meta[name="theme-color"]');
         var canvas = chrome && getComputedStyle(document.body).backgroundColor;
         if (canvas && canvas !== 'rgba(0, 0, 0, 0)' && canvas !== 'transparent') chrome.setAttribute('content', canvas);
-        window.dispatchEvent(new CustomEvent('lightwork:appearance-changed', {detail:{key:key,value:value}}));
+        window.dispatchEvent(new CustomEvent('second-shift:appearance-changed', {detail:{key:key,value:value}}));
       };
-      var size = document.querySelector('meta[name="lightwork-text-size"]');
+      var size = document.querySelector('meta[name="second-shift-text-size"]');
       window.mvApplyDisplayPreference('text_size', size ? size.content : 'standard');
       window.mvApplyDisplayPreference('theme', document.body.dataset.themePreference);
       function sync() { if (document.body.dataset.themePreference === 'system') window.mvApplyDisplayPreference('theme', 'system'); }
@@ -2245,10 +2245,10 @@
         if (old && old.startsWith(key + '-')) old = old.slice(key.length + 1);
         prefs.querySelectorAll('select, button, input').forEach(function (control) { control.disabled = true; });
         window.mvApplyDisplayPreference(key, value);
-        if (status) window.LightworkI18n ? window.LightworkI18n.set(status, 'Saving…') : status.textContent = 'Saving…';
+        if (status) window.SecondShiftI18n ? window.SecondShiftI18n.set(status, 'Saving…') : status.textContent = 'Saving…';
         try {
-          var context = document.querySelector('meta[name="lightwork-preference-context"]');
-          var revision = document.querySelector('meta[name="lightwork-preference-revision"]');
+          var context = document.querySelector('meta[name="second-shift-preference-context"]');
+          var revision = document.querySelector('meta[name="second-shift-preference-revision"]');
           var device = document.getElementById('prefs-device-only');
           var response = await fetch('/api/v1/preferences/display', {method: 'POST', credentials: 'same-origin',
             headers: {'Content-Type': 'application/json'}, body: JSON.stringify({key:key, value:value,
@@ -2261,11 +2261,11 @@
           if (undo) undo.hidden = !previous;
           if (key === 'interface_language') select.dataset.savedValue = value;
           var savedMessage = key === 'interface_language' ? 'Language saved. Open another page or reload after saving your draft.' : 'Saved. Your editor and unsaved work remain open.';
-          if (status) window.LightworkI18n ? window.LightworkI18n.set(status, savedMessage) : status.textContent = savedMessage;
+          if (status) window.SecondShiftI18n ? window.SecondShiftI18n.set(status, savedMessage) : status.textContent = savedMessage;
         } catch (failure) {
           window.mvApplyDisplayPreference(key, old);
           if (select) select.value = old;
-          if (status) { var failureMessage = 'Appearance was not saved. The earlier appearance is restored; retry or refresh preferences after saving your work.'; if (window.LightworkI18n) window.LightworkI18n.set(status, failureMessage); else status.textContent = failureMessage; }
+          if (status) { var failureMessage = 'Appearance was not saved. The earlier appearance is restored; retry or refresh preferences after saving your work.'; if (window.SecondShiftI18n) window.SecondShiftI18n.set(status, failureMessage); else status.textContent = failureMessage; }
         } finally {
           saving = false; prefs.querySelectorAll('select, button, input').forEach(function (control) { control.disabled = false; });
         }
@@ -2672,20 +2672,20 @@ window.mvReveal = function (element, options) {
   element.focus({preventScroll: true});
 };
 
-// The Copilot's scripts (lightwork-product-operations.js, then
-// lightwork-copilot.js) are not part of the page's first download: on a slow
+// The Copilot's scripts (second-shift-product-operations.js, then
+// second-shift-copilot.js) are not part of the page's first download: on a slow
 // phone link they took bandwidth from the stylesheet and the first paint.
 // They load once the page is idle, or at once when someone opens the Copilot
 // first (its button, or any [data-copilot-toggle]); that open waits for them
 // and then happens. A selection a page makes meanwhile is kept for them in
-// window.LightworkCopilotEarlySelection.
+// window.SecondShiftCopilotEarlySelection.
 (function () {
   'use strict';
   var fab = document.getElementById('mv-copilot-fab');
   if (!fab || !fab.dataset.copilotSrc || !fab.dataset.operationsSrc) return;
   var state = 'idle', pending = null;
-  document.addEventListener('lightwork:copilot-selection', function (event) {
-    window.LightworkCopilotEarlySelection = event.detail || null;
+  document.addEventListener('second-shift:copilot-selection', function (event) {
+    window.SecondShiftCopilotEarlySelection = event.detail || null;
   });
   function ready() {
     state = 'ready'; fab.removeAttribute('aria-busy');
@@ -2728,7 +2728,7 @@ window.mvReveal = function (element, options) {
 // Phones: the top bar's controls need two 44 px rows (109 px), too much of a
 // small screen to cover while reading. Scrolling down tucks the bar away;
 // scrolling up, the top of the page, a focus inside it or an open menu or
-// drawer shows every control again (lightwork.css: body.topbar-tucked).
+// drawer shows every control again (second-shift.css: body.topbar-tucked).
 (function () {
   'use strict';
   var bar = document.querySelector('.topbar');

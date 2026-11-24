@@ -80,8 +80,8 @@ def test_tamper_and_authoritative_expiry_fail_closed():
         )
 
 
-def test_card_redacts_lightwork_tokens_and_rejects_them_in_version_maps():
-    token = "lw-rest-" + "A" * 43
+def test_card_redacts_second_shift_tokens_and_rejects_them_in_version_maps():
+    token = "ss-rest-" + "A" * 43
     card = _card(
         target_label=f'input[value="{token}"]',
         parameter_summary=[f"Click selector carrying {token}"],

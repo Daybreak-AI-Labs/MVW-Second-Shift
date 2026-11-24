@@ -39,7 +39,7 @@ def environment(monkeypatch):
     monkeypatch.setattr(jwt, "PyJWKClient", Client)
     monkeypatch.setattr(resolvers, "time", SimpleNamespace(monotonic=lambda: state.now))
     resolvers._resolvers.clear()
-    config = OIDCConfig(enabled=True, issuer="https://issuer.example", audience="lightwork",
+    config = OIDCConfig(enabled=True, issuer="https://issuer.example", audience="second-shift",
                         jwks_uri="https://issuer.example/jwks", algorithms=["RS256"])
 
     def token(kid="a", index=0, **claims):

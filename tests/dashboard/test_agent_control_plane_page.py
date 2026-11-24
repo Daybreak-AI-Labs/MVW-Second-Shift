@@ -88,13 +88,13 @@ def test_shared_halt_requires_global_admin_and_detection_fails_closed(monkeypatc
 
 def test_agent_console_source_uses_bounded_governed_interactions() -> None:
     package = Path(page.__file__).parent
-    source = (package / "static" / "lightwork-agent-control-plane.js").read_text(
+    source = (package / "static" / "second-shift-agent-control-plane.js").read_text(
         encoding="utf-8"
     )
     template = (package / "templates" / "agent_control_plane.html").read_text(
         encoding="utf-8"
     )
-    shared_css = (package / "static" / "lightwork.css").read_text(encoding="utf-8")
+    shared_css = (package / "static" / "second-shift.css").read_text(encoding="utf-8")
 
     assert "window.prompt(" not in source
     assert "window.confirm(" not in source

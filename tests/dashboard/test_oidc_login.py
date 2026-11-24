@@ -401,10 +401,10 @@ def test_logout_post_requires_matching_full_origin(login_env, client, origin):
 
 
 def test_logout_uses_configured_public_origin_behind_proxy(login_env, client, monkeypatch):
-    monkeypatch.setenv("MAVERICK_PUBLIC_URL", "https://lightwork.example")
-    headers = {"Origin": "https://lightwork.example"}
+    monkeypatch.setenv("MAVERICK_PUBLIC_URL", "https://second-shift.example")
+    headers = {"Origin": "https://second-shift.example"}
     assert client.post("/auth/logout", headers=headers, follow_redirects=False).status_code == 303
-    headers["Origin"] = "http://lightwork.example"
+    headers["Origin"] = "http://second-shift.example"
     assert client.post("/auth/logout", headers=headers, follow_redirects=False).status_code == 403
 
 
@@ -416,7 +416,7 @@ def test_logout_rejects_conflicting_origin_even_with_matching_referer(login_env,
 
 
 def test_logout_accepts_equivalent_default_port_and_mounted_form(login_env):
-    mounted = TestClient(app, base_url="http://127.0.0.1", root_path="/lightwork")
+    mounted = TestClient(app, base_url="http://127.0.0.1", root_path="/second-shift")
     page = mounted.get("/auth/logout?all=1")
     assert page.status_code == 200 and 'action="logout?all=1"' in page.text
     response = mounted.post("/auth/logout", headers={"Origin": "http://127.0.0.1:80"}, follow_redirects=False)

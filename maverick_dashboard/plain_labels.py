@@ -214,7 +214,7 @@ def datetime_text(value: object, *, seconds: bool = False, date_only: bool = Fal
 
 
 def money(value: object, decimals: int = 2, currency: str = "USD") -> str:
-    """Money the way every page shows it (``mvMoney`` in lightwork-ui.js too):
+    """Money the way every page shows it (``mvMoney`` in second-shift-ui.js too):
     "$1,234.56" or "-$5.00", tiny non-zero amounts as "under $0.01".
 
     ``decimals=4`` is only for a labelled per-unit price ("$0.0030 per 1K

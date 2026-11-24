@@ -9,8 +9,8 @@
   {% set _session = page_session(request) if request is defined and page_session is defined else none %}
   {% include "_session_meta.html" %}
   <title>{% block title %}Second Shift{% endblock %}</title>
-  <link rel="stylesheet" href="{{ asset('lightwork.css') }}" />
-  <link rel="preload" as="script" href="{{ asset('lightwork-ui.js') }}">
+  <link rel="stylesheet" href="{{ asset('second-shift.css') }}" />
+  <link rel="preload" as="script" href="{{ asset('second-shift-ui.js') }}">
   <link rel="preload" href="/static/fonts/manrope-var.woff2" as="font" type="font/woff2" crossorigin>
   {% block head_extra %}{% endblock %}
   <link rel="icon" href="{{ asset('second-shift-mark.svg') }}" type="image/svg+xml" />
@@ -98,8 +98,8 @@
       </div>
     </form>
   </dialog>
-  <script src="{{ asset('lightwork-ui.js') }}"></script>
-  {% if _session %}<script src="{{ asset('lightwork-session.js') }}" defer></script>{% endif %}
+  <script src="{{ asset('second-shift-ui.js') }}"></script>
+  {% if _session %}<script src="{{ asset('second-shift-session.js') }}" defer></script>{% endif %}
   {% block scripts_extra %}{% endblock %}
 </body>
 </html>

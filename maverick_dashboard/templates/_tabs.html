@@ -1,7 +1,7 @@
 {# One tab bar for a page whose views each have their own address
    (``?tab=branches``, ``?view=3d``): the address is the tab's state, so a
    view can be bookmarked, shared, reloaded and reached by Back. Each tab is a
-   link, so the bar works without scripts; lightwork-tabs.js adds the arrow,
+   link, so the bar works without scripts; second-shift-tabs.js adds the arrow,
    Home and End keys of a tab list (the focused tab opens with Enter or Space).
 
      {% from "_tabs.html" import tab_bar, panel_attrs %}
@@ -42,7 +42,7 @@
      aria-selected="{{ 'true' if key == selected else 'false' }}" tabindex="{{ '0' if key == selected else '-1' }}">{{ text }}</a>
   {%- endfor %}
 </div>
-<script src="/static/lightwork-tabs.js" defer></script>
+<script src="/static/second-shift-tabs.js" defer></script>
 {%- endmacro %}
 
 {% macro panel_attrs(selected, id='page-tabs') -%}
@@ -71,7 +71,7 @@ role="tabpanel" id="{{ id }}-panel" aria-labelledby="{{ id }}-{{ selected or 'ma
   <button class="mv-tab" type="button" role="tab"{% if data %} data-{{ data }}="{{ item[2] if item|length > 2 else key }}"{% endif %} aria-selected="{{ 'true' if key == selected else 'false' }}" tabindex="{{ '0' if key == selected else '-1' }}" id="{{ tp }}{{ key }}" data-mv-tab="{{ key }}"{% if controls is not false %} aria-controls="{{ controls or (pp ~ key) }}"{% endif %}>{{ item[1] }}</button>
   {%- endfor %}
 </div>
-<script src="/static/lightwork-tabs.js" defer></script>
+<script src="/static/second-shift-tabs.js" defer></script>
 {%- endmacro %}
 
 {% macro tab_panel(key, selected, id='page-tabs', tab_prefix=none, panel_prefix=none) -%}

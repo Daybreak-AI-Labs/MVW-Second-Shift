@@ -213,9 +213,9 @@ def test_required_second_factor_does_not_refuse_api_keys(monkeypatch):
     from types import SimpleNamespace
 
     monkeypatch.setenv("MAVERICK_MFA_REQUIRE", "1")
-    key = SimpleNamespace(claims={"via": "api_key"}, issuer="lightwork")
+    key = SimpleNamespace(claims={"via": "api_key"}, issuer="second-shift")
     mfa_policy.enforce_session_policy(key)
-    browser = SimpleNamespace(claims={"via": "session"}, issuer="lightwork")
+    browser = SimpleNamespace(claims={"via": "session"}, issuer="second-shift")
     with pytest.raises(Exception) as refused:
         mfa_policy.enforce_session_policy(browser)
     assert getattr(refused.value, "status_code", None) == 403

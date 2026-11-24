@@ -71,7 +71,7 @@ class _Store:
                     job.update(state=state, result=result, finished=time.time())
 
         context = contextvars.copy_context()
-        threading.Thread(target=context.run, args=(run,), name=f"lightwork-job-{kind}", daemon=True).start()
+        threading.Thread(target=context.run, args=(run,), name=f"second-shift-job-{kind}", daemon=True).start()
         return job_id
 
     def get(self, job_id: str, *, owner: str, tenant: str, kind: str) -> dict | None:

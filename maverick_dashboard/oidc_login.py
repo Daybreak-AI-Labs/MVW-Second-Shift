@@ -67,8 +67,8 @@ log = logging.getLogger(__name__)
 router = APIRouter(tags=["auth"])
 
 # Cookie names.
-TX_COOKIE = "mvk_oidc_tx"          # short-lived login transaction (state+PKCE)
-SESSION_COOKIE = "mvk_session"     # the authenticated browser session
+TX_COOKIE = "ss_oidc_tx"          # short-lived login transaction (state+PKCE)
+SESSION_COOKIE = "ss_session"     # the authenticated browser session
 
 # Lifetimes (seconds).
 _TX_TTL = 600                      # 10 min to complete the round-trip
@@ -310,7 +310,7 @@ def _clear_cookie(response, name: str) -> None:
 
 
 def _principal_from_request_session(request: Request):
-    """Return a :class:`VerifiedPrincipal` for a valid ``mvk_session`` cookie.
+    """Return a :class:`VerifiedPrincipal` for a valid ``ss_session`` cookie.
 
     Shared with the auth dependency so the session-cookie identity is established
     in exactly one place. Returns ``None`` when login is disabled, the cookie is
@@ -860,7 +860,7 @@ def _configured_end_session_endpoint() -> str:
 def _idp_logout_url(cfg) -> str | None:
     """RP-initiated logout URL at the IdP, or ``None`` for local-only logout.
 
-    Clearing the local ``mvk_session`` cookie ends the *app* session but not the
+    Clearing the local ``ss_session`` cookie ends the *app* session but not the
     IdP's own SSO session, so the next ``/auth/login`` silently re-authenticates
     and the user is never actually logged out. When an ``end_session_endpoint`` is
     configured (OIDC RP-initiated logout; Auth0's ``/oidc/logout``), send the

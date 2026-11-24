@@ -58,7 +58,7 @@ _PATTERNS: list[tuple[str, re.Pattern]] = [
     # decision links are capabilities even though they do not resemble a
     # third-party API key or a three-segment JWT.
     ("second_shift_agent_token", re.compile(
-        r"(?<![A-Za-z0-9_-])lw-(?:rest|mcp)-[A-Za-z0-9_-]{20,}(?![A-Za-z0-9_-])"
+        r"(?<![A-Za-z0-9_-])ss-(?:rest|mcp)-[A-Za-z0-9_-]{20,}(?![A-Za-z0-9_-])"
     )),
     ("second_shift_flow_approval_token", re.compile(
         r"(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{16,}\.[0-9a-fA-F]{64}(?![0-9a-fA-F])"

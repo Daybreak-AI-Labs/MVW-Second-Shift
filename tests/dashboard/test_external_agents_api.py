@@ -138,7 +138,7 @@ def test_enroll_mint_and_roster_roundtrip():
     assert r.status_code == 201
     assert r.json()["trust"] == "registered"
     token = _mint()
-    assert token.startswith("lw-rest-")
+    assert token.startswith("ss-rest-")
     listing = client.get("/api/v1/external-agents").json()
     (row,) = listing["agents"]
     assert row["platform_label"] == "Salesforce Agentforce"
@@ -177,7 +177,7 @@ def test_agent_facing_routes_require_the_rest_bearer():
     # Missing/garbage bearer -> 401, never a fallback to ambient auth.
     assert bare.post("/api/v1/external/runs", json={}).status_code == 401
     r = bare.post("/api/v1/external/screen",
-                  headers={"Authorization": "Bearer lw-rest-wrong"},
+                  headers={"Authorization": "Bearer ss-rest-wrong"},
                   json={"tool": "crm_update"})
     assert r.status_code == 401
 
@@ -400,7 +400,7 @@ def test_ordinary_admin_restore_and_release_refuse_security_containment():
 
 
 _ISSUER = "https://partner-idp.example.com"
-_AUDIENCE = "lightwork-gateway"
+_AUDIENCE = "second-shift-gateway"
 _HMAC_REF = "XA_GATEWAY_TEST_SECRET"
 _HMAC_SECRET = "gw-test-secret"  # pragma: allowlist secret
 _SCREEN_BODY = b'{"tool": "crm_update", "risk": "low"}'

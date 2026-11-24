@@ -48,7 +48,7 @@ except Exception as _e:  # pragma: no cover - env-dependent
 requires_crypto = pytest.mark.skipif(not _CRYPTO_OK, reason=_CRYPTO_SKIP_REASON)
 
 ISSUER = "https://partner-idp.example.com"
-AUDIENCE = "lightwork-gateway"
+AUDIENCE = "second-shift-gateway"
 AGENT = "partner-bot"
 
 

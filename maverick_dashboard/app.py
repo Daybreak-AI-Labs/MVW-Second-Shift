@@ -71,7 +71,7 @@ log = logging.getLogger(__name__)
 class _CallbackAccessLogFilter(logging.Filter):
     """Remove callback queries before Uvicorn handlers or formatters see them."""
 
-    _lightwork_callback_redaction = True
+    _second_shift_callback_redaction = True
 
     def filter(self, record):
         args = record.args
@@ -93,7 +93,7 @@ class _CallbackAccessLogFilter(logging.Filter):
 # covers CLI/desktop (app imported first), direct Uvicorn import strings (logging
 # configured first), and JSON logging with propagation to the configured root.
 _access_logger = logging.getLogger("uvicorn.access")
-if not any(getattr(item, "_lightwork_callback_redaction", False) for item in _access_logger.filters):
+if not any(getattr(item, "_second_shift_callback_redaction", False) for item in _access_logger.filters):
     _access_logger.addFilter(_CallbackAccessLogFilter())
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
@@ -1183,7 +1183,7 @@ async def bearer_auth(request: Request, call_next):
         # A non-static bearer may be an OIDC token in a mixed deployment. Let
         # the global dependency verify it; malformed/invalid credentials never
         # fall back to proxy or cookie identity there.
-        if (header_token.startswith("lwdev1_") or _configured_oidc_bearer_present(request)
+        if (header_token.startswith("ssdev1_") or _configured_oidc_bearer_present(request)
                 or _api_key_bearer_present(request)):
             return await call_next(request)
         _auth_metrics.record_auth_failure("bad_token")
@@ -1448,7 +1448,7 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
     from datetime import datetime, timezone
     from secrets import token_hex
 
-    reference = "lw-failure-" + token_hex(16)
+    reference = "ss-failure-" + token_hex(16)
     occurred_at = datetime.now(timezone.utc).isoformat()
     route = getattr(request.scope.get("route"), "path", "unmatched route")
     log.error("dashboard failure reference=%s time=%s action=%s route=%s",

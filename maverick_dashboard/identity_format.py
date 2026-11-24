@@ -166,7 +166,7 @@ def permission_label(permission: object) -> str:
 
 
 # Words a stored value spells in lowercase that a person reads differently.
-# Kept in step with ``WORDS`` in static/lightwork-ui.js (mvHuman).
+# Kept in step with ``WORDS`` in static/second-shift-ui.js (mvHuman).
 _WORDS = {
     "ai": "AI", "api": "API", "id": "ID", "ids": "IDs", "url": "URL", "sso": "SSO",
     "dsar": "DSAR", "gdpr": "GDPR", "ccpa": "CCPA", "hipaa": "HIPAA", "soc2": "SOC 2",

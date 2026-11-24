@@ -96,7 +96,7 @@ _APP_NAMES = {
     "power_bi": "Power BI", "tableau": "Tableau", "database": "Database tool",
     "crm": "Customer records (CRM)", "salesforce": "Salesforce", "erp": "Business system (ERP)",
     "sap": "SAP", "email": "Email", "outlook": "Microsoft Outlook", "gmail": "Gmail",
-    "chat": "Chat", "teams": "Microsoft Teams", "slack": "Slack", "lightwork": "Second Shift",
+    "chat": "Chat", "teams": "Microsoft Teams", "slack": "Slack", "second_shift": "Second Shift",
 }
 
 

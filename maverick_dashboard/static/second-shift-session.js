@@ -7,7 +7,7 @@
  * passwords, files or secret-looking fields) and come back here after
  * signing in again, with the typed values put back.
  *
- * The page's <meta name="lightwork-session-*"> tags carry the end time, the
+ * The page's <meta name="second-shift-session-*"> tags carry the end time, the
  * server clock, how to stay signed in and where to sign in. Another tab may
  * have kept the session going, so the current end is read again before any
  * warning or notice.
@@ -18,18 +18,18 @@
   var SECRET = /pass|secret|token|key|otp|code/i;
   function meta(name) { var m = document.querySelector('meta[name="' + name + '"]'); return m ? m.getAttribute('content') || '' : ''; }
   function t(text, values) {
-    if (window.LightworkI18n) return window.LightworkI18n.text(text, values);
+    if (window.SecondShiftI18n) return window.SecondShiftI18n.text(text, values);
     return values ? text.replace(/\{([a-z]+)\}/g, function (whole, name) { return name in values ? String(values[name]) : whole; }) : text;
   }
   var here = window.location.pathname + window.location.search;
-  var KEY = 'lightwork.session-kept:' + here;
-  var signIn = meta('lightwork-session-sign-in') || '/auth/local-login';
-  var renews = meta('lightwork-session-renew') === 'renew';
-  var ends = parseInt(meta('lightwork-session-expires'), 10) || 0;
-  var idleMinutes = parseInt(meta('lightwork-session-idle-minutes'), 10) || 0;
+  var KEY = 'second-shift.session-kept:' + here;
+  var signIn = meta('second-shift-session-sign-in') || '/auth/local-login';
+  var renews = meta('second-shift-session-renew') === 'renew';
+  var ends = parseInt(meta('second-shift-session-expires'), 10) || 0;
+  var idleMinutes = parseInt(meta('second-shift-session-idle-minutes'), 10) || 0;
   var activityAt = 0, activityPending = null, statusTimer = null;
   // Server clock minus this computer's, so a wrong local clock never warns early or late.
-  var skew = (parseInt(meta('lightwork-session-now'), 10) || Date.now() / 1000) - Date.now() / 1000;
+  var skew = (parseInt(meta('second-shift-session-now'), 10) || Date.now() / 1000) - Date.now() / 1000;
   var timer = null, warned = false, asking = false, notice = null;
 
   function now() { return Date.now() / 1000 + skew; }
@@ -204,5 +204,5 @@
       if (ends !== previous) { warned = false; schedule(); }
     }, 60000);
   }
-  window.LightworkSession = {check: check, snapshot: snapshot, restore: restore};
+  window.SecondShiftSession = {check: check, snapshot: snapshot, restore: restore};
 }());

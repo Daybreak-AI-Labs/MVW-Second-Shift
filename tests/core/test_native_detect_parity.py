@@ -159,7 +159,7 @@ def test_pure_python_sanity_unchanged():
 
 @pytest.mark.skipif(not NATIVE, reason="native scanner not built")
 def test_native_large_input_and_overlapping_boundary_candidates():
-    token = "lw-rest-" + "a" * 24
+    token = "ss-rest-" + "a" * 24
     data = ("ordinary " * 140_000) + " " + token + " 123-45-6789"
     assert _secret(data) == _secret_py(data)
     assert _pii(data) == _pii_py(data)

@@ -72,7 +72,7 @@ def _format_datetime(ts, mode: str = "relative"):
     reads in their zone.
 
     The server text is the full date, time and zone ("4 Oct 2026, 14:01 UTC"),
-    so a page without JavaScript still says when; ``lightwork-ui.js``
+    so a page without JavaScript still says when; ``second-shift-ui.js``
     (``mvFormatTimes``) then rewrites it in the viewer's time zone -- relative
     with the absolute time on hover (default), absolute with
     ``mode="absolute"``, or the calendar date alone with ``mode="date"`` (a

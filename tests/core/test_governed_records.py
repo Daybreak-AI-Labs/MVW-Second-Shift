@@ -362,7 +362,7 @@ def _postgres_store(namespace="test_postgres", prefix="TGP"):
     backend = PostgresGovernedRecordBackend(
         namespace,
         prefix,
-        dsn="postgresql://user:secret@db.internal/lightwork",  # pragma: allowlist secret
+        dsn="postgresql://user:secret@db.internal/second-shift",  # pragma: allowlist secret
         connect=database.connect,
     )
     backend._schema_ready = True
@@ -383,7 +383,7 @@ def test_postgres_authoritative_time_uses_database_clock():
     backend = PostgresGovernedRecordBackend(
         "clock_test",
         "CLK",
-        dsn="postgresql://user:secret@db.internal/lightwork",  # pragma: allowlist secret
+        dsn="postgresql://user:secret@db.internal/second-shift",  # pragma: allowlist secret
         connect=database.connect,
     )
 
@@ -507,7 +507,7 @@ def archived_delete_store(request, monkeypatch):
         archive_backend = PostgresGovernedRecordBackend(
             governed_records._archive_namespace(store.namespace),
             "TAD",
-            dsn="postgresql://user:secret@db.internal/lightwork",  # pragma: allowlist secret
+            dsn="postgresql://user:secret@db.internal/second-shift",  # pragma: allowlist secret
             connect=database.connect,
         )
     else:
@@ -912,7 +912,7 @@ def test_strict_shared_selection_refuses_unbound_or_corrupt_tenant(
     monkeypatch.setenv("MAVERICK_GOVERNED_RECORDS_BACKEND", "postgres")
     monkeypatch.setenv(
         "MAVERICK_PG_DSN",
-        "postgresql://user:secret@db.internal/lightwork",  # pragma: allowlist secret
+        "postgresql://user:secret@db.internal/second-shift",  # pragma: allowlist secret
     )
     with pytest.raises(GovernedRecordBackendError, match="active tenant"):
         store.new_id()
@@ -937,7 +937,7 @@ def test_standard_postgres_selection_also_requires_application_encryption(
     monkeypatch.setenv("MAVERICK_GOVERNED_RECORDS_BACKEND", "postgres")
     monkeypatch.setenv(
         "MAVERICK_PG_DSN",
-        "postgresql://user:secret@db.internal/lightwork",  # pragma: allowlist secret
+        "postgresql://user:secret@db.internal/second-shift",  # pragma: allowlist secret
     )
     monkeypatch.setenv("MAVERICK_ENCRYPT_AT_REST", "0")
     with pytest.raises(GovernedRecordBackendError, match="encryption"):
@@ -952,7 +952,7 @@ def test_standard_postgres_selection_requires_pinned_fleet_key(monkeypatch):
     monkeypatch.setenv("MAVERICK_ENCRYPT_AT_REST", "1")
     monkeypatch.setenv(
         "MAVERICK_PG_DSN",
-        "postgresql://user:secret@db.internal/lightwork",  # pragma: allowlist secret
+        "postgresql://user:secret@db.internal/second-shift",  # pragma: allowlist secret
     )
     monkeypatch.delenv("MAVERICK_ENCRYPTION_KEY", raising=False)
     monkeypatch.delenv("MAVERICK_ENCRYPTION_KEY_DIGEST", raising=False)

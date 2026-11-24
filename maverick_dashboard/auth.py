@@ -104,9 +104,9 @@ PUBLIC_STATIC_PATHS = frozenset(
     {
         # The shell stylesheet: without it every signed-out page renders
         # unstyled (system serif font, full-size logo, sideways scrolling).
-        "/static/lightwork.css",
+        "/static/second-shift.css",
         "/static/second-shift-mark.svg",
-        # The self-hosted fonts lightwork.css references.
+        # The self-hosted fonts second-shift.css references.
         "/static/fonts/manrope-var.woff2",
         "/static/fonts/jbm-400.woff2", "/static/fonts/jbm-500.woff2",
     }
@@ -330,7 +330,7 @@ def _invite_session_principal(request: Request) -> VerifiedPrincipal | None:
     """Locally-minted email-invite session identity (no-IdP mode).
 
     Returns a principal only when ``[dashboard] invites`` is enabled AND the
-    ``mvk_session`` cookie verifies against the local session secret; any
+    ``ss_session`` cookie verifies against the local session secret; any
     error means None — invites must never break the auth path. Imported
     lazily like :func:`_session_principal` so the gate takes no hard
     dependency on the invites module."""
@@ -342,7 +342,7 @@ def _invite_session_principal(request: Request) -> VerifiedPrincipal | None:
 
 
 def _session_principal(request: Request) -> VerifiedPrincipal | None:
-    """Built-in browser-login identity: a valid ``mvk_session`` cookie.
+    """Built-in browser-login identity: a valid ``ss_session`` cookie.
 
     Returns a principal only when the login flow is configured AND the cookie
     verifies (correct HMAC + unexpired). Absent/invalid -> ``None`` so the
@@ -1121,10 +1121,10 @@ async def _verify_off_loop(request, websocket):
     # Cap potentially remote verification before borrowing a worker. Probes and
     # local/session authentication retain worker capacity during a slow IdP.
     loop = asyncio.get_running_loop()
-    limiter = getattr(loop, "_lightwork_oidc_slots", None)
+    limiter = getattr(loop, "_second_shift_oidc_slots", None)
     if limiter is None:
         limiter = asyncio.Semaphore(_OIDC_VERIFY_SLOTS)
-        loop._lightwork_oidc_slots = limiter
+        loop._second_shift_oidc_slots = limiter
     try:
         await asyncio.wait_for(limiter.acquire(), timeout=_OIDC_ADMISSION_SECONDS)
     except TimeoutError as exc:

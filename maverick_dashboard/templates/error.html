@@ -35,7 +35,7 @@
     // A retryable conflict settles by itself: reload a few times, then stop
     // and leave the Reload button (never loops on a page that stays busy).
     (function () {
-      var key = 'lightwork.retry:' + location.pathname, count = 0;
+      var key = 'second-shift.retry:' + location.pathname, count = 0;
       try {
         var saved = (sessionStorage.getItem(key) || '').split(':');
         // Only reloads in the last minute count toward the limit.
@@ -44,7 +44,7 @@
       if (count >= 3) {
         try { sessionStorage.removeItem(key); } catch (e) {}
         var late = 'It is taking longer than usual. Reload this page in a minute.';
-        document.getElementById('error-retry-status').textContent = window.LightworkI18n ? window.LightworkI18n.text(late) : late;
+        document.getElementById('error-retry-status').textContent = window.SecondShiftI18n ? window.SecondShiftI18n.text(late) : late;
         return;
       }
       try { sessionStorage.setItem(key, (count + 1) + ':' + Date.now()); } catch (e) { return; }

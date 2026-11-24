@@ -20,7 +20,7 @@ def identity(monkeypatch, tmp_path):
     monkeypatch.delenv("MAVERICK_TENANT", raising=False)
     monkeypatch.delenv("MAVERICK_DASHBOARD_TOKEN", raising=False)
     monkeypatch.setattr(auth, "oidc_enabled", lambda: True)
-    principal = VerifiedPrincipal("alice", "https://issuer.example", "lightwork", {"iat": time.time()})
+    principal = VerifiedPrincipal("alice", "https://issuer.example", "second-shift", {"iat": time.time()})
     monkeypatch.setattr(auth, "verify_oidc_token", lambda _token: principal)
     return principal
 
@@ -58,7 +58,7 @@ def test_cancelled_request_keeps_resolver_admission_until_worker_exits(identity,
             assert not hasattr(first.state, "principal")
         finally:
             release.set()
-        limiter = asyncio.get_running_loop()._lightwork_oidc_slots
+        limiter = asyncio.get_running_loop()._second_shift_oidc_slots
         await asyncio.wait_for(limiter.acquire(), 1)
         limiter.release()
         assert paths.current_tenant_id() is None

@@ -45,7 +45,7 @@ KNOWN_APPS = frozenset({
     "analytics", "power_bi", "tableau",
     "database", "crm", "salesforce", "erp", "sap",
     "email", "outlook", "gmail", "chat", "teams", "slack",
-    "lightwork",
+    "second_shift",
 })
 
 ACTION_KINDS = frozenset({
@@ -77,7 +77,7 @@ DEFAULT_ALLOWED_APPS = frozenset({
     "presentation", "powerpoint", "google_slides",
     "document", "word", "google_docs",
     "file_manager", "file_explorer", "finder",
-    "analytics", "power_bi", "tableau", "lightwork",
+    "analytics", "power_bi", "tableau", "second_shift",
 })
 
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$")
