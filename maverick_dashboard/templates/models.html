@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% block title %}Models · Second Shift{% endblock %}
+{% block content %}
+  {#- Every model Second Shift knows is in use: the ones agents report, and the
+      ones people add. Names and details come from agents, platforms and people
+      and are escaped by the template engine. -#}
+  <h1 class="page-title">Models</h1>
+  <p class="page-subtitle">The AI models your agents use, and whether the data around each one still looks the way you approved. Second Shift learns models from what agents and platforms report, and you can add the ones no agent reports.</p>
+
+  {% if unreadable %}
+  <div class="panel" role="alert"><p style="margin: 0;"><span class="badge failure">Not shown</span> {{ unreadable }}</p></div>
+  {% else %}
+  {% for line in problems %}<div class="panel" role="status"><p style="margin: 0;"><span class="badge pending">Check this</span> {{ line }}</p></div>{% endfor %}
+  {% if not enabled %}<div class="panel" role="status"><p style="margin: 0;"><span class="badge pending">Checks are off</span> Model drift checks are turned off in this installation, so samples are not accepted. The register still works.</p></div>{% endif %}
+
+  <div class="panel" id="models-summary">
+    <p style="margin: 0;">
+      <span class="badge">{{ models | length }} {{ 'model' if models | length == 1 else 'models' }}</span>
+      {% set _drifting = models | selectattr('open_findings') | list %}
+      {% if _drifting %}<span class="badge failure">{{ _drifting | length }} with changes to look at</span>{% endif %}
+      {% if can_admin %}<button type="button" class="btn btn--primary" id="model-add">Add a model</button>{% endif %}
+    </p>
+  </div>
+
+  <div class="panel" id="model-register">
+    {% if models %}
+    <table>
+      <caption class="sr-only">Models in use</caption>
+      <thead>
+        <tr><th scope="col">Model</th><th scope="col">Provider</th><th scope="col">Agents that use it</th><th scope="col">Risk</th><th scope="col">Monitoring</th><th scope="col">Last check</th></tr>
+      </thead>
+      <tbody>
+        {% for m in models %}
+        <tr>
+          <td><a href="/models/{{ m.id }}"><strong>{{ m.name }}</strong></a>{% if m.hand_entered %} <span class="badge">Added by hand</span>{% endif %}</td>
+          <td>{{ m.provider or '—' }}</td>
+          <td>{% set _now = m.agents | selectattr('current') | list %}{% if _now %}{% for a in _now[:3] %}<a href="/external-agents/{{ a.id }}">{{ a.id }}</a>{{ ', ' if not loop.last }}{% endfor %}{% if _now | length > 3 %} and {{ _now | length - 3 }} more{% endif %}{% else %}<span class="muted">None now</span>{% endif %}</td>
+          <td>{{ m.risk_tier | capitalize }}</td>
+          <td><span class="badge {{ 'failure' if m.status == 'drifting' else ('active' if m.status == 'monitored' else '') }}">{{ m.status_label }}</span>{% if m.open_findings %} <span class="muted">{{ m.open_findings }} {{ 'change' if m.open_findings == 1 else 'changes' }}</span>{% endif %}</td>
+          <td>{% if m.last_check_at %}{{ m.last_check_at | datetime }}{% else %}<span class="muted">Never</span>{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div class="mv-empty">
+      <p class="mv-empty__title">No models yet</p>
+      <p class="mv-empty__body">Models appear here when an agent reports the model it runs on, or when a platform check finds it.{% if can_admin %} You can also add one yourself with <strong>Add a model</strong>.{% else %} An administrator can add a model that no agent reports.{% endif %}</p>
+    </div>
+    {% endif %}
+  </div>
+  {% endif %}
+{% if can_admin %}
+<script nonce="{{ csp_script_nonce }}">
+(function () {
+  var button = document.getElementById("model-add");
+  if (!button) return;
+  button.addEventListener("click", async function () {
+    var values = await window.mvForm("Add a model", [
+      { key: "name", label: "Model name", required: true },
+      { key: "provider", label: "Provider" },
+      { key: "purpose", label: "What it is used for" },
+      { key: "owner", label: "Owner" },
+      { key: "risk_tier", label: "Risk", type: "select", default: "unrated",
+        options: {{ risk_tiers | list | tojson }}.map(function (t) { return { value: t, label: t.charAt(0).toUpperCase() + t.slice(1) }; }) },
+      { key: "agents", label: "Agents that use it (ids, separated by commas)" }
+    ], { okText: "Add model" });
+    if (!values) return;
+    var body = { name: values.name, provider: values.provider || "", purpose: values.purpose || "",
+                 owner: values.owner || "", risk_tier: values.risk_tier || "unrated",
+                 agents: (values.agents || "").split(",").map(function (a) { return a.trim(); }).filter(Boolean) };
+    try {
+      var made = await window.mvFetchJSON("/api/v1/models", { method: "POST", body: body }, "add the model");
+      window.location.assign("/models/" + encodeURIComponent(made.id) + "#model-baseline");
+    } catch (e) { window.mvToast(e.message || "The request did not go through.", { error: true }); }
+  });
+})();
+</script>
+{% endif %}
+{% endblock %}

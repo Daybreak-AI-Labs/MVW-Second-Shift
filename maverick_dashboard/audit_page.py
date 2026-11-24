@@ -74,7 +74,7 @@ _EXACT_GROUP = {
     "webhook_subscription_changed": "settings", "capability_denied": "signin",
 }
 _PREFIX_GROUP = (
-    ("external_", "agents"), ("agent_drift_", "drift"), ("agent_watch_", "platforms"),
+    ("external_", "agents"), ("agent_drift_", "drift"), ("model_", "drift"), ("agent_watch_", "platforms"),
     ("ekko_", "ekko"), ("approval_", "approvals"), ("sign_in", "signin"), ("session_", "signin"),
     ("login", "signin"), ("role_", "signin"),
 )
@@ -83,7 +83,7 @@ _PREFIX_GROUP = (
 #: Shift on its own, not by a person.
 _SYSTEM_WRITERS = frozenset({
     "system", "dashboard", "external_agents", "agent_drift", "agent_watch", "agent_trust",
-    "agent_edr", "control_plane", "notifications", "webhooks", "static-dashboard-operator",
+    "agent_edr", "model_register", "control_plane", "notifications", "webhooks", "static-dashboard-operator",
 })
 _WHO_FIELDS = ("actor", "decided_by", "approved_by", "acknowledged_by", "enrolled_by",
                "contained_by", "released_by", "reset_by", "by")

@@ -1,0 +1,172 @@
+{% extends "base.html" %}
+{% block title %}{{ m.name }} · Models · Second Shift{% endblock %}
+{% block content %}
+  {#- One model. Its name, details, agents, signal names and findings come from agents,
+      platforms and people and are escaped by the template engine. -#}
+  {% set _SEVERITY = {'high': 'High', 'medium': 'Medium', 'low': 'Low'} %}
+  <p style="margin: 0 0 var(--space-2);"><a href="/models">&larr; All models</a></p>
+  <h1 class="page-title">{{ m.name }}</h1>
+  <p class="page-subtitle">{{ m.purpose or 'No purpose has been written down for this model yet.' }}</p>
+
+  <div class="panel" id="model-summary" data-model="{{ m.id }}">
+    <p style="margin: 0 0 var(--space-3);">
+      <span class="badge {{ 'failure' if m.status == 'drifting' else ('active' if m.status == 'monitored' else '') }}">{{ m.status_label }}</span>
+      <span class="badge">Risk: {{ m.risk_tier | capitalize }}</span>
+      <span class="badge">{{ 'Added by hand' if m.hand_entered else 'Found from your agents' }}</span>
+      {% if m.last_check_at %}<span class="badge">Last check {{ m.last_check_at | datetime }}</span>{% endif %}
+    </p>
+    <dl style="display: grid; grid-template-columns: max-content 1fr; gap: var(--space-2) var(--space-4); margin: 0;">
+      <dt class="muted">Provider</dt><dd style="margin: 0;">{{ m.provider or '—' }}</dd>
+      <dt class="muted">Owner</dt><dd style="margin: 0;">{{ m.owner or '—' }}</dd>
+      <dt class="muted">First seen</dt><dd style="margin: 0;">{{ m.first_seen | datetime if m.first_seen else '—' }}</dd>
+      <dt class="muted">Last seen</dt><dd style="margin: 0;">{{ m.last_seen | datetime if m.last_seen else '—' }}</dd>
+      <dt class="muted">Agents</dt>
+      <dd style="margin: 0;">
+        {% if m.agents %}
+        <ul style="margin: 0; padding-left: 1.2rem;">
+          {% for a in m.agents %}
+          <li><a href="/external-agents/{{ a.id }}">{{ a.id }}</a>{% if not a.current %} <span class="muted">(used it before)</span>{% endif %}{% if a.via %} <span class="muted">&middot; {{ a.via | join(', ') }}</span>{% endif %}</li>
+          {% endfor %}
+        </ul>
+        {% else %}<span class="muted">No agent is known to use it.</span>{% endif %}
+      </dd>
+    </dl>
+    <div class="mv-row__actions" style="margin-top: var(--space-3);">
+      <button type="button" class="btn btn--ghost" id="model-edit"{% if not can_admin %} disabled aria-disabled="true"{% endif %}>Edit details</button>
+    </div>
+    {% if not can_admin %}<p class="muted" style="margin: var(--space-2) 0 0; font-size: var(--text-sm);">Only an administrator can change a model's details or approve a baseline.</p>{% endif %}
+  </div>
+
+  <div class="section-head"><h2 id="model-findings-title">Changes found</h2></div>
+  <div class="panel" id="model-findings" aria-labelledby="model-findings-title">
+    {% if m.findings %}
+    <table>
+      <caption class="sr-only">Changes found in the latest check</caption>
+      <thead><tr><th scope="col">Severity</th><th scope="col">What changed</th><th scope="col"></th></tr></thead>
+      <tbody>
+        {% for f in m.findings %}
+        <tr>
+          <td><span class="badge {{ 'failure' if f.severity == 'high' and not f.acknowledged else '' }}">{{ _SEVERITY.get(f.severity, f.severity) }}</span></td>
+          <td>{{ f.summary }}</td>
+          <td>{% if f.acknowledged %}<span class="muted">Acknowledged{% if f.acknowledged_by %} by {{ (f.acknowledged_by | identity).name }}{% endif %}</span>{% else %}
+            <button type="button" class="btn btn--ghost" data-model-ack="{{ f.key }}"{% if not can_respond %} disabled aria-disabled="true"{% endif %}>Acknowledge</button>{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <p class="muted" style="margin: var(--space-3) 0 0; font-size: var(--text-sm);">A change means the data looks different from the baseline, not that the model is wrong. Decide whether it matters; Second Shift never blocks an agent because of a statistic.</p>
+    {% elif m.baseline %}
+    <p style="margin: 0;"><span class="badge active">Nothing to look at</span> The latest check found nothing past your limits.</p>
+    {% else %}
+    <p class="muted" style="margin: 0;">Nothing is compared until a baseline is approved.</p>
+    {% endif %}
+  </div>
+
+  <div class="section-head"><h2>Baseline</h2></div>
+  <div class="panel" id="model-baseline">
+    {% if m.baseline %}
+    <p style="margin: 0 0 var(--space-3);"><span class="badge">Approved {{ m.baseline.approved_at | datetime }}{% if m.baseline.approved_by %} by {{ (m.baseline.approved_by | identity).name }}{% endif %}</span>
+      {% if m.baseline.received_by %}<span class="badge">Sent by {{ (m.baseline.received_by | identity).name }}</span>{% endif %}</p>
+    {% with profile = m.baseline, label = 'baseline' %}{% include "_model_signals.html" %}{% endwith %}
+    {% else %}
+    <p class="muted" style="margin: 0;">There is no approved baseline. A baseline is what normal looks like for this model: a batch of samples that the owner sends, which an administrator approves. Only a summary is kept, never the samples.</p>
+    {% endif %}
+    {% if m.candidate %}
+    <h3 style="font-size: var(--text-md, 1rem); margin: var(--space-4) 0 var(--space-2);">Waiting for approval</h3>
+    <p style="margin: 0 0 var(--space-3);"><span class="badge pending">Received {{ m.candidate.received_at | datetime }}{% if m.candidate.received_by %} from {{ (m.candidate.received_by | identity).name }}{% endif %}</span></p>
+    {% with profile = m.candidate, label = 'batch waiting for approval' %}{% include "_model_signals.html" %}{% endwith %}
+    <div class="mv-row__actions" style="margin-top: var(--space-3);">
+      <button type="button" class="btn btn--primary" id="model-approve"{% if not can_admin %} disabled aria-disabled="true"{% endif %}>{{ 'Approve as the new baseline' if m.baseline else 'Approve as the baseline' }}</button>
+    </div>
+    {% endif %}
+  </div>
+
+  <div class="section-head"><h2>Recent checks</h2></div>
+  <div class="panel" id="model-checks">
+    {% if chart %}
+    <svg viewBox="0 0 {{ chart.width }} {{ chart.height }}" width="100%" style="max-width: {{ chart.width }}px; height: auto;" role="img" aria-labelledby="model-chart-title model-chart-desc" id="model-chart">
+      <title id="model-chart-title">Largest population stability index in each check of {{ m.name }}</title>
+      <desc id="model-chart-desc">One point for each check, oldest on the left. The dashed line is your limit of {{ chart.limit }}; a point on or above it is a change worth looking at.</desc>
+      <line x1="{{ chart.left }}" y1="{{ chart.top }}" x2="{{ chart.left }}" y2="{{ chart.bottom }}" stroke="currentColor" stroke-opacity="0.35"/>
+      <line x1="{{ chart.left }}" y1="{{ chart.bottom }}" x2="{{ chart.right }}" y2="{{ chart.bottom }}" stroke="currentColor" stroke-opacity="0.35"/>
+      <line x1="{{ chart.left }}" y1="{{ chart.limit_y }}" x2="{{ chart.right }}" y2="{{ chart.limit_y }}" class="viz-stroke-warn" stroke-width="1.5" stroke-dasharray="5 4"/>
+      <text x="{{ chart.left - 6 }}" y="{{ chart.bottom }}" text-anchor="end" font-size="10" fill="currentColor">0</text>
+      <text x="{{ chart.left - 6 }}" y="{{ chart.top + 8 }}" text-anchor="end" font-size="10" fill="currentColor">{{ chart.max }}</text>
+      <text x="{{ chart.right }}" y="{{ chart.limit_y - 4 }}" text-anchor="end" font-size="10" fill="currentColor">limit {{ chart.limit }}</text>
+      {% if chart.points | length > 1 %}<polyline points="{{ chart.line }}" fill="none" class="viz-stroke-brand" stroke-width="2" stroke-linejoin="round"/>{% endif %}
+      {% for p in chart.points %}<circle cx="{{ p.x }}" cy="{{ p.y }}" r="3.5" class="viz-stroke-brand" fill="{{ 'currentColor' if p.value >= chart.limit else 'none' }}" stroke-width="2"><title>{{ p.at | datetime }}: {{ p.value }}</title></circle>{% endfor %}
+    </svg>
+    <p class="viz-sub" style="margin: var(--space-2) 0 var(--space-3);">Population stability index: how far the data has moved from the baseline, the largest value in each check. Filled points are at or above your limit.</p>
+    {% endif %}
+    {% if m.checks %}
+    <table>
+      <caption class="sr-only">The most recent checks, newest first</caption>
+      <thead><tr><th scope="col">When</th><th scope="col">Sent by</th><th scope="col">What was compared</th><th scope="col">Largest index</th><th scope="col">Changes</th></tr></thead>
+      <tbody>
+        {% for c in m.checks %}
+        <tr>
+          <td>{{ c.at | datetime }}</td>
+          <td>{{ (c.by | identity).name }}</td>
+          <td>{{ c.signals.keys() | map('replace', 'feature:', '') | join(', ') or '—' }}{% if c.skipped %} <span class="muted">({{ c.skipped | length }} left out)</span>{% endif %}</td>
+          <td>{{ '%.3f' | format(c.max_psi) if c.max_psi is not none else '—' }}</td>
+          <td>{{ c.findings | length }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% elif m.baseline %}
+    <p class="muted" style="margin: 0;">No check has been sent yet.</p>
+    {% else %}
+    <p class="muted" style="margin: 0;">Checks start once a baseline is approved.</p>
+    {% endif %}
+  </div>
+
+  {% if can_operate %}
+  <div class="section-head"><h2>Sending samples</h2></div>
+  <div class="panel" id="model-samples">
+    <p style="margin: 0 0 var(--space-2);">Second Shift never sees what a model reads or writes. The model's owner sends a batch of samples from their own system, and Second Shift keeps only a summary of it.</p>
+    <p style="margin: 0;" class="muted">Send a batch with <code>POST /api/v1/models/{{ m.id }}/samples</code>. An agent that uses this model can send it with its own access key to <code>POST /api/v1/external/models/{{ m.id }}/samples</code>. Limits: {{ m.settings.min_samples }} to 5,000 values in a series, and {{ m.settings.batches_per_minute }} batches a minute.</p>
+  </div>
+  {% endif %}
+
+<script nonce="{{ csp_script_nonce }}">
+(function () {
+  var panel = document.getElementById("model-summary");
+  if (!panel) return;
+  var id = panel.getAttribute("data-model");
+  var base = "/api/v1/models/" + encodeURIComponent(id);
+  function done(message) { window.mvToast(message); setTimeout(function () { window.location.reload(); }, 400); }
+  async function send(path, method, body, what) {
+    try { return await window.mvFetchJSON(base + path, { method: method, body: body || {} }, what); }
+    catch (e) { window.mvToast(e.message || "The request did not go through.", { error: true }); return null; }
+  }
+  var approve = document.getElementById("model-approve");
+  if (approve) approve.addEventListener("click", async function () {
+    if (!(await window.mvConfirm("Approve the batch that is waiting as this model's baseline? Earlier changes are cleared and later checks are compared with it.", { okText: "Approve baseline" }))) return;
+    if (await send("/baseline/approve", "POST", {}, "approve the baseline")) done("Baseline approved.");
+  });
+  document.querySelectorAll("[data-model-ack]").forEach(function (b) {
+    b.addEventListener("click", async function () {
+      if (await send("/findings/acknowledge", "POST", { finding: b.getAttribute("data-model-ack") }, "acknowledge the change")) done("Acknowledged.");
+    });
+  });
+  var edit = document.getElementById("model-edit");
+  if (edit) edit.addEventListener("click", async function () {
+    var fields = [
+      { key: "provider", label: "Provider", default: {{ m.provider | tojson }}, allowEmpty: true },
+      { key: "purpose", label: "What it is used for", default: {{ m.purpose | tojson }}, allowEmpty: true },
+      { key: "owner", label: "Owner", default: {{ m.owner | tojson }}, allowEmpty: true },
+      { key: "risk_tier", label: "Risk", type: "select", default: {{ m.risk_tier | tojson }},
+        options: {{ risk_tiers | list | tojson }}.map(function (t) { return { value: t, label: t.charAt(0).toUpperCase() + t.slice(1) }; }) }
+    ];
+    {% if m.hand_entered %}fields.push({ key: "agents", label: "Agents that use it (ids, separated by commas)", allowEmpty: true,
+      default: {{ (m.agents | map(attribute='id') | join(', ')) | tojson }} });{% endif %}
+    var values = await window.mvForm("Edit " + {{ m.name | tojson }}, fields, { okText: "Save" });
+    if (!values) return;
+    var body = { provider: values.provider || "", purpose: values.purpose || "", owner: values.owner || "", risk_tier: values.risk_tier };
+    if ("agents" in values || {{ 'true' if m.hand_entered else 'false' }}) body.agents = (values.agents || "").split(",").map(function (a) { return a.trim(); }).filter(Boolean);
+    if (await send("", "PATCH", body, "save the details")) done("Saved.");
+  });
+})();
+</script>
+{% endblock %}
