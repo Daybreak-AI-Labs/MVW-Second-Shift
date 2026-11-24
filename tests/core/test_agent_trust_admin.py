@@ -1,0 +1,219 @@
+"""`maverick trust` admin: the JSON managed-registry overlay (add/rotate/revoke
+without editing TOML) and the CLI surface that drives it."""
+from __future__ import annotations
+
+import pytest
+from maverick import agent_trust, client
+
+
+@pytest.fixture(autouse=True)
+def _isolated_home(monkeypatch, tmp_path):
+    monkeypatch.setenv("MAVERICK_HOME", str(tmp_path))
+    monkeypatch.delenv("MAVERICK_CLIENT_ID", raising=False)
+    monkeypatch.delenv("MAVERICK_TENANT", raising=False)
+    client.reset_client_cache()
+    yield
+    client.reset_client_cache()
+
+
+def test_put_and_load_merges_managed():
+    agent_trust.put_agent({"id": "vega", "pubkey": "ab" * 32,
+                           "allow_tools": ["read_file"], "direction": "both"})
+    reg = agent_trust.load_registry({})  # config has no agents; managed supplies vega
+    assert "vega" in reg
+    assert reg["vega"].allow_tools == frozenset({"read_file"})
+
+
+def test_managed_registry_and_parent_are_private():
+    from maverick.file_lock import private_path_is_restricted
+
+    agent_trust.put_agent({"id": "vega", "pubkey": "ab" * 32})
+    path = agent_trust.managed_path()
+    assert private_path_is_restricted(path)
+    assert private_path_is_restricted(path.parent, 0o700)
+
+
+def test_put_replaces_same_id():
+    agent_trust.put_agent({"id": "vega", "max_risk": "low"})
+    agent_trust.put_agent({"id": "vega", "max_risk": "high"})
+    reg = agent_trust.load_registry({})
+    assert reg["vega"].max_risk == "high"
+    # exactly one managed entry for vega
+    assert sum(1 for e in agent_trust._load_managed() if e["id"] == "vega") == 1
+
+
+def test_remove_agent():
+    agent_trust.put_agent({"id": "vega"})
+    assert agent_trust.remove_agent("vega") is True
+    assert "vega" not in agent_trust.load_registry({})
+    assert agent_trust.remove_agent("vega") is False
+
+
+def test_remove_refuses_to_drop_the_revocation_of_a_config_defined_agent(monkeypatch):
+    from maverick import config
+    cfg = {"agent_trust": {"agents": [{"id": "vega", "max_risk": "low"}]}}
+    monkeypatch.setattr(config, "load_config", lambda *a, **k: cfg)
+    agent_trust.put_agent({"id": "vega", "max_risk": "low"})
+    agent_trust.set_revoked("vega", True)
+    with pytest.raises(agent_trust.RevokedAgentRemovalRefused, match="revoked"):
+        agent_trust.remove_agent("vega")
+    assert agent_trust.load_registry(cfg)["vega"].is_active()[0] is False
+
+
+def test_put_agent_refuses_an_entry_past_capacity(monkeypatch):
+    monkeypatch.setattr(agent_trust, "_MAX_AGENTS", 2)
+    agent_trust.put_agent({"id": "a"})
+    agent_trust.put_agent({"id": "b"})
+    with pytest.raises(agent_trust.AgentTrustError, match="capacity"):
+        agent_trust.put_agent({"id": "overflow"})
+    agent_trust.put_agent({"id": "b", "max_risk": "low"})  # replacing still works
+
+
+def test_attenuating_a_config_agent_stores_only_its_token_hash(monkeypatch):
+    from maverick import config
+    cfg = {"agent_trust": {"agents": [{"id": "vega", "a2a_token": "tok-plain-123",
+                                       "mcp_token": "mcp-plain-456"}]}}
+    monkeypatch.setattr(config, "load_config", lambda *a, **k: cfg)
+    agent_trust.attenuate_agent("vega", max_risk="low")
+    stored = agent_trust.managed_path().read_text()
+    assert "tok-plain-123" not in stored
+    assert "mcp-plain-456" not in stored
+    assert agent_trust.agent_for_token("tok-plain-123", "a2a", registry=agent_trust.load_registry(cfg)) is not None
+
+
+def test_revoke_blocks_via_is_active():
+    agent_trust.put_agent({"id": "vega", "pubkey": "ab" * 32})
+    assert agent_trust.set_revoked("vega", True) is True
+    reg = agent_trust.load_registry({})
+    assert reg["vega"].is_active()[0] is False
+    d = agent_trust.decide_inbound("vega", registry=reg, enforced=True)
+    assert d.denied and d.rule == "revoked"
+    agent_trust.set_revoked("vega", False)
+    assert agent_trust.load_registry({})["vega"].is_active()[0] is True
+
+
+def test_managed_overrides_config_entry():
+    cfg = {"agent_trust": {"agents": [{"id": "vega", "max_risk": "low"}]}}
+    assert agent_trust.load_registry(cfg)["vega"].max_risk == "low"
+    agent_trust.put_agent({"id": "vega", "max_risk": "high"})
+    assert agent_trust.load_registry(cfg)["vega"].max_risk == "high"  # managed wins
+
+
+def test_config_revocation_survives_a_managed_overlay_edit(monkeypatch):
+    from maverick import config
+    cfg = {"agent_trust": {"agents": [{"id": "vega", "max_risk": "high"}]}}
+    monkeypatch.setattr(config, "load_config", lambda *a, **k: cfg)
+    agent_trust.attenuate_agent("vega", max_risk="low")       # writes an active overlay
+    cfg["agent_trust"]["agents"][0]["revoked"] = True          # operator revokes in TOML
+    agent = agent_trust.load_registry(cfg)["vega"]
+    assert agent.revoked is True and agent.max_risk == "low"
+
+
+def test_corrupt_managed_store_invalidates_entire_registry():
+    """A lost managed revocation must not expose the looser TOML entry."""
+    path = agent_trust.managed_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{not-json", encoding="utf-8")
+
+    cfg = {"agent_trust": {"agents": [{"id": "vega", "max_risk": "high"}]}}
+    assert agent_trust.load_registry(cfg) == {}
+
+
+def test_malformed_managed_entry_invalidates_entire_registry():
+    import json
+
+    path = agent_trust.managed_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps([
+        {"id": "vega", "max_risk": "low"},
+        {"id": "rigel", "allow_tools": {"read_file": True}},
+    ]), encoding="utf-8")
+
+    assert agent_trust.load_registry({}) == {}
+
+
+def test_mutator_refuses_to_overwrite_corrupt_managed_store():
+    path = agent_trust.managed_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    original = "{not-json"
+    path.write_text(original, encoding="utf-8")
+
+    with pytest.raises(agent_trust.AgentTrustError, match="managed registry"):
+        agent_trust.put_agent({"id": "vega", "max_risk": "low"})
+    assert path.read_text(encoding="utf-8") == original
+
+
+def test_put_invalid_raises():
+    with pytest.raises(agent_trust.AgentTrustError):
+        agent_trust.put_agent({"id": "BAD ID"})
+
+
+def test_put_rejects_malformed_pubkey():
+    with pytest.raises(agent_trust.AgentTrustError, match="invalid pubkey"):
+        agent_trust.put_agent({"id": "vega", "pubkey": "not-a-hex-key"})
+    assert "vega" not in agent_trust.load_registry({})
+
+
+def test_managed_path_is_client_scoped(monkeypatch):
+    monkeypatch.setenv("MAVERICK_CLIENT_ID", "acme")
+    client.reset_client_cache()
+    assert "tenants/acme" in str(agent_trust.managed_path()).replace("\\", "/")
+
+
+def test_local_pubkey():
+    pytest.importorskip("cryptography")
+    pk = agent_trust.local_pubkey()
+    assert isinstance(pk, str) and len(pk) == 64
+
+
+def test_concurrent_puts_do_not_lose_agents():
+    """put_agent does a lock-free load-modify-save; without serialization two
+    concurrent puts both load the same registry and the second save clobbers
+    the first -- a registered agent silently vanishes. All N must survive."""
+    import threading
+
+    n = 24
+    errors: list[Exception] = []
+
+    def make(i: int):
+        try:
+            agent_trust.put_agent({"id": f"agent{i:03d}", "max_risk": "low"})
+        except (agent_trust.AgentTrustError, OSError) as e:
+            errors.append(e)
+
+    threads = [threading.Thread(target=make, args=(i,)) for i in range(n)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert not errors, errors[:3]
+    ids = {e.get("id") for e in agent_trust._load_managed()}
+    assert len([i for i in ids if i and i.startswith("agent")]) == n
+
+
+def test_concurrent_revoke_is_not_lost_against_a_put():
+    """A set_revoked(True) racing a put_agent on a DIFFERENT id must not be
+    clobbered -- a lost revoke leaves a revoked external agent trusted."""
+    import threading
+
+    agent_trust.put_agent({"id": "vega", "pubkey": "ab" * 32})
+    barrier = threading.Barrier(2)
+
+    def revoke():
+        barrier.wait()
+        agent_trust.set_revoked("vega", True)
+
+    def other_put():
+        barrier.wait()
+        agent_trust.put_agent({"id": "rigel", "max_risk": "low"})
+
+    ts = [threading.Thread(target=revoke), threading.Thread(target=other_put)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join()
+
+    by_id = {e.get("id"): e for e in agent_trust._load_managed()}
+    assert by_id["vega"].get("revoked") is True   # the revoke survived
+    assert "rigel" in by_id                        # and so did the concurrent add

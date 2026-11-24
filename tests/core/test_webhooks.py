@@ -1,0 +1,170 @@
+"""Tests for outbound webhooks (maverick.webhooks)."""
+from __future__ import annotations
+
+import contextlib
+
+
+def test_webhooks_no_urls_no_op():
+    from maverick.webhooks import fire
+    # Pass empty urls explicitly to bypass config lookup.
+    n = fire("test_event", {"x": 1}, urls=[], secret=None)
+    assert n == 0
+
+
+def test_webhooks_signature_round_trip():
+    """verify_signature accepts the signature fire() would produce."""
+    from maverick.webhooks import _sign, verify_signature
+    body = b'{"hello": "world"}'
+    sig = _sign(body, "secret-key")
+    assert sig.startswith("sha256=")
+    assert verify_signature(body, sig, "secret-key") is True
+    assert verify_signature(body, sig, "wrong-key") is False
+    assert verify_signature(body, "garbage", "secret-key") is False
+
+
+def test_webhooks_fires_per_url(monkeypatch):
+    """fire() submits one POST per URL configured."""
+    from maverick import webhooks
+    posted: list[str] = []
+
+    def _fake_post(url, body, headers, timeout):
+        posted.append(url)
+
+    monkeypatch.setattr(webhooks, "_post", _fake_post)
+    # Wait for threadpool to drain by submitting then joining.
+    n = webhooks.fire(
+        "goal_finished",
+        {"goal_id": 1, "status": "succeeded"},
+        urls=["https://a.example", "https://b.example"],
+        secret=None,
+    )
+    # Drain the pool.
+    exec_ = webhooks._get_executor()
+    exec_.shutdown(wait=True)
+    # Reset for downstream tests so they get a fresh pool.
+    webhooks._executor = None
+    assert n == 2
+    assert sorted(posted) == ["https://a.example", "https://b.example"]
+
+
+def test_webhooks_timestamped_signature_replay_window():
+    """A timestamped signature is rejected once the timestamp falls outside the
+    max-age window (replay defence) but accepted while fresh."""
+    import time
+
+    from maverick.webhooks import _sign, verify_signature
+    body = b'{"event": "x"}'
+    fresh = str(int(time.time()))
+    sig = _sign(body, "k", timestamp=fresh)
+    # fresh -> accepted
+    assert verify_signature(body, sig, "k", timestamp=fresh, max_age=300) is True
+    # stale -> rejected even though the HMAC matches the (stale) timestamp
+    stale = str(int(time.time()) - 10_000)
+    stale_sig = _sign(body, "k", timestamp=stale)
+    assert verify_signature(body, stale_sig, "k", timestamp=stale, max_age=300) is False
+    # a captured fresh signature replayed with a tampered timestamp -> rejected
+    assert verify_signature(body, sig, "k", timestamp=stale, max_age=300) is False
+
+
+def test_webhooks_outbound_post_blocks_ssrf(monkeypatch):
+    """_post routes through the SSRF guard: a loopback/metadata target makes no
+    outbound request."""
+    import httpx
+    from maverick import webhooks
+    posted: list[str] = []
+
+    def _spy(self, method, url, **kw):  # pragma: no cover - must not run for blocked host
+        posted.append(str(url))
+        raise AssertionError("a blocked address must not be contacted")
+
+    monkeypatch.setattr(httpx.Client, "stream", _spy)
+    for url in (
+        "http://127.0.0.1:8765/internal",
+        "http://169.254.169.254/latest/meta-data/",
+        "file:///etc/passwd",
+    ):
+        webhooks._post(url, b"{}", {}, 5.0)
+    assert posted == []
+
+
+def test_webhooks_outbound_post_allows_public(monkeypatch):
+    """A public outbound target still fires through the guard."""
+    import httpx
+    from maverick import webhooks
+    posted: list[str] = []
+
+    @contextlib.contextmanager
+    def _spy(self, method, url, **kw):
+        posted.append(f"{method} {url}")
+        yield httpx.Response(200, content=b"")
+
+    monkeypatch.setattr(httpx.Client, "stream", _spy)
+    # Literal public IP -> deterministic offline (no DNS).
+    webhooks._post("http://93.184.216.34/wh", b"{}", {}, 5.0)
+    assert posted == ["POST http://93.184.216.34/wh"]
+
+
+def test_webhooks_outbound_post_reads_only_the_start_of_the_reply(monkeypatch):
+    """The receiver chooses the size of its reply. Only a short start of it is
+    kept, so only a short start of it is read."""
+    import httpx
+    from maverick import webhooks
+    from maverick.tools import _ssrf
+    pulled: list[int] = []
+
+    def _endless_reply():
+        for index in range(10_000):  # 10 MiB if anyone reads it all
+            pulled.append(index)
+            yield (b"ok " if index == 0 else b"x") * 341 + b"\n"
+
+    def _client(url, timeout=None):
+        return httpx.Client(transport=httpx.MockTransport(
+            lambda request: httpx.Response(503, content=_endless_reply())))
+
+    monkeypatch.setattr(_ssrf, "safe_client", _client)
+    status, _latency, snippet, error = webhooks._post_result(
+        "https://hooks.example.com/wh", b"{}", {}, 5.0)
+    assert (status, error) == (503, "HTTP 503")
+    assert snippet.startswith("ok ok ok") and len(snippet) == 200
+    assert len(pulled) < 20
+
+
+def test_string_outbound_is_one_url_not_characters(monkeypatch):
+    """Regression: ``outbound = "https://..."`` became one URL per character."""
+    from maverick import config, webhooks
+    monkeypatch.setattr(config, "load_config", lambda: {
+        "webhooks": {"outbound": "https://example.com/hook"}})
+    urls, _secret = webhooks._load_config_outbound()
+    assert urls == ["https://example.com/hook"]
+
+
+def test_webhooks_outbound_post_stops_reading_a_slow_reply_at_the_timeout(monkeypatch):
+    """Each read of a trickled reply is quick, so the per-read timeout never
+    fires. The whole reply still has to finish within the timeout."""
+    import types
+
+    import httpx
+    from maverick import webhooks
+    from maverick.tools import _ssrf
+
+    clock = [100.0]
+    pulled: list[int] = []
+
+    def _trickle():
+        for index in range(10_000):
+            pulled.append(index)
+            clock[0] += 0.5  # half a second per byte
+            yield b"x"
+
+    monkeypatch.setattr(webhooks, "time", types.SimpleNamespace(
+        monotonic=lambda: clock[0], time=lambda: clock[0]))
+    monkeypatch.setattr(_ssrf, "safe_client", lambda url, timeout=None: httpx.Client(
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, content=_trickle()))))
+
+    status, latency, snippet, error = webhooks._post_result(
+        "https://hooks.example.com/wh", b"{}", {}, 2.0)
+
+    # The same result as any reply that timed out: no status, and not "never sent".
+    assert status is None and snippet == "" and "ReadTimeout" in error
+    assert not isinstance(error, webhooks.NotSent)
+    assert len(pulled) <= 6 and 2000 <= latency <= 3500

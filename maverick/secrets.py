@@ -1,0 +1,196 @@
+"""Secret scrubber for logs + error messages.
+
+LLM exceptions, MCP stderr drains, and `subprocess.run` stdout can contain
+API keys / bearer tokens / .env values, so they must not be logged verbatim.
+This module gives a single ``scrub(text)`` that pattern-matches the common shapes and
+redacts them to ``[REDACTED:<kind>]``.
+
+The patterns aren't exhaustive (a determined exfiltrator can wrap
+secrets in something unusual), but they cover what people accidentally
+paste into goal descriptions, what shell tools echo by mistake, and
+what LLM error payloads tend to include.
+"""
+from __future__ import annotations
+
+import re
+
+# Each entry: (kind, regex). Order matters -- longer / more specific
+# patterns run first so they don't get partially matched by generic ones.
+_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
+    # PEM private-key block (RSA / EC / OPENSSH / generic). Redact the whole
+    # block -- runs first so its base64 body isn't partially matched by the
+    # key/jwt patterns below.
+    ("private_key", re.compile(
+        r"-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----"
+        r"(?:"
+        # Preferred: the whole block when an END marker is present. Bounded
+        # body ({0,65536}) so many BEGIN markers with no END can't scan to EOF
+        # per marker (ReDoS guard); the 64KB bound covers real key formats so a
+        # key whose body exceeds 8192 chars does not leak its trailing
+        # material + END line (the same bound as secret_detector).
+        r".{0,65536}?-----END (?:[A-Z0-9 ]+ )?PRIVATE KEY-----"
+        r"|"
+        # Fallback: a BEGIN header + base64 body but NO END marker (a key
+        # truncated by a buffer/summary boundary). Without this the pattern
+        # required END and leaked the truncated key body to logs / support
+        # bundles. Mirrors safety.secret_detector.private_key_pem.
+        r"[A-Za-z0-9+/=\s]{0,65536}"
+        r")",
+        re.DOTALL,
+    )),
+    # Credentials embedded in a URL / connection string
+    # (scheme://user:password@host -- postgres://, redis://, mongodb://, ...).
+    # Redacts only the password segment, keeping the rest readable. The user
+    # may be empty (redis://:password@host), and the password runs to the "@"
+    # whose host part (up to "/", "?", "#", whitespace, "," or the end) holds no "@", so
+    # a password containing "@" is redacted whole and a following host is not.
+    # The scheme run is bounded ({0,31}) instead of an open `*`: an
+    # unbounded greedy class followed by the required `://` backtracks
+    # quadratically on a long run of scheme-class chars that has no `://`
+    # (a ReDoS -- scrub() runs on tool output / LLM error payloads, so a
+    # crafted long string could hang the agent). No real URL scheme is
+    # anywhere near 32 chars, so the bound changes no legitimate match.
+    ("url_credentials", re.compile(
+        r"([a-zA-Z][a-zA-Z0-9+.\-]{0,31}://[^\s:/@]*:)([^\s/]+?)(@)(?=[^\s/@,?#]*(?:[\s/,?#]|$))",
+    )),
+    # Anthropic API key (sk-ant-...)
+    ("anthropic_key", re.compile(r"\bsk-ant-[A-Za-z0-9_-]{20,}\b")),
+    # Stripe secret/restricted key (sk_live_, sk_test_, rk_live_, rk_test_).
+    # Underscore-delimited, so the openai `sk-` pattern never matches it.
+    ("stripe_key", re.compile(r"\b[sr]k_(?:live|test)_[A-Za-z0-9]{16,}\b")),
+    # OpenAI / OpenRouter key (sk-...)
+    ("openai_key", re.compile(r"\bsk-[A-Za-z0-9_-]{20,}\b")),
+    # Google / GCP API key (AIza...)
+    ("google_api_key", re.compile(r"\bAIza[0-9A-Za-z_\-]{35}\b")),
+    # AWS access key id
+    ("aws_access_key", re.compile(r"\bAKIA[0-9A-Z]{16}\b")),
+    # AWS SECRET access key. The env_secret pattern below only matches an
+    # UPPERCASE key name, but the canonical ~/.aws/credentials file (and boto /
+    # aws-cli output) uses the lowercase `aws_secret_access_key`, so the actual
+    # 40-char secret -- the sensitive half -- leaked verbatim while only the
+    # harmless AKIA id above got redacted. Match the lowercase key explicitly;
+    # the value is exactly 40 base64 chars. Group 1 (key + separator + optional
+    # quote) is preserved.
+    ("aws_secret_key", re.compile(
+        r"(?i)(aws_secret_access_key\s*[:=]\s*['\"]?)([A-Za-z0-9/+]{40})",
+    )),
+    # GitHub PAT (ghp_/gho_/ghu_/ghr_/ghs_ prefix, and fine-grained github_pat_)
+    ("github_token", re.compile(r"\bgithub_pat_[A-Za-z0-9_]{22,}\b|\bgh[ps]_[A-Za-z0-9_]{30,}\b|\bghu_[A-Za-z0-9_]{30,}\b|\bgho_[A-Za-z0-9_]{30,}\b|\bghr_[A-Za-z0-9_]{30,}\b")),
+    # Second Shift personal / service-account API key (lwk_...; see
+    # maverick_dashboard.api_keys). Only the configured default prefix is
+    # recognised here; a custom prefix must be added to this list too.
+    ("second_shift_api_key", re.compile(r"\blwk_[A-Za-z0-9_-]{20,}\b")),
+    # Slack tokens (xoxb-, xoxp-, xapp-)
+    ("slack_token", re.compile(r"\bxox[bpaors]-[A-Za-z0-9-]{10,}\b")),
+    # Authorization header (Bearer ... or Basic <base64 user:password>)
+    ("bearer", re.compile(
+        r"(?i)\b(authorization\s*:\s*(?:bearer\s+(?=[A-Za-z0-9._\-+/=]{16})|basic\s+))"
+        r"([A-Za-z0-9._\-+/=]+)")),
+    # .env-style KEY=value lines (only the value part; only redact when key
+    # contains TOKEN / KEY / SECRET / PASSWORD / PASS / CREDENTIAL). Tolerates
+    # a leading `export ` so shell-style `export FOO_TOKEN=...` is covered too.
+    ("env_secret", re.compile(
+        # Leading indentation is `[^\S\n]*` (horizontal whitespace), NOT `\s*`:
+        # `\s` includes `\n`, and with re.MULTILINE the `(?:^|\n)` anchor fires
+        # at every line start, so on a long run of newlines `\s*` backtracks
+        # O(N^2) -- a ReDoS, since scrub() runs on attacker-influenced output.
+        # The newline itself is already handled by the `(?:^|\n)` anchor.
+        # Separator is `[:=]`, not just `=`: YAML / k8s manifests / many log
+        # formats use `KEY: value`, and those colon-delimited secrets slipped
+        # through unredacted. The key class stays UPPERCASE so ordinary lowercase
+        # prose isn't over-redacted. The name is read in one pass, as in
+        # secret_detector's env_secret (the form that backtracked across a
+        # run of capitals once per keyword in it was a ReDoS).
+        r"((?:^|\n)[^\S\n]*(?:export\s+)?"
+        r"(?=[A-Z][A-Z0-9_]*?(?:TOKEN|KEY|SECRET|PASSWORD|PASS|CREDENTIAL))[A-Z][A-Z0-9_]*+\s*[:=]\s*)"
+        # Value: a single- or double-quoted string (which may contain
+        # spaces) OR a bare run of non-space chars. Without the quoted
+        # alternatives a value like FOO_SECRET="a b c" matched only "a,
+        # leaving `b c"` -- the real secret -- unredacted.
+        r"(\"[^\"\n]*\"|'[^'\n]*'|[^\s\n]+)",
+        re.MULTILINE,
+    )),
+    # JWT (three base64url segments separated by dots, common shape)
+    # Group 1 is the run of token characters before it: only the first "eyJ"
+    # in a run is tried, as in secret_detector's jwt (trying each one after a
+    # "-" rescanned the rest of the run every time, a ReDoS).
+    ("jwt", re.compile(
+        r"((?<![A-Za-z0-9_-])(?>[A-Za-z0-9_-]*?(?=\beyJ)))"
+        r"(eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b)"
+    )),
+    # Credential carried in a URL query string (?access_token=..., &api_key=...,
+    # presigned-URL ?sig=..., webhook ?token=...). The env_secret pattern only
+    # matches uppercase KEY=value at line start, so these slipped through into
+    # logs / audit / replay exports verbatim. Group 1 keeps the "?key=" prefix.
+    ("url_secret", re.compile(
+        r"(?i)([?&](?:access_token|api_key|apikey|auth_token|token|secret|"
+        r"password|passwd|sig|signature|client_secret)=)([^&#\s\"']+)",
+    )),
+    # Query parameters that are a credential only for particular services:
+    # Wolfram Alpha's ``appid`` (its sole credential) and Trello's ``key``.
+    # httpx logs every request URL at INFO. Kept apart from url_secret so the
+    # names there match exactly as before. ``key=``/``appid=`` are also common
+    # ordinary parameters (``?key=id``, ``?appid=demo``, a ``{appid}``
+    # template), so only a credential-shaped value is redacted: 16-256 letters,
+    # digits, ``-`` or ``_`` making up the whole value (a 32-hex Trello key, a
+    # Wolfram app id). The value never takes in ``)``, quotes, braces or
+    # whitespace, and the bounded run keeps the match linear.
+    ("url_key_param", re.compile(
+        r"(?i)([?&](?:appid|key)=)([A-Za-z0-9_-]{16,256})(?=$|[&#\s\"'(){}\[\]<>])",
+    )),
+    # Telegram bot token in a Bot API URL path (``/bot<id>:<token>/method``,
+    # also ``/file/bot<id>:<token>/...``). httpx logs the URL at INFO. The bot
+    # id stays readable; the bounded runs keep the match linear.
+    ("telegram_bot_token", re.compile(
+        r"(/bot[0-9]{1,20}:)([A-Za-z0-9_-]{20,128})",
+    )),
+    # Lowercase, camelCase or quoted key/value pairs (password: hunter2,
+    # api_key = abc, {"apiKey": "..."}) that the uppercase env_secret pattern
+    # misses. A quoted value is always a value, and its quotes stay around the
+    # placeholder (JSON stays valid). An unquoted value must be a single token
+    # ending the line or followed by a quote, comma, semicolon or closing
+    # bracket, so prose such as "invalid password: user bob" is left alone.
+    # It must also mix letters and digits, be at least five characters and
+    # hold no opening bracket: source code names its variables after secrets
+    # (token = get_token(), def login(password: str), self.token = token) and
+    # rewriting those corrupts code that passes through here. An unquoted
+    # value made only of letters is therefore not redacted.
+    # Values are bounded so a long run of key-like text cannot backtrack. A
+    # value an earlier pattern already redacted is left alone.
+    ("kv_secret", re.compile(
+        r"(?im)((?<![A-Za-z0-9])(?:password|passwd|secret|token|api[_-]?key|access[_-]?key|"
+        r"client[_-]?secret|auth[_-]?token|access[_-]?token|refresh[_-]?token)"
+        r"[\"']?[^\S\n]*[:=][^\S\n]*([\"'])?)"
+        r"(?![\"']?\[REDACTED)"
+        r"((?(2)(?:(?!\2)[^\n]){1,4096}|"
+        r"(?=[^\s,;\"'}\])(\[{<]{0,511}[0-9])(?=[^\s,;\"'}\])(\[{<]{0,511}[A-Za-z])"
+        r"[^\s,;\"'}\])(\[{<]{5,512}(?=[^\S\n]*(?:$|[,;\"'}\])]))))",
+    )),
+]
+
+
+def scrub(text: str, *, key_values: bool = True) -> str:
+    """Return a copy of ``text`` with detected secrets replaced.
+
+    The replacement preserves enough structure that the redacted result
+    is still useful for debugging (you can see WHAT got redacted), but
+    the actual secret value is gone. ``key_values=False`` leaves out the
+    lowercase key/value rule, for a caller that judges those pairs itself.
+    """
+    if not text:
+        return text
+    out = text
+    for kind, pat in _PATTERNS:
+        if kind == "kv_secret" and not key_values:
+            continue
+        if kind in ("bearer", "env_secret", "url_secret", "url_key_param", "telegram_bot_token",
+                    "aws_secret_key", "jwt", "kv_secret"):
+            # Keep the prefix (header name / KEY= / ?param= / text before a
+            # token), redact the value.
+            out = pat.sub(lambda m, k=kind: m.group(1) + f"[REDACTED:{k}]", out)
+        elif kind == "url_credentials":
+            # Keep scheme://user: and the trailing @, redact the password.
+            out = pat.sub(lambda m: m.group(1) + "[REDACTED:url_credentials]" + m.group(3), out)
+        else:
+            out = pat.sub(f"[REDACTED:{kind}]", out)
+    return out
