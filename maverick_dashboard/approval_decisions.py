@@ -152,7 +152,7 @@ def _may_decide(principal: str) -> bool:
     from .auth import role_for_principal
 
     try:
-        if "approve" not in rbac.permissions_for(role_for_principal(principal)):
+        if "approve" not in rbac.permissions_for(role_for_principal(principal, directory=True)):
             return False
         return scim_groups.active_for_principal(principal) is not False
     except Exception:  # an unreadable roster lets nobody decide, so nobody counts
@@ -270,7 +270,7 @@ def _channel_authority(world, principal: str, *, channel: str, approval_id: int)
     from .content_access import approval_readers
 
     try:
-        permitted = ("approve" in rbac.permissions_for(role_for_principal(principal))
+        permitted = ("approve" in rbac.permissions_for(role_for_principal(principal, directory=True))
                      and scim_groups.active_for_principal(principal) is not False)
         approval = world.get_approval(int(approval_id))
         readable = approval is not None and principal in approval_readers(approval, world)

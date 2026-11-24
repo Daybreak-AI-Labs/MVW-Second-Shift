@@ -562,7 +562,8 @@ def is_dashboard_admin(principal: str) -> bool:
     return is_admin_principal(principal)
 
 
-def global_role_for_principal(principal: str | None, *, request: Request | None = None) -> str | None:
+def global_role_for_principal(principal: str | None, *, request: Request | None = None,
+                              directory: bool = False) -> str | None:
     """The principal's dashboard-wide RBAC role, ignoring tenant memberships.
 
     Resolution: explicit stored assignment, then the role mapped to the user's
@@ -570,7 +571,12 @@ def global_role_for_principal(principal: str | None, *, request: Request | None 
     the role from the caller's own sign-in claim (sign_in_roles; only when
     ``request`` is given and ``principal`` is its caller), then the configured
     default. Explicit always beats derived, so an admin can still pin an
-    individual without fighting the group or claim mapping."""
+    individual without fighting the group or claim mapping.
+
+    ``directory`` is for work with no browser session (Teams cards, the
+    other-approver rule): after the claim, the person's current Entra app roles
+    are read from the directory (``maverick.entra_directory``; nothing when it
+    is off or cannot be read) and mapped the same way."""
     if principal is None:
         return None
     if is_dashboard_admin(principal):
@@ -595,6 +601,12 @@ def global_role_for_principal(principal: str | None, *, request: Request | None 
         claim_role = sign_in_roles.for_request(request, principal)
         if claim_role:
             return claim_role
+        if directory:
+            from maverick import entra_directory
+
+            directory_role = entra_directory.role_for_principal(principal)
+            if directory_role:
+                return directory_role
         # Once workspace membership is in use, an unassigned account is not
         # implicitly entitled to the separate installation-wide namespace. The
         # durable roster remains after revocation, preventing privilege return.
@@ -612,7 +624,8 @@ def global_role_for_principal(principal: str | None, *, request: Request | None 
         return None
 
 
-def role_for_principal(principal: str | None, *, request: Request | None = None) -> str | None:
+def role_for_principal(principal: str | None, *, request: Request | None = None,
+                       directory: bool = False) -> str | None:
     """The dashboard RBAC role for ``principal``.
 
     None when auth is off (no principal) -- the signal for every gate to
@@ -621,7 +634,8 @@ def role_for_principal(principal: str | None, *, request: Request | None = None)
     the store, so you can't lock yourself out. Otherwise the stored role, or the
     configured default (``viewer``) for an authenticated user with no explicit
     assignment. Given the caller's own ``request``, the role from that caller's
-    sign-in claim comes before the default (:func:`global_role_for_principal`).
+    sign-in claim comes before the default (:func:`global_role_for_principal`);
+    ``directory`` adds the role the Entra directory gives a person with no session.
     """
     if principal is None:
         return None
@@ -647,7 +661,7 @@ def role_for_principal(principal: str | None, *, request: Request | None = None)
                 from . import strict_reads
 
                 with strict_reads.strict():
-                    return global_role_for_principal(principal, request=request) or rbac.default_role()
+                    return global_role_for_principal(principal, request=request, directory=directory) or rbac.default_role()
     except Exception:
         # Never replace an unreadable tenant-local demotion with the broader
         # global/default role.
@@ -656,7 +670,7 @@ def role_for_principal(principal: str | None, *, request: Request | None = None)
         if strict_reads.active():
             raise
         return None
-    return global_role_for_principal(principal, request=request)
+    return global_role_for_principal(principal, request=request, directory=directory)
 
 
 def _role_of_caller(lookup, request: Request, principal: str | None) -> str | None:
