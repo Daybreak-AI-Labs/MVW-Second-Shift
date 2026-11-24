@@ -4,8 +4,8 @@ The factory uses the Second Shift runtime (``second_shift_runtime``) as a librar
 definition format, the model clients and test runs. The runtime is an optional install: without it the
 factory pages say so plainly and the rest of Second Shift works as before.
 
-This package does not export agents to Azure, AWS or Microsoft Foundry; a released version keeps what an
-export needs (its definition and ``config_digest``).
+A released version can be exported as a package for Azure, AWS Bedrock AgentCore or Microsoft Foundry (``export``), and
+pushed to Foundry when an administrator allows it (``foundry_push``).
 """
 from __future__ import annotations
 
