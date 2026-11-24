@@ -10,9 +10,11 @@ set up, so that:
 
 Platform checks only read. They never change, switch off or delete anything on
 a platform, and they take no action on what they find: a changed set-up shows
-up as a drift finding ("the agent's configuration on its home platform no
-longer matches the approved one"), and what happens next follows your drift
-settings.
+up as a drift finding that says what changed (see "What changed"), and what
+happens next follows your drift settings. Separately, and only for Microsoft
+Entra Agent ID, an administrator can switch an agent off on its platform from
+the agent's page once you have turned that on (see "Switching an agent off on
+its platform").
 
 Platform checks are off until you turn them on. Nothing in this note has been
 run against a live Microsoft tenant, ServiceNow instance or Workday tenant; see
@@ -126,6 +128,107 @@ values are read at the moment of each check, and a section that contains the
 secret itself (`client_secret = "..."`, or for Workday `refresh_token = "..."`)
 is refused. What each one signs in as is described in its own section below.
 
+## What changed
+
+A fingerprint says only that something changed. So beside it each check keeps a
+small description of the fields that define the agent's set-up, and when the
+fingerprint no longer matches the approved one the finding says which fields
+changed, for example:
+
+> Guest Help Desk changed on Microsoft Foundry: version 7 -> 8; model gpt-4.1 ->
+> gpt-4.1-mini; tool added: function:send_email; instructions changed (Second
+> Shift keeps a fingerprint of the instructions, not the text).
+
+The same sentence goes in the alert and the audit entry. The agent's page shows
+it as a short list (field, before, now), with what you can do next: approve the
+new set-up as the baseline (administrator), pause the agent (permission to
+respond), or switch it off on its platform where that is possible.
+
+The description keeps short labels (model and tool names, a version, a state,
+timestamps), true/false flags and bounded lists. Anything long is kept only as a
+short digest, so Second Shift can say "instructions changed" but never shows or
+stores the instructions, and it never keeps any free text an agent's author
+wrote. Every list and string is bounded, and a value that looks like a secret
+is dropped. When the baseline is approved, the description current at that
+moment is kept with it, so the later comparison is against what you approved.
+A baseline approved before this existed has no description; the finding then
+says "Details were not recorded for this change" until you approve a new
+baseline.
+
+What each check keeps (the fields are the ones the check already reads for its
+fingerprint; the pages that document them are listed at the end):
+
+| Platform | Kept as a label or flag | Kept only as a digest |
+|---|---|---|
+| Entra Agent ID | display name, enabled, blueprint, disabled by Microsoft, identity type | |
+| Foundry | name, version, state, kind, model, tool labels (type and name or server label) | instructions, each tool's settings |
+| Copilot Studio | name, state, status code, published time, last edited time | |
+| ServiceNow | name, active and other flags, published version and version labels, agent type, channel, record type, tool names | instructions, role, description, run condition, context script |
+| Workday | name, version, provider and platform ids, skill names, capabilities that are on | description, address, external ids, skill and resource definitions, input and output modes |
+
+What a platform does not say is not invented. Copilot Studio gives only when an
+agent was published and last edited, so the sentence reads "published again at
+2026-11-24 14:05 UTC" and adds that Copilot Studio does not say what was
+edited. Workday does not say who changed a definition or when. A field a
+platform stops reporting is described as "no longer reported", not as
+unchanged.
+
+## Switching an agent off on its platform
+
+Blocking an agent in Second Shift only makes Second Shift refuse its calls. For
+Microsoft Entra Agent ID an administrator can also disable the agent identity
+itself, so it can no longer sign in anywhere, and switch it back on later. It
+is built only where the vendor documents a way:
+
+| Platform | Switch off from Second Shift | Why, and what the administrator does instead |
+|---|---|---|
+| Entra Agent ID | Yes, if turned on | Microsoft Graph documents `PATCH /servicePrincipals/{id}/microsoft.graph.agentIdentity` with the application permission `AgentIdentity.EnableDisable.All`. |
+| Copilot Studio | No | Microsoft allows quarantining an agent only with a signed-in Global, AI or Power Platform administrator's token, not an app's. Ask one of them to quarantine it. |
+| ServiceNow | No | ServiceNow documents deactivating an AI agent only in AI Agent Studio (the Deactivate button, role `sn_aia.admin`), not through its API. An administrator does it there. |
+| Workday | No | Workday has no way to do it from outside. An administrator switches the agent off in the Agent Management Hub. |
+| Foundry | Not yet | An administrator disables the agent in the Foundry portal. |
+
+On the agent's page, a platform without this says so in plain words and what
+to do instead, and Pause (in Agent control) still makes Second Shift refuse the
+agent's calls.
+
+**Turning it on for Entra Agent ID.** It is off unless the platform's settings
+say so:
+
+```toml
+[agent_watch.entra_agent_id]
+# ... the three credential settings ...
+allow_switch_off = true
+```
+
+An administrator must also grant the check's app registration the Microsoft
+Graph *application* permission `AgentIdentity.EnableDisable.All` ("Enable or
+disable agent identities") with admin consent. The check's own permission
+(`AgentIdentity.Read.All`) is not enough, and nothing else is requested.
+
+**The risk.** With this on, the app registration can disable any agent identity
+in your tenant, not only the ones enrolled in Second Shift, so protect its
+secret as you would a privileged account's. Disabling an identity stops it
+signing in and can make the agent, and anything that depends on it, fail
+(Microsoft's note: https://learn.microsoft.com/en-us/entra/agent-id/disable-agent-identities).
+Leave `allow_switch_off` off if you do not want Second Shift to hold that power.
+
+**How it works.** Only an administrator can use it. The page asks first, naming
+the agent and the platform. The request is written to the audit log before it is
+sent (`agent_platform_switch_requested`) and again with its outcome
+(`agent_platform_switched` or `agent_platform_switch_failed`); those rows hold
+the agent's id, the platform, the action, who asked and the result, never what
+the platform said. If the audit log cannot take the request, nothing is sent.
+The request goes through the same guarded outbound client and timeout as the
+checks, is sent once and is never retried. The caller names only the enrolled
+agent: the platform id comes from the agent's own platform link, and is
+refused unless it is an identity id. If Microsoft refuses (for example the
+permission was not granted), the page says so in plain words and nothing in
+Second Shift's own records changes. After a switch-off the next platform check
+sees the identity as disabled and reports it as a change to the set-up, which
+you can approve as the new baseline. Secrets are read by environment-variable
+name, as for the checks, and never appear in a message, log or audit row.
+
 ## Linking an enrolled agent to its platform agent
 
 A check matches a platform agent to an enrolled agent through the enrolled
@@ -155,6 +258,10 @@ followed page by page.
 
 **Permission to grant:** on the app registration, the Microsoft Graph
 *application* permission `AgentIdentity.Read.All`, with admin consent.
+
+**Optional setting:** `allow_switch_off = true` lets an administrator disable
+and re-enable an identity from the agent's page. It needs one more permission
+and carries a risk; read "Switching an agent off on its platform" first.
 
 **What counts as a change:** the identity's display name, whether its account
 is enabled, which blueprint it was made from, whether Microsoft has disabled
@@ -445,7 +552,9 @@ attempt and last success, the last error in plain words, and counts; the
 enrolled agent, what its platform last said (state, version, last change, last
 seen, how many checks it has been absent). It never holds a secret, a token,
 or anything copied from a platform's answer beyond names, states and version
-labels.
+labels. The description of an agent's set-up (see "What changed") is kept in
+the drift record, beside the fingerprint and inside an approved baseline: short
+labels, flags, bounded lists and digests, never instruction text.
 
 If this file cannot be read, checks stop and say so, before any platform is
 contacted. The file is never overwritten or treated as empty. Restore it from
@@ -485,6 +594,11 @@ Both answer 404 while outside-agent governance is off.
 - List agent identities, and its permission: https://learn.microsoft.com/en-us/graph/api/agentidentity-list?view=graph-rest-1.0
 - The agent identity resource: https://learn.microsoft.com/en-us/graph/api/resources/agentidentity?view=graph-rest-1.0
 - Paging in Microsoft Graph: https://learn.microsoft.com/en-us/graph/paging
+- Update an agent identity (the switch-off request and its permission): https://learn.microsoft.com/en-us/graph/api/agentidentity-update?view=graph-rest-1.0
+- The `AgentIdentity.EnableDisable.All` permission: https://learn.microsoft.com/en-us/graph/permissions-reference
+- Disabling agent identities, and what it affects: https://learn.microsoft.com/en-us/entra/agent-id/disable-agent-identities
+- Copilot Studio quarantine (signed-in administrator only): https://learn.microsoft.com/en-us/microsoft-copilot-studio/admin-api-quarantine
+- Foundry tool names (the labels kept for a tool): https://learn.microsoft.com/en-us/azure/foundry/agents/how-to/tools/toolbox
 - Foundry Agent Service overview: https://learn.microsoft.com/en-us/azure/foundry/agents/overview
 - Foundry project endpoint and `api-version=v1`: https://learn.microsoft.com/en-us/azure/foundry/agents/quickstarts/prompt-agent
 - Foundry sign-in scope and roles: https://learn.microsoft.com/en-us/azure/foundry/concepts/authentication-authorization-foundry
@@ -499,6 +613,7 @@ Both answer 404 while outside-agent governance is off.
 
 ## ServiceNow pages this check follows
 
+- Deactivating an AI agent (UI only, role `sn_aia.admin`; why no switch-off is built): https://www.servicenow.com/docs/r/intelligent-experiences/deactivate-ai-asset-new.html
 - Sign-in (OAuth 2.0 client credentials, `POST /oauth_token.do`): https://www.servicenow.com/docs/r/platform-security/authentication/client-credentials-grant-workflow.html
 - Setting up the client-credentials integration and its roles: https://www.servicenow.com/docs/r/platform-security/authentication/configure-an-oauth-client-credential-grant.html
 - The property that turns the client-credentials sign-in on: https://www.servicenow.com/docs/r/platform-security/authentication/client-credentials.html
