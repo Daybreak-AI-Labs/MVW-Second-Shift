@@ -59,6 +59,7 @@ SETTINGS_PROVENANCE = "settings_quorum"
 # and a code change to a protected path (maverick.codebase.features.PROTECTED_PROVENANCE): the person who asked
 # may never approve it, on any surface, whatever [approval] separate_approver says or how many approve it.
 CODE_PROTECTED_PROVENANCE = "codebase.protected"
+FACTORY_RELEASE_PROVENANCE = "factory_release"
 ALWAYS_SEPARATE_PROVENANCES = frozenset({"agent_publish.bypass.four_eyes.v1", CODE_PROTECTED_PROVENANCE})
 CODE_PERSON_ONLY = "Only a person signed in with their own account can approve a code change."
 
@@ -252,7 +253,21 @@ def audit_approval_decision(world, event, *, effect_guard=None) -> bool:
         current = world.get_approval_audit_event(event.event_id)
     except Exception:
         return False
-    return bool(current and current.delivered_at is not None)
+    delivered = bool(current and current.delivered_at is not None)
+    if delivered:
+        _release_if_factory(event.approval_id)
+    return delivered
+
+
+def _release_if_factory(approval_id: int) -> None:
+    """A decided agent-factory release is acted on at once (see :mod:`maverick.factory.release`). Never raises: the
+    factory settles it again whenever its pages are read."""
+    try:
+        from .factory.release import on_decision
+
+        on_decision(approval_id)
+    except Exception:
+        log.warning("agent factory release was not settled after a decision", exc_info=True)
 
 
 _SEPARATE_APPROVER_WORDS = {
@@ -286,6 +301,11 @@ def separate_approver_refusal(world: Any, approval: Any, who: str) -> str:
     :func:`record_vote` refuses the vote with it."""
     from .safety.dual_control import person_key, separate_approver_applies, separate_approver_mode
 
+    if getattr(approval, "provenance", None) == FACTORY_RELEASE_PROVENANCE:
+        # A release is never approved by the person who changed or submitted it.
+        from .factory.release import approver_refusal
+
+        return approver_refusal(approval, who)
     requester = " ".join(str(getattr(approval, "requested_by", "") or "").split())
     # One person spelt two ways (``user:Sam`` / ``user:sam``) is still the requester.
     if not requester or person_key(requester) != person_key(who):

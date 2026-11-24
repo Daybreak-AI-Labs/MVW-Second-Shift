@@ -128,9 +128,9 @@ def approval_resource(approval, world) -> dict:
 
 
 def _governance_request(approval) -> bool:
-    """An outside agent's request, or a request about one (an access key).
-    It is a governance record, not one employee's private work."""
-    return getattr(approval, "provenance", None) == "external_agents"
+    """An outside agent's request, a request about one (an access key), or a request to release an agent built in
+    the factory. It is a governance record, not one employee's private work."""
+    return getattr(approval, "provenance", None) in ("external_agents", "factory_release")
 
 
 def _people_with_a_role() -> set[str]:
