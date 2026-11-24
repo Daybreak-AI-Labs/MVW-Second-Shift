@@ -1876,6 +1876,8 @@ def _approval_queue_context(approvals: list, request: Request | None = None) -> 
             )
         else:
             cards[approval.id] = card
+            if card is not None and approval.provenance == "factory_release":
+                approval_actions[approval.id] = card["summary"]  # a plain title, not the machine-readable action
             approval_details[approval.id] = (
                 card["summary"] if card is not None else safe(approval.detail)
             )

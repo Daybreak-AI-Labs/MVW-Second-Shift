@@ -19,6 +19,7 @@
     if (body !== undefined) opts.body = body;
     return window.mvFetchJSON(url, opts, what);
   }
+  function who(x) { return String(x || '').replace(/^user:/, ''); }
   function when(ts) { return ts ? new Date(ts * 1000).toLocaleString() : ''; }
   function money(n) { return n == null ? 'not worked out' : '$' + Number(n).toFixed(4); }
   function clear(el) { while (el.firstChild) el.removeChild(el.firstChild); }
@@ -212,7 +213,7 @@
       }
     }
     if (t.state === 'waiting_for_approval') {
-      var p = say('Waiting for a different person to approve it' + (a && a.submitted_by ? ' (submitted by ' + a.submitted_by + ' on ' + when(a.submitted_at) + ')' : '') + '. It is released as soon as they do.');
+      var p = say('Waiting for a different person to approve it' + (a && a.submitted_by ? ' (submitted by ' + who(a.submitted_by) + ' on ' + when(a.submitted_at) + ')' : '') + '. It is released as soon as they do.');
       var link = E('a', null, 'Open the Approvals page'); link.href = '/approvals'; p.appendChild(document.createTextNode(' ')); p.appendChild(link);
       if (a && a.release_problem) say(a.release_problem, 'error');
     }
@@ -337,7 +338,7 @@
     var sum = E('p');
     var passed = tests.passed_count + ' of ' + tests.case_count + ' passed';
     sum.appendChild(badge(running ? 'Running' : (tests.passed && !tests.stale ? 'All passed' : (tests.stale ? 'Out of date' : 'Not all passed')), running ? 'warn' : (tests.passed && !tests.stale ? 'active' : 'failure')));
-    sum.appendChild(document.createTextNode(' ' + passed + ' · cost ' + money(tests.total_cost) + (tests.estimated_cost != null ? ' (estimated ' + money(tests.estimated_cost) + ')' : '') + ' · started ' + when(tests.started_at) + ' by ' + tests.started_by));
+    sum.appendChild(document.createTextNode(' ' + passed + ' · cost ' + money(tests.total_cost) + (tests.estimated_cost != null ? ' (estimated ' + money(tests.estimated_cost) + ')' : '') + ' · started ' + when(tests.started_at) + ' by ' + who(tests.started_by)));
     box.appendChild(sum);
     if (tests.stale) box.appendChild(E('p', 'muted', 'The version or its test cases changed after this run, so these results no longer count. Run the tests again.'));
     if (tests.note) box.appendChild(E('p', 'muted', tests.note));
@@ -372,9 +373,9 @@
       var row = E('div'); row.style.cssText = 'border-top:1px solid var(--border,#3333);padding:var(--space-2) 0';
       var h = E('p'); h.style.margin = '0'; h.appendChild(E('strong', null, 'Version ' + v.number + ' ')); h.appendChild(badge(v.state_label, v.state === 'released' ? 'active' : ''));
       row.appendChild(h);
-      row.appendChild(E('p', 'muted', 'Made by ' + v.made_by + ' · last changed by ' + v.last_changed_by + ' on ' + when(v.last_changed_at) + ' · revision ' + v.revision + ' · fingerprint ' + v.config_digest.slice(0, 12)));
+      row.appendChild(E('p', 'muted', 'Made by ' + who(v.made_by) + ' · last changed by ' + who(v.last_changed_by) + ' on ' + when(v.last_changed_at) + ' · revision ' + v.revision + ' · fingerprint ' + v.config_digest.slice(0, 12)));
       var hist = E('ul'); hist.style.cssText = 'margin:0;padding-left:1.2rem;font-size:var(--text-sm)';
-      v.history.slice(-5).forEach(function (x) { hist.appendChild(E('li', 'muted', when(x.at) + ' · ' + x.by + ' · ' + x.what)); });
+      v.history.slice(-5).forEach(function (x) { hist.appendChild(E('li', 'muted', when(x.at) + ' · ' + who(x.by) + ' · ' + x.what)); });
       row.appendChild(hist);
       box.appendChild(row);
     });

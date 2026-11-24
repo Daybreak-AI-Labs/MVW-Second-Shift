@@ -56,6 +56,10 @@ def _world():
     return open_world()
 
 
+def _plain(who: Any) -> str:
+    return str(who or "").removeprefix("user:")
+
+
 def _card_lines(record: dict[str, Any], version: dict[str, Any], risks: dict[str, str]) -> list[str]:
     raw = version["definition"]
     tests = version.get("tests") or {}
@@ -68,7 +72,7 @@ def _card_lines(record: dict[str, Any], version: dict[str, Any], risks: dict[str
         f"Skills and their risk: {skills}",
         f"Limits: {limits['max_steps']} steps, {limits['max_tool_calls']} tool calls, {limits['max_seconds']:g} seconds a run",
         f"Tests: {passed} of {len(tests.get('results', []))} test cases passed on exactly this version",
-        f"Last changed by {version['last_changed_by']}; submitted by {(version.get('approval') or {}).get('submitted_by', '')}",
+        f"Last changed by {_plain(version['last_changed_by'])}; submitted by {_plain((version.get('approval') or {}).get('submitted_by', ''))}",
     ]
 
 
