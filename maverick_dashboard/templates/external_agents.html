@@ -95,6 +95,8 @@
 
   {% include "_external_agent_actions.html" %}
 
+  {% if platform_checks_shown %}{% include "_platform_checks_panel.html" %}{% endif %}
+
   <div class="section-head"><h2>Add an outside agent</h2></div>
   <div class="panel">
     {% if not external_agents_can_manage %}<p class="muted" style="margin: 0 0 var(--space-3); font-size: var(--text-sm);">{% if enabled %}Only an administrator can add an agent.{% else %}Outside agents is turned off, so agents cannot be added or changed.{% endif %}</p>{% endif %}

@@ -1605,6 +1605,8 @@ async def external_agents_page(request: Request) -> HTMLResponse:
     from maverick import external_agents as xa
 
     enabled = xa.enabled()
+    agents = xa.roster()
+    claimed = frozenset(str(agent.get("external_ref") or "").casefold() for agent in agents) - {""}
     return templates.TemplateResponse(
         request,
         "external_agents.html",
@@ -1614,12 +1616,34 @@ async def external_agents_page(request: Request) -> HTMLResponse:
             # turned on in the deployment settings, never from this page
             "external_agents_can_activate": False,
             "status": xa.status(),
-            "agents": xa.roster(),
+            "agents": agents,
             "platforms": xa.PLATFORMS,
             "surfaces": xa.TOKEN_SURFACES,
             "outside_agent_tabs": None,
+            "platform_checks": await run_in_threadpool(_platform_checks_view, claimed) if enabled else None,
+            "platform_checks_shown": enabled,
         },
     )
+
+
+def _platform_checks_view(claimed: frozenset[str]) -> dict | None:
+    """What the platform checks last found, for the roster page. None when the
+    record cannot be read: the page says so instead of failing.
+
+    The list is as of each platform's last check, so an agent added here since
+    then (its reference is in ``claimed``) is left out without waiting for the
+    next one."""
+    try:
+        from maverick import agent_watch
+
+        status = agent_watch.status()
+        found = agent_watch.unenrolled()
+        waiting = [entry for entry in found if entry["external_ref"].casefold() not in claimed]
+        status["not_enrolled_count"] = max(0, status["not_enrolled_count"] - (len(found) - len(waiting)))
+        return {"status": status, "not_enrolled": waiting}
+    except Exception:
+        log.warning("platform check record unavailable", exc_info=True)
+        return None
 
 
 def _agent_drift_view(agent_id: str) -> dict | None:

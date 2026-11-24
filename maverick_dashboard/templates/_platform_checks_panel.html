@@ -1,0 +1,73 @@
+{#- What the platform checks last found, on the Outside agents page.
+    `platform_checks` is {"status", "not_enrolled"} or none when the record
+    could not be read. The page only shows: nothing here changes a platform. -#}
+{% set _ENROLL_AS = {'foundry': 'foundry', 'copilot_studio': 'copilot', 'servicenow': 'servicenow', 'workday': 'workday'} %}
+<div class="section-head"><h2>Found on your platforms</h2></div>
+<div class="panel" id="platform-checks">
+  {% if platform_checks is none %}
+  <p class="muted" style="margin: 0;">The record of platform checks could not be read, so nothing is shown. An administrator should look at the server log.</p>
+  {% elif not platform_checks.status.enabled %}
+  <p class="muted" style="margin: 0;">{{ platform_checks.status.reason }} When they are on, Second Shift asks each platform which agents it has, so an agent nobody added here is listed and a change made on the platform is noticed even if the agent reports nothing.</p>
+  {% else %}
+  {% set st = platform_checks.status %}
+  <p style="margin: 0 0 var(--space-3);">
+    {% for p in st.platforms %}
+      {% if not p.ready %}<span class="badge failure" title="{{ p.problem }}">{{ p.name | humanize }}: settings need attention</span>
+      {% elif p.failures_in_a_row %}<span class="badge failure" title="{{ p.last_error }}">{{ p.name | humanize }}: last check failed</span>
+      {% elif p.last_success_at %}<span class="badge active">{{ p.name | humanize }}: {{ p.listed }} agents, checked {{ p.last_success_at | datetime }}</span>
+      {% else %}<span class="badge">{{ p.name | humanize }}: not checked yet</span>{% endif %}
+    {% else %}<span class="badge">No platform is set up to be checked</span>
+    {% endfor %}
+    {% if st.missing_count %}<span class="badge failure">{{ st.missing_count }} added here but no longer on their platform</span>{% endif %}
+  </p>
+  {% for p in st.platforms if (not p.ready and p.problem) or (p.failures_in_a_row and p.last_error) %}
+  <p class="muted" style="margin: 0 0 var(--space-2); font-size: var(--text-sm);">{{ p.name | humanize }}: {{ p.problem or p.last_error }}</p>
+  {% endfor %}
+  {% for problem in st.problems %}
+  <p class="muted" style="margin: 0 0 var(--space-2); font-size: var(--text-sm);">{{ problem }}</p>
+  {% endfor %}
+  {% if platform_checks.not_enrolled %}
+  <p style="margin: 0 0 var(--space-2);">{{ st.not_enrolled_count }} {{ 'agent is' if st.not_enrolled_count == 1 else 'agents are' }} on your platforms but not added here, so {{ 'it works' if st.not_enrolled_count == 1 else 'they work' }} outside your rules.</p>
+  <table>
+    <thead>
+      <tr><th scope="col">Agent</th><th scope="col">Platform</th><th scope="col">State there</th><th scope="col">First seen</th><th scope="col">Its record on the platform</th><th scope="col"><span class="sr-only">Actions</span></th></tr>
+    </thead>
+    <tbody>
+      {% for u in platform_checks.not_enrolled %}
+      <tr>
+        <td><strong>{{ u.name or u.external_id }}</strong></td>
+        <td><span class="badge">{{ u.platform | humanize }}</span></td>
+        <td>{{ (u.state | humanize) if u.state else '—' }}</td>
+        <td>{{ (u.first_seen_at | datetime) if u.first_seen_at else '—' }}</td>
+        <td><code style="word-break: break-all;">{{ u.external_ref }}</code></td>
+        <td class="mv-row__actions">
+          <button type="button" class="btn btn--ghost" data-pc-add data-name="{{ u.name or u.external_id }}" data-ref="{{ u.external_ref }}" data-platform="{{ _ENROLL_AS.get(u.platform, '') }}"{% if not external_agents_can_manage %} disabled aria-disabled="true"{% endif %}>Add this agent</button>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% if st.not_enrolled_count > (platform_checks.not_enrolled | length) %}<p class="muted" style="margin: var(--space-2) 0 0; font-size: var(--text-sm);">Showing {{ platform_checks.not_enrolled | length }} of {{ st.not_enrolled_count }}.</p>{% endif %}
+  {% elif st.platforms %}
+  <p class="muted" style="margin: 0;">Every agent your platforms listed at the last check has been added here.</p>
+  {% endif %}
+  {% endif %}
+</div>
+<script nonce="{{ csp_script_nonce }}">
+(function () {
+  // "Add this agent" fills the form below; the person still sets its limits and saves it.
+  document.addEventListener("click", function (event) {
+    var button = event.target.closest ? event.target.closest("[data-pc-add]") : null;
+    if (!button || button.disabled) return;
+    var name = document.getElementById("xa-name"), ref = document.getElementById("xa-external-ref");
+    var platform = document.querySelector('#xa-add select[name="platform"]');
+    if (!name || !ref) return;
+    name.value = button.getAttribute("data-name") || "";
+    name.dispatchEvent(new Event("input", { bubbles: true }));
+    ref.value = button.getAttribute("data-ref") || "";
+    if (platform && button.getAttribute("data-platform")) platform.value = button.getAttribute("data-platform");
+    document.getElementById("xa-add").scrollIntoView({ behavior: "smooth", block: "start" });
+    name.focus();
+  });
+})();
+</script>
