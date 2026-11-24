@@ -19,7 +19,8 @@ Safety invariants (mirror ``maverick_dashboard.rbac``):
     matrix save must not be able to lock every admin out of the controls
     that would undo it.
   * The store is one GLOBAL control-plane file, never per-tenant:
-    ``~/.maverick/dashboard-ui-visibility.json`` (0600), shaped
+    ``~/.maverick/dashboard-ui-visibility.json`` (0600, kept with the other
+    records, ``maverick.record_documents``), shaped
     ``{path: {role: bool}}`` and holding only differences from the defaults,
     so un-overridden cells follow default changes across releases.
 """
@@ -473,11 +474,13 @@ def overrides() -> dict[str, dict[str, bool]]:
     Re-validated on read so a hand-edited / corrupt store can't inject an
     unknown page, an unknown role, or a non-bool value.
     """
-    p = store_path()
-    if not p.exists():
-        return {}
+    from maverick.record_documents import at
+
     try:
-        data = json.loads(p.read_text(encoding="utf-8"))
+        text = at(store_path()).read_text()
+        if text is None:
+            return {}
+        data = json.loads(text)
     except (OSError, ValueError):
         return {}
     if not isinstance(data, dict):

@@ -15,7 +15,8 @@ Design (matches the revocation store's discipline):
   emails/usernames never touch disk. The stored value is the opaque ``sub``
   (itself the revocation key, not PII) plus a last-seen timestamp.
 * **Durable + concurrent-safe.** ``<maverick_home>/oidc-subjects.json`` (0600),
-  written atomically under a cross-process lock, like ``session_revocation``.
+  written atomically under a cross-process lock, like ``session_revocation``;
+  kept with the other records (``maverick.record_documents``).
 * **Bounded.** LRU-pruned to ``_MAX_ENTRIES`` by last-seen, so a long-lived
   multi-tenant deployment cannot grow the file without bound.
 * **Durable retirement.** Hard-deleted SCIM identities are retained as hashed
@@ -36,13 +37,7 @@ from collections.abc import Iterable
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
-from maverick.file_lock import (
-    atomic_read_text,
-    atomic_write_text,
-    cross_process_lock,
-    ensure_private_directory,
-    ensure_private_file,
-)
+from maverick import record_documents
 from maverick.paths import maverick_home
 
 # Cap on stored identifier->sub entries. Beyond it the oldest (by last-seen) are
@@ -71,11 +66,14 @@ def _retired_path() -> Path:
 def _locked():
     from maverick.authority_effects import authority_effect_fence
 
-    ensure_private_directory(maverick_home())
+    if not record_documents.using_postgres():
+        from maverick.file_lock import ensure_private_directory
+
+        ensure_private_directory(maverick_home())
     with ExitStack() as stack:
         stack.enter_context(authority_effect_fence())
         stack.enter_context(_LOCK)
-        stack.enter_context(cross_process_lock(_path()))
+        stack.enter_context(record_documents.at(_path()).locked())
         yield
 
 
@@ -119,14 +117,19 @@ def _read_json(
     label: str,
     max_chars: int = _MAX_STORE_CHARS,
 ) -> dict | None:
-    ensure_private_directory(maverick_home())
     try:
-        ensure_private_file(path)
-        raw = atomic_read_text(path)
+        if not record_documents.using_postgres():
+            from maverick.file_lock import ensure_private_directory, ensure_private_file
+
+            ensure_private_directory(maverick_home())
+            ensure_private_file(path)
+        raw = record_documents.at(path).read_text()
     except FileNotFoundError:
         return None
     except OSError as exc:
         raise SubjectDirectoryError(f"{label} unreadable: {exc}") from exc
+    if raw is None:
+        return None
     if len(raw) > max_chars:
         raise SubjectDirectoryError(f"{label} exceeds the size limit")
     try:
@@ -215,7 +218,7 @@ def _save_retired(subjects: dict[str, int | float]) -> None:
             or float(value) < 0
         ):
             raise SubjectDirectoryError("invalid retired subject entry")
-    atomic_write_text(_retired_path(), json.dumps(payload, sort_keys=True))
+    record_documents.at(_retired_path()).write_text(json.dumps(payload, sort_keys=True))
 
 
 def _prune(data: dict) -> dict:
@@ -246,7 +249,7 @@ def record_login(sub: str, identifiers: Iterable[str], *, at: float | None = Non
             data = _load()
             for k in keys:
                 data[k] = {"sub": s, "ts": ts}
-            atomic_write_text(_path(), json.dumps(_prune(data), sort_keys=True))
+            record_documents.at(_path()).write_text(json.dumps(_prune(data), sort_keys=True))
             # If any asserted identifier is already retired, permanently carry
             # that decision onto this exact (possibly brand-new pairwise) sub.
             # The binding is written first, so even a crash or full tombstone

@@ -8,8 +8,9 @@ issued-at (``iat``) predates a principal's epoch is rejected. Bumping the epoch
 -- "log out everywhere" or a SCIM deprovision -- invalidates every credential
 that principal holds at once, across processes.
 
-Store: ``<maverick_home>/session-revocations.json`` (0600 via atomic_write_text),
-mirroring the rbac roster's load-modify-save under a cross-process lock.
+Store: ``<maverick_home>/session-revocations.json`` (0600 as a file), kept with the other
+records (``maverick.record_documents``), mirroring the rbac roster's
+load-modify-save under a lock.
 """
 from __future__ import annotations
 
@@ -20,13 +21,7 @@ import time
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
-from maverick.file_lock import (
-    atomic_read_text,
-    atomic_write_text,
-    cross_process_lock,
-    ensure_private_directory,
-    ensure_private_file,
-)
+from maverick import record_documents
 from maverick.paths import maverick_home
 
 _LOCK = threading.Lock()
@@ -46,11 +41,14 @@ def _path() -> Path:
 def _locked():
     from maverick.authority_effects import authority_effect_fence
 
-    ensure_private_directory(maverick_home())
+    if not record_documents.using_postgres():
+        from maverick.file_lock import ensure_private_directory
+
+        ensure_private_directory(maverick_home())
     with ExitStack() as stack:
         stack.enter_context(authority_effect_fence())
         stack.enter_context(_LOCK)
-        stack.enter_context(cross_process_lock(_path()))
+        stack.enter_context(record_documents.at(_path()).locked())
         yield
 
 
@@ -58,14 +56,20 @@ def _load() -> dict:
     """The epoch map. A genuinely-absent store is empty (no revocations yet);
     a store that EXISTS but is unreadable/corrupt raises ``RevocationStoreError``
     so the revocation check fails closed instead of fail-open."""
-    ensure_private_directory(maverick_home())
     try:
-        ensure_private_file(_path())
-        raw = atomic_read_text(_path())
+        if not record_documents.using_postgres():
+            from maverick.file_lock import ensure_private_directory, ensure_private_file
+
+            ensure_private_directory(maverick_home())
+            ensure_private_file(_path())
+        raw = record_documents.at(_path()).read_text()
     except FileNotFoundError:
         return {}
     except OSError as e:  # EIO / EACCES / ENFILE ... -- present but unreadable
         raise RevocationStoreError(f"revocation store unreadable: {e}") from e
+    if raw is None:
+        return {}
+
     def _reject_constant(value: str):
         raise ValueError(f"non-finite number {value!r}")
 
@@ -119,7 +123,7 @@ def revoke_principal(principal: str, *, at: float | None = None) -> None:
     with _locked():
         data = _load()
         data[p] = max(float(data.get(p, 0.0) or 0.0), ts)
-        atomic_write_text(_path(), json.dumps(data, indent=2, sort_keys=True))
+        record_documents.at(_path()).write_text(json.dumps(data, indent=2, sort_keys=True))
 
 
 def revocation_epoch(principal: str) -> float:
