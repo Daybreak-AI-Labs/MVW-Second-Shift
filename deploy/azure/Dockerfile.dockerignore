@@ -4,6 +4,11 @@
 !maverick/**
 !maverick_dashboard/
 !maverick_dashboard/**
+!runtime/
+!runtime/pyproject.toml
+!runtime/README.md
+!runtime/second_shift_runtime/
+!runtime/second_shift_runtime/**
 !deploy/
 !deploy/azure/
 !deploy/azure/service.toml

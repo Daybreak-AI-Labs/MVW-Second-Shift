@@ -31,8 +31,6 @@ log = logging.getLogger(__name__)
 
 #: How many items a section lists; the section says how many there are in all.
 SHOWN = 5
-#: Access keys that end within this many days are listed for administrators.
-KEY_WARNING_DAYS = 14
 #: At most this many agents have their drift findings read for the page.
 DRIFT_AGENTS_READ = 25
 
@@ -234,8 +232,12 @@ def _keys(section: dict) -> None:
         return
     roster = {agent["id"]: agent for agent in external_agents.roster()}
     registry = agent_trust.load_registry(strict=True)
+    from maverick.expiry_reminders import key_warning_days
+
     now = time.time()
-    horizon = now + KEY_WARNING_DAYS * 86400
+    # The same window the expiry warnings use; 0 turns the warning off, but
+    # keys that have already ended are still listed.
+    horizon = now + key_warning_days() * 86400
     items = []
     for agent_id, agent in roster.items():
         entry = registry.get(agent_id)

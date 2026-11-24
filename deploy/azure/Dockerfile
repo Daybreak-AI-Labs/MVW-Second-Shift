@@ -5,9 +5,12 @@ WORKDIR /opt/second-shift
 COPY pyproject.toml .
 COPY maverick ./maverick
 COPY maverick_dashboard ./maverick_dashboard
+COPY runtime/pyproject.toml runtime/README.md ./runtime/
+COPY runtime/second_shift_runtime ./runtime/second_shift_runtime
 RUN --mount=type=secret,id=pip_ca \
     if [ -f /run/secrets/pip_ca ]; then export PIP_CERT=/run/secrets/pip_ca; fi \
-    && chmod -R a+rX maverick maverick_dashboard && pip install --no-cache-dir '.[postgres]' 'azure-identity>=1.24,<2' 'azure-keyvault-keys>=4.11,<5' \
+    && chmod -R a+rX maverick maverick_dashboard runtime && pip install --no-cache-dir './runtime[office]' \
+    && pip install --no-cache-dir '.[postgres]' 'azure-identity>=1.24,<2' 'azure-keyvault-keys>=4.11,<5' \
     && groupadd --gid 10001 secondshift \
     && useradd --uid 10001 --gid 10001 --home-dir /var/lib/second-shift --no-create-home secondshift \
     && install -d -m 0700 -o secondshift -g secondshift /var/lib/second-shift
