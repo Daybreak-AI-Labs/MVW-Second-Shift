@@ -713,6 +713,40 @@ def baseline(agent_id: str) -> dict | None:
     return _baseline_view(approved) if isinstance(approved, dict) else None
 
 
+def approve_declared_configuration(agent_id: str, *, version: str, config_digest: str, model: str, actor: str) -> bool:
+    """Make the configuration a released agent declares the approved one.
+
+    The agent factory calls this when it releases a version: that version's fingerprints (``version``,
+    ``config_digest``, ``model``) become what the baseline expects to see, so a run that reports them raises no
+    ``config_changed`` finding and one that reports anything else does. Only the declared fingerprints change; the
+    baseline's activity figures are left alone. Does nothing, and says so (``False``), when drift detection is off.
+    Raises :class:`AgentDriftError` when the agent is not enrolled or no one is named."""
+    who = _actor(actor)
+    if not _active(settings()):
+        return False
+    seen = {name: _fingerprint(value) for name, value in
+            (("version", version), ("config_digest", config_digest), ("model", model))}
+    seen = {name: value for name, value in seen.items() if value}
+    with _editing() as agents:
+        enrolled = _enrolled_ids()
+        if agent_id not in enrolled:
+            raise AgentDriftError(f"{agent_id!r} is not an enrolled agent.")
+        record = _record_for(agents, agent_id, enrolled)
+        if record is None:
+            raise AgentDriftError("The drift record is full; no configuration can be kept for another agent.")
+        config = _config_of(record)
+        config["declared"] = {**_dict(config.get("declared")), **seen}
+        approved = record.get("baseline")
+        if isinstance(approved, dict):
+            base = approved.get("config")
+            if not isinstance(base, dict):
+                base = approved["config"] = {}
+            base["declared"] = {**_dict(base.get("declared")), **seen}
+        if not _audit("agent_declared_configuration_approved", agent_id, approved_by=who, **seen):
+            raise AgentDriftError(_NOT_RECORDED)
+    return True
+
+
 def _actor(actor: Any) -> str:
     who = actor.strip()[:200] if isinstance(actor, str) else ""
     if not who:
