@@ -488,7 +488,7 @@ async def _lifespan(app: FastAPI):
         except Exception:  # pragma: no cover -- a warning must never block startup
             pass
         timers = [asyncio.create_task(_drift_check_loop()), asyncio.create_task(_platform_check_loop()),
-                  asyncio.create_task(_expiry_reminder_loop())]
+                  asyncio.create_task(_expiry_reminder_loop()), asyncio.create_task(_owner_note_loop())]
         try:
             yield
         finally:
@@ -724,6 +724,9 @@ from .models_page import create_models_page_router  # noqa: E402
 app.include_router(models_router)
 app.include_router(models_agent_router)
 app.include_router(create_models_page_router(templates))
+from .my_agents_page import create_my_agents_page_router  # noqa: E402
+
+app.include_router(create_my_agents_page_router(templates))
 from .agent_control_plane_api import router as agent_control_plane_router  # noqa: E402
 
 app.include_router(agent_control_plane_router, prefix="/api/v1")
