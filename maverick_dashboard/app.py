@@ -649,6 +649,9 @@ from .agent_watch_api import router as agent_watch_router  # noqa: E402
 from .agent_watch_api import switch_view as _platform_switch_view  # noqa: E402
 
 app.include_router(agent_watch_router)
+from .m365_copilot_api import router as m365_copilot_router  # noqa: E402
+
+app.include_router(m365_copilot_router)
 from .directory_api import router as directory_router  # noqa: E402
 
 app.include_router(directory_router)

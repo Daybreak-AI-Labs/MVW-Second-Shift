@@ -943,6 +943,10 @@ def _resolve_websocket_principal(websocket) -> VerifiedPrincipal | None:
             ws_principal = verify_oidc_token(ws_token)
         except OIDCError as exc:
             raise HTTPException(status_code=401, detail="invalid OIDC token") from exc
+        from .m365_copilot_api import has_copilot_scope
+
+        if has_copilot_scope(ws_principal):
+            raise HTTPException(403, "This sign-in is for Second Shift's Copilot summaries.")
         from .session_revocation import is_revoked
         if is_revoked(ws_principal.sub, ws_principal.claims.get("iat")):
             raise HTTPException(status_code=401, detail="invalid OIDC token")
@@ -985,6 +989,12 @@ def _authenticate_oidc_bearer(request: Request, token: str) -> VerifiedPrincipal
             detail="invalid OIDC token",
             headers={"WWW-Authenticate": "Bearer"},
         ) from exc
+    from .m365_copilot_api import PREFIX, has_copilot_scope
+
+    if has_copilot_scope(principal) and (
+        not route_path(request).startswith(PREFIX + "/") or request.method not in {"GET", "HEAD"}
+    ):
+        raise HTTPException(403, "This sign-in is for Second Shift's Copilot summaries.")
     # Revocation: a bearer issued before the principal's revocation epoch
     # ("log out everywhere" / SCIM deprovision) is rejected even if it verifies.
     from .session_revocation import is_revoked

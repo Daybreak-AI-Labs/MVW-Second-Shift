@@ -1,0 +1,594 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Second Shift Copilot summaries",
+    "version": "1.0.0",
+    "description": "Read-only agent governance summaries authorized for the signed-in user."
+  },
+  "servers": [
+    {
+      "url": "__ORIGIN__"
+    }
+  ],
+  "security": [
+    {
+      "entra": [
+        "__SCOPE__"
+      ]
+    }
+  ],
+  "paths": {
+    "/api/v1/m365-copilot/changed": {
+      "get": {
+        "operationId": "listChangedAgents",
+        "summary": "List drift findings reported since Monday in UTC, with a summary of each change.",
+        "responses": {
+          "200": {
+            "description": "Current workspace snapshot",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "since",
+                    "changes",
+                    "more"
+                  ],
+                  "properties": {
+                    "since": {
+                      "type": "string",
+                      "format": "date-time",
+                      "nullable": true
+                    },
+                    "changes": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Change"
+                      }
+                    },
+                    "more": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Company sign-in required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller lacks the required role",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Record or feature unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Saved records are temporarily unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/m365-copilot/approvals": {
+      "get": {
+        "operationId": "listWaitingApprovals",
+        "summary": "List pending approvals the caller has permission to see.",
+        "responses": {
+          "200": {
+            "description": "Current workspace snapshot",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "approvals",
+                    "more"
+                  ],
+                  "properties": {
+                    "approvals": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Approval"
+                      }
+                    },
+                    "more": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Company sign-in required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller lacks the required role",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Record or feature unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Saved records are temporarily unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/m365-copilot/attention": {
+      "get": {
+        "operationId": "listAgentsNeedingAttention",
+        "summary": "List agents that are blocked or over their spending limit.",
+        "responses": {
+          "200": {
+            "description": "Current workspace snapshot",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "agents",
+                    "more"
+                  ],
+                  "properties": {
+                    "agents": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Agent"
+                      }
+                    },
+                    "more": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Company sign-in required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller lacks the required role",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Record or feature unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Saved records are temporarily unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/m365-copilot/found": {
+      "get": {
+        "operationId": "listFoundAgents",
+        "summary": "List platform agents discovered and awaiting enrollment.",
+        "responses": {
+          "200": {
+            "description": "Current workspace snapshot",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "agents",
+                    "more"
+                  ],
+                  "properties": {
+                    "agents": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/FoundAgent"
+                      }
+                    },
+                    "more": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Company sign-in required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller lacks the required role",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Record or feature unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Saved records are temporarily unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/m365-copilot/agent": {
+      "get": {
+        "operationId": "getAgentStatus",
+        "summary": "Get the current status for one enrolled agent by name.",
+        "responses": {
+          "200": {
+            "description": "Current workspace snapshot",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "agent"
+                  ],
+                  "properties": {
+                    "agent": {
+                      "$ref": "#/components/schemas/AgentStatus"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Company sign-in required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller lacks the required role",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Record or feature unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Saved records are temporarily unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Provide an enrolled agent name"
+          }
+        },
+        "parameters": [
+          {
+            "in": "query",
+            "name": "name",
+            "required": true,
+            "description": "Exact enrolled name shown on Outside agents.",
+            "schema": {
+              "type": "string",
+              "maxLength": 128
+            }
+          }
+        ]
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "entra": {
+        "type": "oauth2",
+        "flows": {
+          "authorizationCode": {
+            "authorizationUrl": "https://login.microsoftonline.com/__TENANT_ID__/oauth2/v2.0/authorize",
+            "tokenUrl": "https://login.microsoftonline.com/__TENANT_ID__/oauth2/v2.0/token",
+            "scopes": {
+              "__SCOPE__": "Read the caller’s Second Shift Copilot summaries"
+            }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "Agent": {
+        "type": "object",
+        "required": [
+          "name",
+          "platform",
+          "active",
+          "blocked",
+          "over_budget",
+          "reported_spend_dollars",
+          "budget_dollars",
+          "budget_period"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "platform": {
+            "type": "string"
+          },
+          "active": {
+            "type": "boolean"
+          },
+          "blocked": {
+            "type": "boolean"
+          },
+          "over_budget": {
+            "type": "boolean"
+          },
+          "reported_spend_dollars": {
+            "type": "number"
+          },
+          "budget_dollars": {
+            "type": "number",
+            "nullable": true
+          },
+          "budget_period": {
+            "type": "string"
+          }
+        }
+      },
+      "Change": {
+        "type": "object",
+        "required": [
+          "name",
+          "summary",
+          "severity",
+          "reported_at",
+          "acknowledged"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "summary": {
+            "type": "string"
+          },
+          "severity": {
+            "type": "string"
+          },
+          "reported_at": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "acknowledged": {
+            "type": "boolean"
+          }
+        }
+      },
+      "Approval": {
+        "type": "object",
+        "required": [
+          "id",
+          "action",
+          "risk",
+          "requested_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "action": {
+            "type": "string"
+          },
+          "risk": {
+            "type": "string"
+          },
+          "requested_at": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          }
+        }
+      },
+      "FoundAgent": {
+        "type": "object",
+        "required": [
+          "name",
+          "platform",
+          "last_seen_at"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "platform": {
+            "type": "string"
+          },
+          "last_seen_at": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          }
+        }
+      },
+      "AgentStatus": {
+        "type": "object",
+        "required": [
+          "name",
+          "platform",
+          "active",
+          "blocked",
+          "over_budget",
+          "reported_spend_dollars",
+          "budget_dollars",
+          "budget_period",
+          "drift_status",
+          "missing_on_platform"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "platform": {
+            "type": "string"
+          },
+          "active": {
+            "type": "boolean"
+          },
+          "blocked": {
+            "type": "boolean"
+          },
+          "over_budget": {
+            "type": "boolean"
+          },
+          "reported_spend_dollars": {
+            "type": "number"
+          },
+          "budget_dollars": {
+            "type": "number",
+            "nullable": true
+          },
+          "budget_period": {
+            "type": "string"
+          },
+          "drift_status": {
+            "type": "string"
+          },
+          "missing_on_platform": {
+            "type": "boolean",
+            "nullable": true
+          }
+        }
+      },
+      "Error": {
+        "type": "object",
+        "required": [
+          "detail"
+        ],
+        "properties": {
+          "detail": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}
