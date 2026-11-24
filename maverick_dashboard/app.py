@@ -596,8 +596,10 @@ from .agent_drift_api import router as agent_drift_router  # noqa: E402
 
 app.include_router(agent_drift_router)
 from .alerts_api import router as alerts_router  # noqa: E402
+from .teams_bot import router as teams_router  # noqa: E402
 
 app.include_router(alerts_router)
+app.include_router(teams_router)
 from .agent_watch_api import router as agent_watch_router  # noqa: E402
 
 app.include_router(agent_watch_router)
