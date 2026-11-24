@@ -175,8 +175,15 @@
         <input class="input" name="description" maxlength="500" placeholder="Answers supplier invoice questions">
       </label>
       <label>Owner <span class="muted">(who answers for it)</span>
-        <input class="input" name="owner" id="xa-owner" maxlength="200" placeholder="name@example.com">
+        <input class="input" name="owner" id="xa-owner" maxlength="200" placeholder="{% if owner_search %}Type a name or email{% else %}name@example.com{% endif %}"{% if owner_search %} autocomplete="off" role="combobox" aria-expanded="false" aria-controls="xa-owner-list" aria-describedby="xa-owner-note"{% endif %}>
+        <input type="hidden" name="owner_object_id" id="xa-owner-oid">
       </label>
+      {% if owner_search %}
+      <div style="grid-column: 1 / -1; margin-top: -0.5rem;">
+        <ul id="xa-owner-list" role="listbox" class="muted" aria-label="People found" hidden style="list-style: none; margin: 0; padding: 0;"></ul>
+        <p id="xa-owner-note" class="muted" role="status" aria-live="polite">Type at least two letters to find a person in your directory. You can also type an email.</p>
+      </div>
+      {% endif %}
       <label>Department
         <input class="input" name="department" id="xa-department" maxlength="100">
       </label>
@@ -294,6 +301,7 @@
       platform: String(f.get("platform") || "custom"),
       description: String(f.get("description") || "").trim() || String(f.get("display_name") || "").trim(),
       owner: String(f.get("owner") || "").trim(),
+      owner_object_id: String(f.get("owner_object_id") || ""),
       department: String(f.get("department") || "").trim(),
       max_risk: String(f.get("max_risk") || "") || null,
       allow_tools: allow,
@@ -304,6 +312,44 @@
     };
   }
   var form = document.getElementById("xa-add");
+  // Owner picker: only on the page when the Entra directory is on. Typing an email still works.
+  var ownerIn = document.getElementById("xa-owner"), ownerList = document.getElementById("xa-owner-list");
+  var ownerOid = document.getElementById("xa-owner-oid"), ownerNote = document.getElementById("xa-owner-note");
+  if (ownerIn && ownerList && ownerOid) {
+    var ownerTimer = null, ownerSeq = 0;
+    var closeList = function () { ownerList.hidden = true; ownerList.textContent = ""; ownerIn.setAttribute("aria-expanded", "false"); };
+    var say = function (text) { if (ownerNote) ownerNote.textContent = text; };
+    ownerIn.addEventListener("input", function () {
+      ownerOid.value = "";  // typing again drops a person chosen before
+      clearTimeout(ownerTimer);
+      var text = ownerIn.value.trim();
+      if (text.length < 2) { closeList(); return; }
+      ownerTimer = setTimeout(async function () {
+        var mine = ++ownerSeq;
+        try {
+          var out = await window.mvFetchJSON("/api/v1/directory/people?q=" + encodeURIComponent(text), {}, "search your directory");
+          if (mine !== ownerSeq) return;
+          ownerList.textContent = "";
+          (out.people || []).forEach(function (p) {
+            var li = document.createElement("li"), b = document.createElement("button");
+            b.type = "button"; b.className = "btn btn--ghost"; b.setAttribute("role", "option");
+            b.textContent = p.display_name + " (" + p.email + ")" + (p.job_title ? ", " + p.job_title : "");
+            b.addEventListener("click", function () {
+              ownerIn.value = p.email; ownerOid.value = p.object_id; closeList();
+              say("Owner chosen: " + p.display_name + ".");
+            });
+            li.appendChild(b); ownerList.appendChild(li);
+          });
+          ownerList.hidden = !ownerList.children.length;
+          ownerIn.setAttribute("aria-expanded", ownerList.hidden ? "false" : "true");
+          say(ownerList.children.length ? "Choose a person from the list, or keep typing." : "Nobody found. You can type an email instead.");
+        } catch (e) {
+          if (mine !== ownerSeq) return;
+          closeList(); say("The people search is not available right now. Type the owner's email instead.");
+        }
+      }, 300);
+    });
+  }
   // A starter rule set fills the limits; the person can change any of them before saving.
   var starterIn = document.getElementById("xa-starter"), starters = {};
   try { starters = JSON.parse(document.getElementById("xa-starters").textContent); } catch (e) { starters = {}; }

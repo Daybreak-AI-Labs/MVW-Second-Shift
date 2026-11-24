@@ -333,6 +333,7 @@ def _clean_text(text: Any, *, shield: Any | None = None) -> str | None:
 #: An enrolled agent's record on its home platform, "<platform check>:<id>",
 #: for example "foundry:quote-agent". Platform checks match on it exactly.
 _EXTERNAL_REF = re.compile(r"[a-z][a-z0-9_]{0,39}:[^\s\x00-\x1f\x7f]{1,250}")
+_OWNER_OBJECT_ID = re.compile(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}")
 
 
 def _clean_external_ref(value: str | None) -> str | None:
@@ -365,6 +366,7 @@ def enroll(
     *,
     description: str = "",
     owner: str = "",
+    owner_object_id: str = "",
     department: str = "",
     allow_tools: list[str] | None = None,
     deny_tools: list[str] | None = None,
@@ -464,6 +466,9 @@ def enroll(
             "platform": platform,
             "description": str(description or "")[:500],
             "owner": str(owner or "")[:200],
+            # Chosen in the Entra people picker; only kept alongside an owner.
+            "owner_object_id": (str(owner_object_id or "").strip().lower()
+                                if owner and _OWNER_OBJECT_ID.fullmatch(str(owner_object_id or "").strip()) else ""),
             "department": str(department or "")[:100],
             "enrolled_by": str(enrolled_by or "")[:200],
             "enrolled_at": prior.get("enrolled_at") or time.time(),
@@ -3424,6 +3429,7 @@ def roster(*, registry: dict[str, Any] | None = None,
                 str(meta.get("platform")), "Custom / other runtime"),
             "description": meta.get("description", ""),
             "owner": meta.get("owner", ""),
+            "owner_object_id": str(meta.get("owner_object_id") or ""),
             "department": meta.get("department", ""),
             "enrolled_at": meta.get("enrolled_at"),
             "external_ref": str(meta.get("external_ref") or ""),

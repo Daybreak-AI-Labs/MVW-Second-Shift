@@ -21,6 +21,8 @@ class ExternalAgentIn(BaseModel):
     platform: str = Field(..., min_length=1, max_length=32)
     description: str = Field(default="", max_length=500)
     owner: str = Field(default="", max_length=200)
+    # The owner's Entra object id, when they were chosen in the people picker.
+    owner_object_id: str = Field(default="", pattern=r"^([0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12})?$")
     department: str = Field(default="", max_length=100)
     allow_tools: list[str] = Field(default_factory=list, max_length=128)
     deny_tools: list[str] = Field(default_factory=list, max_length=128)

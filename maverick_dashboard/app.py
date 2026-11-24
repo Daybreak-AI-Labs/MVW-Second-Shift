@@ -604,6 +604,9 @@ from .agent_watch_api import router as agent_watch_router  # noqa: E402
 from .agent_watch_api import switch_view as _platform_switch_view  # noqa: E402
 
 app.include_router(agent_watch_router)
+from .directory_api import router as directory_router  # noqa: E402
+
+app.include_router(directory_router)
 from .connect_agent_api import router as connect_agent_router  # noqa: E402
 
 app.include_router(connect_agent_router)
@@ -1649,7 +1652,7 @@ async def external_agents_page(
     connect path. ``level`` and ``platform`` filter the roster; ``add`` is the
     platform record of a found agent whose details pre-fill the add form;
     ``connect`` is an added agent whose guided connect path opens."""
-    from maverick import connect_guide, outside_roster, starter_rules
+    from maverick import connect_guide, entra_directory, outside_roster, starter_rules
     from maverick import external_agents as xa
 
     enabled = xa.enabled()
@@ -1669,6 +1672,7 @@ async def external_agents_page(
         {
             "enabled": enabled,
             "external_agents_can_manage": enabled and has_permission(request, "admin"),
+            "owner_search": enabled and has_permission(request, "admin") and entra_directory.enabled(),
             "status": xa.status(),
             "agents": agents,
             "roster": roster,
