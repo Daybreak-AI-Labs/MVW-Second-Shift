@@ -61,8 +61,15 @@ parked request, approval). Not yet proven outside this repository's tests:
 nothing has been run against a live Microsoft tenant, ServiceNow instance or
 Workday tenant, a real Teams channel or a real mail server.
 
-Enrollment, drift and platform-check records are files in the data folder, not
-database rows: run one instance of the app, on storage that persists.
+With PostgreSQL as the database, the app's own records (enrolled agents, the
+trust registry, signed-request replay checks, revocations, drift, platform
+checks, Copilot Studio gate tickets, Teams cards and links, reminders, owner
+notes, alert deliveries, ServiceNow incidents, sign-in roles and signed-out
+sessions) are rows in the `second_shift_records` table. Without it they are
+files in the data folder. Still run one instance of the app, on storage that
+persists: the settings saved from the Settings page, the signed audit log, the
+emergency-stop file, browser sessions and Ekko's stores stay in the data folder,
+and more than one instance has not been tested.
 
 ## Run
 
@@ -103,7 +110,9 @@ tests run too; each uses a database it creates and removes.
 
 SQLite in the data folder by default. For PostgreSQL set
 `MAVERICK_WORLD_BACKEND=postgres` and `MAVERICK_PG_DSN`; the schema is created
-and migrated at start. `MAVERICK_PG_RLS=1` adds database-level isolation.
+and migrated at start, and the app's records move into the same database (see
+above). `MAVERICK_PG_RLS=1` adds database-level isolation, and
+`MAVERICK_PG_POOL_SIZE` keeps that many connections open for reuse.
 
 ## Settings
 

@@ -3,9 +3,12 @@
 This kit creates a public HTTPS Container App with Entra sign-in, a private
 PostgreSQL Flexible Server, Azure Files, Key Vault, an image registry, and
 Log Analytics in one Azure subscription. The service runs with one replica
-and uses PostgreSQL row-level security. Its file-backed records and settings
-live at `/var/lib/second-shift` on Azure Files. The app keeps up to eight
-database connections open for reuse (`SECOND_SHIFT_PG_POOL_SIZE`).
+and uses PostgreSQL row-level security. The app's records (enrolled agents,
+trust, drift, platform checks, approvals cards, alerts, sign-in roles) are kept
+in PostgreSQL. The settings saved from the Settings page, the signed audit log,
+the emergency-stop file, browser sessions and Ekko's stores stay at
+`/var/lib/second-shift` on Azure Files. The app keeps up to eight database
+connections open for reuse (`SECOND_SHIFT_PG_POOL_SIZE`).
 
 ## 1. Prepare the subscription and vault
 
