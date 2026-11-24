@@ -158,11 +158,13 @@ def separate_approver_mode() -> str:
 
     ``[approval] separate_approver``:
 
-    * ``"when_available"`` (default) -- someone else, whenever at least one
-      other person could decide the request; where the requester is the only
-      one who can, they may approve it themselves (recorded as a self-approval).
-    * ``"always"`` -- someone else, even if nobody else can: the request then
-      waits and expires, which refuses the action.
+    * ``"always"`` (default) -- someone else, even if nobody else can: the
+      request then waits and expires, which refuses the action. Second Shift
+      cannot always see who else holds an approver role in Microsoft Entra, so
+      it does not guess.
+    * ``"when_available"`` -- someone else, whenever at least one other person
+      could decide the request; where the requester is the only one who can,
+      they may approve it themselves (recorded as a self-approval).
     * ``"never"`` -- the requester may approve it.
 
     ``MAVERICK_SEPARATE_APPROVER`` wins. A value this module does not know is

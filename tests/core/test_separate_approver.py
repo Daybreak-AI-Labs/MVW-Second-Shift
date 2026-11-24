@@ -1,10 +1,10 @@
 """A second person approves high-risk actions when one is available.
 
 ``[approval] separate_approver`` decides whether the person who asked for a
-high or critical risk action may approve it themselves: ``"when_available"``
-(the default) refuses that whenever someone else could decide the request,
-``"always"`` refuses it even when nobody else can (the request then waits and
-expires, which refuses the action), and ``"never"`` allows it. Allowed
+high or critical risk action may approve it themselves: ``"always"``
+(the default) refuses it even when nobody else can (the request then waits and
+expires, which refuses the action), ``"when_available"`` refuses it whenever
+someone else could decide the request, and ``"never"`` allows it. Allowed
 self-approvals are recorded as such. The rule is enforced in the one shared
 decision path (:func:`maverick.channel_approvals.record_vote`), so the
 Approvals page, Slack and Teams all obey it. With two or more approvers the
@@ -90,10 +90,10 @@ def _park(world, *, risk="high", required=1, requested_by=REQUESTER, provenance=
     return approval_id, card["binding_sha256"]
 
 
-def test_the_default_is_when_another_approver_is_available():
+def test_the_default_is_always():
     from maverick.safety.dual_control import separate_approver_mode
 
-    assert separate_approver_mode() == "when_available"
+    assert separate_approver_mode() == "always"
 
 
 @pytest.mark.parametrize("value", ["when_available", "always", "never"])
@@ -118,6 +118,7 @@ def test_the_environment_wins_and_an_unknown_value_fails_closed(tmp_path, monkey
 def test_requester_is_refused_when_another_approver_is_available(tmp_path, others):
     from maverick.channel_approvals import separate_approver_refusal
 
+    _config(tmp_path, '[approval]\nseparate_approver = "when_available"\n')
     world = _world(tmp_path)
     approval_id, _binding = _park(world)
     approval = world.get_approval(approval_id)
@@ -131,6 +132,7 @@ def test_requester_is_refused_when_another_approver_is_available(tmp_path, other
 def test_a_requester_who_is_the_only_approver_may_approve(tmp_path, others):
     from maverick.channel_approvals import separate_approver_refusal
 
+    _config(tmp_path, '[approval]\nseparate_approver = "when_available"\n')
     world = _world(tmp_path)
     approval_id, _binding = _park(world)
     others.people = []
@@ -198,6 +200,7 @@ def test_the_kernel_without_the_dashboard_counts_nobody_else(tmp_path, monkeypat
 def test_the_shared_vote_refuses_the_requester_with_a_plain_sentence(tmp_path, others, recorded):
     from maverick.channel_approvals import ChannelApprovalRefused, record_vote
 
+    _config(tmp_path, '[approval]\nseparate_approver = "when_available"\n')
     world = _world(tmp_path)
     approval_id, _binding = _park(world)
     others.people = [MANAGER]
@@ -230,6 +233,7 @@ def test_the_other_approver_decides_and_is_recorded(tmp_path, others, recorded):
 def test_a_one_person_installation_records_a_self_approval(tmp_path, others, recorded):
     from maverick.channel_approvals import audit_approval_decision, record_vote
 
+    _config(tmp_path, '[approval]\nseparate_approver = "when_available"\n')
     world = _world(tmp_path)
     approval_id, _binding = _park(world)
     others.people = []
@@ -246,6 +250,7 @@ def test_a_retried_vote_keeps_its_accepted_outcome(tmp_path, others, recorded):
     # first answer's acknowledgement was lost; the vote is already durable).
     from maverick.channel_approvals import record_vote
 
+    _config(tmp_path, '[approval]\nseparate_approver = "when_available"\n')
     world = _world(tmp_path)
     approval_id, _binding = _park(world)
     others.people = []

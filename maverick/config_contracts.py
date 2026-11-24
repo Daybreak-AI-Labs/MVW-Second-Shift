@@ -115,7 +115,7 @@ BOOLEAN_SETTINGS: Mapping[str, BooleanSettingContract] = MappingProxyType(
     {contract.setting: contract for contract in _BOOLEAN_CONTRACTS}
 )
 _CHOICE_CONTRACTS = (
-    ChoiceSettingContract("approval.separate_approver", "when_available",
+    ChoiceSettingContract("approval.separate_approver", "always",
                           ("when_available", "always", "never"),
                           ("MAVERICK_SEPARATE_APPROVER",)),
 )
