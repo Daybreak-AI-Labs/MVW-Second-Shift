@@ -654,6 +654,9 @@ from .agent_control_plane_page import (  # noqa: E402
 )
 
 app.include_router(create_agent_control_plane_page_router(templates))
+from .audit_page import create_audit_page_router  # noqa: E402
+
+app.include_router(create_audit_page_router(templates))
 from .agent_control_plane_api import router as agent_control_plane_router  # noqa: E402
 
 app.include_router(agent_control_plane_router, prefix="/api/v1")

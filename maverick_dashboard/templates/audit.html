@@ -1,0 +1,124 @@
+{% extends "base.html" %}
+{% block title %}Audit trail · Second Shift{% endblock %}
+{% block content %}
+  {#- The signed record of what happened, newest first. The page only reads;
+      the one thing it writes is a line saying an export was made. -#}
+  <h1 class="page-title">Audit trail</h1>
+  <p class="page-subtitle">Who did what, to which agent, and when. Second Shift keeps this record by design without the content of anyone's work, and signs each entry so a later change shows.</p>
+
+  <div class="panel" id="audit-integrity">
+    <p style="margin: 0;">
+      <span class="badge" id="audit-integrity-badge">Not checked yet</span>
+      <button type="button" class="btn btn--ghost" id="audit-verify">Check that nothing was changed</button>
+    </p>
+    <p class="muted" role="status" aria-live="polite" id="audit-integrity-text" style="margin: var(--space-2) 0 0; font-size: var(--text-sm);">The check reads the last {{ verify_days }} days and can take a moment, so it runs only when you ask. It shows whether entries were changed or removed after they were written.</p>
+    <ul id="audit-integrity-problems" class="muted" style="margin: var(--space-2) 0 0; font-size: var(--text-sm);"></ul>
+  </div>
+
+  {% if problem %}
+  <div class="panel" role="alert"><p style="margin: 0;"><span class="badge failure">Not shown</span> {{ problem }}</p></div>
+  {% else %}
+
+  <div class="panel">
+    <form method="get" action="/audit" id="audit-filters" style="display:grid; grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr)); gap: var(--space-3); align-items: end;">
+      <label>From <input type="date" name="start" value="{{ filters.start }}"></label>
+      <label>To <input type="date" name="end" value="{{ filters.end }}"></label>
+      <label>Kind of event
+        <select name="group">
+          <option value="">Everything</option>
+          {% for key, label in groups %}<option value="{{ key }}"{% if filters.group == key %} selected{% endif %}>{{ label }}</option>{% endfor %}
+        </select>
+      </label>
+      <label>Agent <input type="search" name="agent" value="{{ filters.agent }}" maxlength="80" placeholder="Part of its name"></label>
+      <label>Person <input type="search" name="person" value="{{ filters.person }}" maxlength="80" placeholder="Name or email"></label>
+      <span class="mv-row__actions"><button type="submit" class="btn btn--primary">Show</button> <a class="btn btn--ghost" href="/audit">Clear</a></span>
+    </form>
+  </div>
+
+  {% if result.unreadable_days %}
+  <div class="panel" role="status"><p style="margin: 0;"><span class="badge failure">Some days could not be read</span> {{ result.unreadable_days | join(', ') }}. Entries from those days may be missing below.</p></div>
+  {% endif %}
+  {% if result.truncated %}
+  <div class="panel" role="status"><p style="margin: 0;"><span class="badge pending">Older entries not searched</span> To keep this page quick, only the newest entries of each day are searched. Narrow the dates to look at an older day.</p></div>
+  {% endif %}
+
+  <div class="panel">
+    {% if result.entries %}
+    <table>
+      <thead>
+        <tr><th scope="col">When</th><th scope="col">Kind of event</th><th scope="col">What happened</th><th scope="col">Who</th><th scope="col">Agent</th></tr>
+      </thead>
+      <tbody>
+        {% for e in result.entries %}
+        <tr>
+          <td>{{ e.ts | datetime }}</td>
+          <td><span class="badge">{{ e.group_label }}</span></td>
+          <td>{{ e.what }}
+            <details><summary class="muted" style="font-size: var(--text-sm);">Raw fields</summary><pre style="white-space: pre-wrap; word-break: break-all; margin: var(--space-2) 0 0;">{{ e.raw }}</pre></details>
+          </td>
+          <td>{{ e.who }}</td>
+          <td>{{ e.agent or '—' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <p style="margin: var(--space-3) 0 0;" class="mv-row__actions">
+      {% if previous_href %}<a class="btn btn--ghost" href="{{ previous_href }}">Newer</a>{% endif %}
+      <span class="muted">Page {{ filters.page }}, {{ page_size }} entries to a page</span>
+      {% if next_href %}<a class="btn btn--ghost" href="{{ next_href }}">Older</a>{% endif %}
+    </p>
+    {% else %}
+    <div class="mv-empty">
+      <p class="mv-empty__title">No entries match</p>
+      <p class="mv-empty__body">{% if filters.start or filters.end or filters.group or filters.agent or filters.person %}Nothing in the audit trail matches these filters. Widen the dates or clear a filter.{% else %}The audit trail has no entries yet. Activity is recorded here as it happens.{% endif %}</p>
+    </div>
+    {% endif %}
+  </div>
+
+  <div class="section-head"><h2>Export</h2></div>
+  <div class="panel">
+    <p class="muted" style="margin: 0 0 var(--space-3);">Downloads the entries that match the filters above, up to {{ '{:,}'.format(export_max) }}. The export is written to the audit trail with your name.</p>
+    <form method="post" action="/audit/export">
+      <input type="hidden" name="start" value="{{ filters.start }}">
+      <input type="hidden" name="end" value="{{ filters.end }}">
+      <input type="hidden" name="group" value="{{ filters.group }}">
+      <input type="hidden" name="agent" value="{{ filters.agent }}">
+      <input type="hidden" name="person" value="{{ filters.person }}">
+      <button type="submit" name="format" value="csv" class="btn btn--ghost">Download as CSV</button>
+      <button type="submit" name="format" value="json" class="btn btn--ghost">Download as JSON</button>
+    </form>
+  </div>
+  {% endif %}
+
+<script nonce="{{ csp_script_nonce }}">
+(function () {
+  var button = document.getElementById("audit-verify"), badge = document.getElementById("audit-integrity-badge");
+  var text = document.getElementById("audit-integrity-text"), list = document.getElementById("audit-integrity-problems");
+  var LABEL = { intact: ["Passed", "active"], broken: ["Failed", "failure"], unsigned: ["Not proven", "pending"],
+                unreadable: ["Could not be checked", "pending"], empty: ["Nothing to check", ""] };
+  button.addEventListener("click", async function () {
+    button.disabled = true;
+    text.textContent = "Checking…";
+    list.textContent = "";
+    try {
+      var answer = await window.mvFetchJSON("/audit/integrity", {}, "check the audit trail");
+      var label = LABEL[answer.state] || ["Could not be checked", "pending"];
+      badge.textContent = label[0];
+      badge.className = "badge " + label[1];
+      text.textContent = answer.meaning + (answer.days_total ? " Checked " + answer.days_checked + " of " + answer.days_total + " days." : "");
+      (answer.problems || []).forEach(function (p) {
+        var item = document.createElement("li");
+        item.textContent = p.day + (p.line ? ", entry " + p.line : "");
+        list.appendChild(item);
+      });
+    } catch (failure) {
+      badge.textContent = "Could not be checked";
+      badge.className = "badge pending";
+      text.textContent = window.mvErrorText ? window.mvErrorText(failure, "check the audit trail") : "The check could not be run.";
+    } finally {
+      button.disabled = false;
+    }
+  });
+})();
+</script>
+{% endblock %}
