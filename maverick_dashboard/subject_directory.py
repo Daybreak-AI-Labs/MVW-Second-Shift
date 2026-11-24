@@ -262,7 +262,21 @@ def record_login(sub: str, identifiers: Iterable[str], *, at: float | None = Non
         return
 
 
+def subject_for(identifier: str) -> str | None:
+    """The ``sub`` last recorded at sign-in for ``identifier`` (an email, a
+    username or an Entra object id), or ``None``. Raises
+    :class:`SubjectDirectoryError` when the directory cannot be trusted, so a
+    caller can refuse rather than guess."""
+    key = _key(identifier)
+    if not (identifier or "").strip():
+        return None
+    with _locked():
+        entry = _load().get(key)
+    return str(entry["sub"]) if entry else None
+
+
 __all__ = [
     "SubjectDirectoryError",
     "record_login",
+    "subject_for",
 ]

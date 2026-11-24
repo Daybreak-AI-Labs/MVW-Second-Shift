@@ -13,6 +13,9 @@ asks before the person who asked may approve their own high-risk request.
 """
 from __future__ import annotations
 
+import logging
+import time
+
 from fastapi import HTTPException
 
 from maverick.channel_approvals import (
@@ -27,9 +30,19 @@ from maverick.channel_approvals import (
     separate_approver_refusal,
 )
 
+log = logging.getLogger(__name__)
+
 # The routes and their tests reach the shared functions through these names.
 _audit_approval_decision = audit_approval_decision
 _safe_action_label = safe_action_label
+
+
+class ApprovalDecisionRefused(ChannelApprovalRefused):
+    """A vote from a chat app was not accepted; ``detail`` is a plain sentence
+    for the person."""
+
+    def __init__(self, detail: str, *, status_code: int = 409, reason: str = "refused") -> None:
+        super().__init__(reason, detail, status_code=status_code)
 
 
 CODE_KEY_REFUSED = ("A person must approve a code change on the Approvals page. A key or an "
@@ -149,10 +162,10 @@ def _may_decide(principal: str) -> bool:
 def _chat_approvers(approval) -> set[str]:
     """People linked in a chat app where this request's card is posted.
 
-    Slack posts every card to its approvals channel and Teams to each linked
-    approver; protected-settings requests are decided in the dashboard only.
-    With company sign-in (OIDC) a chat decision is resolved through the sign-in
-    bridge instead of these links, so nobody is counted from them."""
+    Slack posts every card to its approvals channel; protected-settings
+    requests are decided in the dashboard only. Teams is not counted here: its
+    cards go only to people who can already open the request, so they are
+    already among the readers."""
     if getattr(approval, "provenance", None) == SETTINGS_PROVENANCE:
         return set()
     try:
@@ -171,15 +184,6 @@ def _chat_approvers(approval) -> set[str]:
 
             people.update(principal for principal, links in all_links().items()
                           if any(link.get("channel") == "slack" for link in links))
-    except Exception:  # an unreadable link store adds nobody
-        pass
-    try:
-        from maverick.approval_notify import teams_approvals_enabled
-
-        if teams_approvals_enabled():
-            from maverick.teams_identity import approver_links
-
-            people.update(str(link.get("principal") or "") for link in approver_links())
     except Exception:  # an unreadable link store adds nobody
         pass
     return {person for person in people if person}
@@ -224,7 +228,248 @@ def own_request_note(world, approval, viewer: str) -> str:
     return separate_approver_refusal(world, approval, who)
 
 
+# ----------------------------------------------------------------- channels
+
+
+def _audit_channel_denial(principal: str, *, channel: str, approval_id: int, reason: str) -> None:
+    """Record a refused chat decision the way ``require_approval_authority``
+    records a refused one on the web page."""
+    from maverick import audit
+    from maverick.approval_cards import digest
+    from maverick.paths import current_tenant_id_strict
+
+    audit.audit_event(
+        audit.EventKind.CAPABILITY_DENIED,
+        agent=principal,
+        action="approval.decide",
+        principal=principal,
+        channel=channel,
+        tenant=current_tenant_id_strict() or "",
+        resource_sha256=digest({"kind": "approval", "resource": str(approval_id)}),
+        reason=reason,
+    )
+
+
+def _refuse(principal: str, channel: str, approval_id: int, reason: str, detail: str, *,
+            status_code: int = 403) -> ApprovalDecisionRefused:
+    try:
+        _audit_channel_denial(principal, channel=channel, approval_id=approval_id, reason=reason)
+    except Exception:  # noqa: BLE001 -- the refusal stands even if its record cannot be written
+        log.warning("approval refusal could not be audited", exc_info=True)
+    return ApprovalDecisionRefused(detail, status_code=status_code, reason="not_permitted")
+
+
+def _channel_authority(world, principal: str, *, channel: str, approval_id: int) -> None:
+    """The person a chat account is linked to may decide this request on the
+    web page, so they may decide it here: they hold ``approve``, are not
+    deprovisioned, can open the request (its owner, a reviewed read grant, or
+    an outside agent's request, which any role holder can open) and nobody
+    else has claimed it. A role that cannot be read refuses."""
+    from . import rbac, scim_groups
+    from .auth import role_for_principal
+    from .content_access import approval_readers
+
+    try:
+        permitted = ("approve" in rbac.permissions_for(role_for_principal(principal))
+                     and scim_groups.active_for_principal(principal) is not False)
+        approval = world.get_approval(int(approval_id))
+        readable = approval is not None and principal in approval_readers(approval, world)
+    except Exception as exc:  # noqa: BLE001 -- what cannot be read cannot be allowed
+        log.warning("approval authority could not be checked for %s", channel, exc_info=True)
+        raise ApprovalDecisionRefused(
+            "Second Shift could not check whether you may decide this request. Open the "
+            "Approvals page, or try again in a minute.", status_code=503, reason="not_permitted",
+        ) from exc
+    if not permitted:
+        raise _refuse(principal, channel, approval_id, "approval_authority_missing",
+                      "Your Second Shift account can't decide approvals. Ask an administrator "
+                      "for the approver role.")
+    if approval is None or approval.status != "pending":
+        return  # the decision path answers "already decided"
+    if not readable:
+        raise _refuse(principal, channel, approval_id, "approval_content_unreadable",
+                      "Your Second Shift account can't open this request. Ask an administrator "
+                      "for access to it.")
+    if approval.claimed_by and approval.claimed_by != principal:
+        raise ApprovalDecisionRefused(
+            "Another reviewer holds this request. Ask them to release it before you decide.",
+            status_code=409, reason="claimed")
+
+
+def decide_from_channel(*, approval_id: int, status: str, principal: str, binding: str,
+                        channel: str, channel_user: str = "", acknowledgement: dict | None = None,
+                        world=None) -> dict:
+    """Record a vote that arrived through a chat app, by the same rules as the
+    Approvals page.
+
+    ``status`` is ``"approved"`` or ``"denied"``; ``principal`` is the Second
+    Shift user the chat account is tied to. The person needs ``approve`` and
+    access to the request, a request protected by a settings change is decided
+    on the web only, an approval must name the exact card the person saw
+    (``binding``), the person who asked may have to leave a high-risk request
+    to someone else, and a high or critical risk approval needs the
+    acknowledgement (``{"acknowledged": True, "confirmation": "approve"}``, the
+    typed word only for critical risk). The vote goes through the same audited
+    outbox as the page's.
+
+    Returns ``{"status", "effective", "decided_by", "decided_at", "risk", "audit",
+    "approvals_required", "approved_count", ...}``. Raises
+    :class:`ApprovalDecisionRefused` with a plain sentence when nothing was
+    recorded."""
+    from maverick.approval_cards import ApprovalCardError, decode_approval_detail
+
+    from ._shared import _world
+    from .approval_queue_operations import guard
+
+    if status not in ("approved", "denied"):
+        raise ApprovalDecisionRefused("Choose approve or reject.", status_code=422, reason="invalid")
+    world = world if world is not None else _world()
+    who = " ".join(str(principal or "").split())
+    if not who:
+        raise ApprovalDecisionRefused(
+            "Your Teams account isn't linked to a Second Shift user yet.", status_code=403,
+            reason="unlinked")
+    approval_id = int(approval_id)
+    approving = status == "approved"
+    try:
+        _channel_authority(world, who, channel=channel, approval_id=approval_id)
+        approval = world.get_approval(approval_id)
+        if approval is None or approval.status != "pending":
+            raise ApprovalDecisionRefused(
+                "This request was already decided or no longer exists.", status_code=404,
+                reason="not_pending")
+        if approval.provenance == SETTINGS_PROVENANCE:
+            raise ApprovalDecisionRefused(
+                "Changes to protected settings are decided on the Second Shift Approvals page, "
+                "not in Teams.", status_code=403, reason="dashboard_only")
+        vote_guard = None
+        if world.get_approval_audit_event(world.approval_audit_event_id(approval_id, status, who)) is None:
+            vote_guard = guard(world, approval, who, status, binding, bind_state=False)
+        if approving:
+            require_current_card(approval, binding=binding)
+            try:
+                card = decode_approval_detail(approval.detail)
+            except ApprovalCardError:
+                card = None
+            if card and card.get("display"):
+                raise ApprovalDecisionRefused(
+                    "Review and approve the full operation on the Second Shift Approvals page.",
+                    status_code=403, reason="dashboard_only")
+            require_separate_approver(world, approval_id, who)
+            ack = acknowledgement if isinstance(acknowledgement, dict) else {}
+            require_acknowledgement(
+                approval, who=who, channel=channel, decision="approved", confirmed=True,
+                acknowledged=ack.get("acknowledged") is True,
+                typed_confirmation=str(ack.get("confirmation") or ""))
+        options = {"reviewed_card": vote_guard} if vote_guard is not None else {}
+        event = record_vote(world, approval_id, status, who, **options)
+        delivered = audit_approval_decision(world, event)
+    except ChannelApprovalRefused as exc:
+        raise (exc if isinstance(exc, ApprovalDecisionRefused) else
+               ApprovalDecisionRefused(exc.message, status_code=exc.status_code, reason=exc.reason)) from exc
+    except HTTPException as exc:  # the queue's own guard answers in HTTP terms
+        raise ApprovalDecisionRefused(str(exc.detail), status_code=exc.status_code) from exc
+    try:
+        state = world.approval_state(approval_id) or {}
+    except Exception:  # noqa: BLE001 -- the vote is durable; the read is diagnostic
+        state = {}
+    final = str(state.get("status") or "pending")
+    effective = bool(delivered and final != "pending")
+    try:
+        from maverick import audit
+
+        audit.audit_event(
+            audit.EventKind.CONSENT_RESULT, agent=who, actor=who, action="approval_decided_via_channel",
+            approval_id=approval_id, decision=status, channel=channel,
+            channel_user=str(channel_user or ""), decided_by=who, effective=effective,
+            decision_id=event.event_id)
+    except Exception:  # noqa: BLE001 -- the signed decision above is the authority
+        log.warning("channel approval audit note failed", exc_info=True)
+    return {
+        "approval_id": approval_id, "decision": status, "status": final, "effective": effective,
+        "decided_by": who, "channel": channel, "risk": str(approval.risk),
+        "audit": "delivered" if delivered else "pending",
+        "approvals_required": int(state.get("approvals_required") or 1),
+        "approved_count": int(state.get("approved_count") or 0),
+        "decision_id": event.event_id, "decided_at": time.time(),
+    }
+
+
+def channel_approvers(world, approval) -> set[str]:
+    """Who a chat app may show this request to and take a decision from: the
+    people who can open it on the Approvals page and hold ``approve`` now."""
+    from .content_access import approval_readers
+
+    return {person for person in approval_readers(approval, world) if _may_decide(person)}
+
+
+def approval_view(approval_id: int, *, world=None) -> dict | None:
+    """The queue row as a chat card needs it: redacted labels, the decoded
+    card, its source. ``None`` when the approval does not exist. ``card`` is
+    ``None`` for a legacy, corrupted or expired request, which a chat app must
+    not offer to approve (the page disables its Approve button the same way)."""
+    from maverick.approval_cards import ApprovalCardError, decode_approval_detail
+    from maverick.safety.secret_detector import redact
+
+    from ._shared import _world
+
+    world = world if world is not None else _world()
+    approval = world.get_approval(int(approval_id))
+    if approval is None:
+        return None
+
+    def safe(value: object, *, fallback: str = "") -> str:
+        try:
+            text, _matches = redact(" ".join(str(value or "").split()))
+            return text[:2000]
+        except Exception:  # noqa: BLE001 -- the fallback is a plain label
+            return fallback
+
+    card = None
+    card_status = "legacy"
+    detail = safe(approval.detail)
+    try:
+        card = decode_approval_detail(approval.detail)
+    except ApprovalCardError:
+        detail = "Structured approval details failed their integrity check."
+        card_status = "invalid"
+    if card is not None:
+        card_status = "expired" if time.time() >= card["expires_at"] else "current"
+        if card_status == "expired":
+            card = None
+            detail = "This request's decide-by time has passed. Reject it and ask for a new request."
+        else:
+            detail = card["summary"]
+    try:
+        from .app import _approval_source
+
+        source = _approval_source(approval.provenance)
+    except Exception:  # noqa: BLE001 -- the label is decoration, never authority
+        source = None
+    return {
+        "approval": {
+            "id": approval.id,
+            "action": safe(approval.action, fallback="reviewed operation"),
+            "risk": str(approval.risk),
+            "scope": safe(approval.scope, fallback="reviewed target"),
+            "detail": detail,
+            "status": approval.status,
+            "provenance": approval.provenance,
+            "requested_by": approval.requested_by,
+            "decided_by": approval.decided_by,
+            "decided_at": approval.decided_at,
+        },
+        "card": card,
+        "card_status": card_status,
+        "source_label": source,
+    }
+
+
 __all__ = [
+    "ApprovalDecisionRefused",
+    "approval_view",
+    "channel_approvers",
+    "decide_from_channel",
     "eligible_approvers",
     "other_eligible_approvers",
     "own_request_note",

@@ -1,0 +1,35 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/teams/v1.25/MicrosoftTeams.schema.json",
+  "manifestVersion": "1.25",
+  "version": "1.0.0",
+  "id": "{{BOT_APP_ID}}",
+  "developer": {
+    "name": "Second Shift",
+    "websiteUrl": "https://{{HOSTNAME}}",
+    "privacyUrl": "https://{{HOSTNAME}}",
+    "termsOfUseUrl": "https://{{HOSTNAME}}"
+  },
+  "name": {
+    "short": "Second Shift",
+    "full": "Second Shift approvals"
+  },
+  "description": {
+    "short": "Approve or reject what your agents ask for.",
+    "full": "Second Shift governs the AI agents your organisation runs. When an agent's action or an access-key request waits for a person, this app sends you a card with the request and Approve and Reject buttons. Your decision follows the same rules as the Approvals page in Second Shift."
+  },
+  "icons": {
+    "color": "color.png",
+    "outline": "outline.png"
+  },
+  "accentColor": "#1B3A57",
+  "bots": [
+    {
+      "botId": "{{BOT_APP_ID}}",
+      "scopes": ["personal", "team"],
+      "isNotificationOnly": false,
+      "supportsFiles": false
+    }
+  ],
+  "permissions": ["identity", "messageTeamMembers"],
+  "validDomains": ["{{HOSTNAME}}"]
+}

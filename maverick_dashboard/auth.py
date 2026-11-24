@@ -84,6 +84,9 @@ SELF_AUTH_WEBHOOK_PATHS = frozenset(
         "/webhook/github",
         "/webhook/gitlab",
         "/webhook/stripe",
+        # The Microsoft Teams bot: every request carries a Bot Connector JWT
+        # that teams_bot verifies (issuer, audience, expiry, signing key).
+        "/webhook/teams",
         # Slack interactivity and slash commands carry Slack's own v0 request
         # signature (me_api._verified_slack_body) and a replay window; Slack
         # never holds the dashboard bearer or a browser session.

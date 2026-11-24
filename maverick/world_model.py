@@ -1119,6 +1119,17 @@ def _notify_approval_created(world, approval_id: int, provenance: str | None) ->
         logging.getLogger(__name__).warning("approval notification failed", exc_info=True)
 
 
+def _notify_approval_decided(world, approval_id: int) -> None:
+    """Best-effort Teams card update once a decision has taken effect; never
+    raises. Called after the decision is committed."""
+    try:
+        from .approval_notify import approval_decided
+
+        approval_decided(int(approval_id), world=world)
+    except Exception:  # noqa: BLE001 -- the decision is already durable
+        logging.getLogger(__name__).warning("approval decision notification failed", exc_info=True)
+
+
 def _approval_from_row(row) -> Approval:
     """Build an Approval from a row, decrypting the sealed action/scope/detail."""
     d = dict(row)
@@ -2192,6 +2203,8 @@ class WorldModel:
     def _emit_approval_event(self, event: str, approval_id: int, payload: dict) -> None:
         """Webhook subscribers hear about approvals; never raises, and costs one
         read of the subscription table when nobody is subscribed."""
+        if event == "approval.decided":
+            _notify_approval_decided(self, approval_id)
         try:
             from .webhook_events import emit, record_link
 
