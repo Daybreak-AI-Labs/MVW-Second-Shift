@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block title %}Agent factory · Second Shift{% endblock %}
+{% block content %}
+  <h1 class="page-title">Agent factory</h1>
+  <p class="page-subtitle">Describe an agent in your own words. Second Shift drafts it, you edit it and test it, a second person approves it, and it is governed from its first action.</p>
+
+  {% if not factory_installed %}
+  <div class="panel" role="status">
+    <p style="margin:0"><strong>The agent factory is not installed.</strong></p>
+    <p class="muted" style="margin:var(--space-2) 0 0">{{ factory_not_installed }}</p>
+  </div>
+  {% else %}
+    {% if not status.ready %}
+    <div class="panel" role="status" id="factory-setup">
+      <p style="margin:0"><strong>The model for drafting and testing is not set up yet.</strong> You can read agents, but drafting and testing wait until it is.</p>
+      <ul style="margin:var(--space-2) 0 0; padding-left:1.2rem">{% for p in status.problems %}<li>{{ p }}</li>{% endfor %}</ul>
+    </div>
+    {% endif %}
+
+    <div class="section-head"><h2>Your agents</h2>
+      {% if can_build %}<a class="btn btn--primary" href="/factory/new" id="factory-new">New agent</a>{% endif %}
+    </div>
+    <div class="panel">
+      {% if agents %}
+      <table>
+        <thead><tr><th scope="col">Agent</th><th scope="col">Where it stands</th><th scope="col">Skills</th><th scope="col">Made by</th><th scope="col"><span class="sr-only">Open</span></th></tr></thead>
+        <tbody>
+          {% for a in agents %}
+          <tr>
+            <td><a href="/factory/{{ a.id }}"><strong>{{ a.name }}</strong></a><br><span class="muted" style="font-size:var(--text-sm)">{{ a.description }}</span></td>
+            <td><span class="badge {{ 'active' if a.state == 'released' else ('warn' if a.state == 'waiting_for_approval' else '') }}">{{ a.state_label }}</span>
+              <span class="muted" style="font-size:var(--text-sm)">version {{ a.tip }}{% if a.released and a.released != a.tip %}, version {{ a.released }} is live{% endif %}</span></td>
+            <td>{{ a.skills | join(', ') if a.skills else 'None' }}</td>
+            <td>{{ (a.created_by | identity).name if a.created_by else '—' }}</td>
+            <td><a class="btn btn--ghost" href="/factory/{{ a.id }}">Open</a></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <div class="mv-empty">
+        <p class="mv-empty__title">No agents yet</p>
+        <p class="mv-empty__body">Say what you need an agent to do, and Second Shift will propose how it should work. You review and test it before anyone relies on it.</p>
+        {% if can_build %}<a class="btn btn--primary" href="/factory/new">Describe your first agent</a>{% endif %}
+      </div>
+      {% endif %}
+    </div>
+    {% if not can_build %}<p class="muted" style="font-size:var(--text-sm)">You can look at agents here. Building, testing and submitting need the operator role.</p>{% endif %}
+  {% endif %}
+{% endblock %}

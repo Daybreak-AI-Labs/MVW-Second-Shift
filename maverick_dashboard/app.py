@@ -687,6 +687,9 @@ app.include_router(external_gateway_router)
 from .copilot_studio_gate_api import router as copilot_studio_gate_router  # noqa: E402
 
 app.include_router(copilot_studio_gate_router)
+from .factory_page import create_factory_router  # noqa: E402
+
+app.include_router(create_factory_router(templates))
 
 _DOCS_CSP = (
     "default-src 'self'; "
@@ -1735,6 +1738,8 @@ def _approval_source(provenance: str | None) -> str | None:
         return "Required human oversight (EU AI Act)"
     if provenance == "external_agents":
         return "Outside agent"
+    if provenance == "factory_release":
+        return "Agent ready to release"
     if provenance == "harness_refine":
         # A change to the standing instructions every agent follows. An
         # approver must see that at a glance, not read it as an ordinary task
