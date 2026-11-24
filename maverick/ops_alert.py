@@ -219,6 +219,11 @@ def warn_if_alerts_cannot_reach_anyone() -> str:
     except Exception as e:  # noqa: BLE001 -- a warning never blocks start-up
         log.debug("alert check at start-up failed: %s", type(e).__name__)
         return ""
+    if (status.get("servicenow") or {}).get("ready"):
+        message = (f"Second Shift is governing outside agents but {why}. ServiceNow incidents can still be queued. "
+                   "Set up Teams or email to receive other alerts.")
+        log.warning(message)
+        return message
     message = (f"Second Shift is governing outside agents but {why}, so nobody will be told when an agent "
                "is blocked, drifts or a request is about to run out. Turn alerts on and set up Teams "
                "or email (see the Alerts page).")

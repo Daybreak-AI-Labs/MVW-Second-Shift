@@ -12,7 +12,7 @@
     {% if external_agents_can_manage %}<button type="button" class="btn btn--ghost" id="alert-test">Send a test alert</button>{% endif %}
   </p>
   {% if alert_delivery is not none %}
-  {% if not alert_delivery.enabled %}<p class="muted" style="margin: var(--space-2) 0 0; font-size: var(--text-sm);">A blocked agent or a drift finding is still recorded and shown here, but Teams and email alerts are off. An administrator turns alerts on in the settings.</p>{% endif %}
+  {% if not alert_delivery.enabled %}<p class="muted" style="margin: var(--space-2) 0 0; font-size: var(--text-sm);">A blocked agent or a drift finding is still recorded and shown here, but {% if alert_delivery.servicenow is defined %}Teams and email alerts are off{% else %}nobody is told when it happens{% endif %}. An administrator turns alerts on in the settings.</p>{% endif %}
   {% for c in alert_delivery.channels if c.problem %}<p class="muted" style="margin: var(--space-2) 0 0; font-size: var(--text-sm);">{{ _CHANNEL.get(c.channel, c.channel) | capitalize }}: {{ c.problem }}</p>{% endfor %}
   {% if alert_delivery.servicenow is defined %}
   {% set sn = alert_delivery.servicenow %}
