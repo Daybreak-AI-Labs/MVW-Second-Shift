@@ -47,9 +47,9 @@ def require_approval_authority(
     # just because both scopes belong to the operator RBAC role. Credential
     # minting uses this authority for attribution, not to decide an approval.
     api_scope = None if action == "external_agents.credential_mint" else "approvals:decide"
-    allowed = (has_permission(request, "operate", api_scope=api_scope)
+    allowed = (has_permission(request, "approve", api_scope=api_scope)
                if api_key_permissions(request) is not None
-               else has_permission(request, "operate"))
+               else has_permission(request, "approve"))
     if allowed:
         if action in {"approval.approve", "approval.deny", "approval.revise", "approval.undo"}:
             from .content_access import require_approval_content

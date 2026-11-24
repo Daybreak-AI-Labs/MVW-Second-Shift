@@ -1,4 +1,5 @@
-"""Dashboard RBAC: admin-managed user roles (admin / governance_lead / operator / auditor / viewer).
+"""Dashboard RBAC: admin-managed user roles (admin / governance_lead / operator / approver /
+responder / auditor / viewer).
 
 This is the dashboard's *access-control* layer and is deliberately distinct from
 the kernel's ``[roles]`` (``maverick.capability``), which only ATTENUATES an
@@ -37,13 +38,19 @@ from pathlib import Path
 # Built-in roles, ordered most-privileged first (SCIM group resolution and the
 # admin UIs rely on the order). Custom roles extend -- never replace -- these:
 # the builtins are immutable, and every permission a custom role can hold is
-# one of the same four atoms the 1,400+ require_permission call sites gate on.
-ROLES = ("admin", "governance_lead", "operator", "auditor", "viewer")
+# one of the atoms below, the same ones the require_permission call sites gate on.
+ROLES = ("admin", "governance_lead", "operator", "approver", "responder", "auditor", "viewer")
 
 # The permission atoms a role may grant. "view" is mandatory for every role:
 # a principal who cannot even view has no working dashboard, which reads as
 # breakage rather than policy.
-PERMISSION_ATOMS = ("admin", "audit", "operate", "view")
+PERMISSION_ATOMS = ("admin", "audit", "operate", "approve", "respond", "view")
+
+# What comes with another permission. "operate" covered deciding approvals and
+# stopping agents before those were permissions of their own, so a role that
+# holds it holds both: built-in or custom, whenever it was stored. The rule is
+# applied in permissions_for() and nowhere else.
+IMPLIED_PERMISSIONS: dict[str, frozenset[str]] = {"operate": frozenset({"approve", "respond"})}
 
 
 class RbacStoreError(RuntimeError):
@@ -90,10 +97,18 @@ ROSTER_RECOVERY = (
 # distinct grant, not implied by operate. "governance_lead" is the one
 # deliberate combination: a day-to-day operator who also reads the trail
 # (operate + audit + view), with no administrator rights.
+# "approve" (decide a request waiting for a person) and "respond" (suspend,
+# resume and limit agents, the emergency stop where an operator may use it,
+# and acknowledging or re-checking drift) are the two parts of "operate"
+# that can be given on their own: "approver" and "responder" hold one each
+# and nothing else but view. Every role that holds "operate" holds both
+# (IMPLIED_PERMISSIONS).
 _PERMISSIONS: dict[str, frozenset[str]] = {
-    "admin": frozenset({"admin", "audit", "operate", "view"}),  # users, settings, secrets, + all
-    "governance_lead": frozenset({"audit", "operate", "view"}),  # operator who also reads the audit trail
-    "operator": frozenset({"operate", "view"}),                 # run/cancel goals, approve, tools
+    "admin": frozenset({"admin", "audit", "operate", "approve", "respond", "view"}),  # users, settings, secrets, + all
+    "governance_lead": frozenset({"audit", "operate", "approve", "respond", "view"}),  # operator who also reads the audit trail
+    "operator": frozenset({"operate", "approve", "respond", "view"}),  # run/cancel goals, approve, tools
+    "approver": frozenset({"approve", "view"}),                 # decide requests waiting for a person
+    "responder": frozenset({"respond", "view"}),                # suspend, resume and limit agents
     "auditor": frozenset({"audit", "view"}),                    # read audit trail (read-only)
     "viewer": frozenset({"view"}),                              # read-only
 }
@@ -131,6 +146,15 @@ def default_role() -> str:
     except Exception as exc:
         raise RbacStoreError(f"RBAC defaults unavailable: {exc}") from exc
 def permissions_for(role: str | None) -> frozenset[str]:
+    """The permissions ``role`` holds, with any that come with one of them
+    (:data:`IMPLIED_PERMISSIONS`). Every gate asks here, so nothing can hold
+    ``operate`` without ``approve`` and ``respond``. A role that is unknown,
+    or whose record cannot be read, holds none, so it gains none."""
+    held = _stored_permissions(role)
+    return held.union(*(IMPLIED_PERMISSIONS[atom] for atom in held if atom in IMPLIED_PERMISSIONS))
+
+
+def _stored_permissions(role: str | None) -> frozenset[str]:
     name = role or ""
     builtin = _PERMISSIONS.get(name)
     if builtin is not None:
@@ -409,6 +433,7 @@ def get_tenant_role(tenant: str, principal: str) -> str | None:
 __all__ = [
     "ROLES",
     "PERMISSION_ATOMS",
+    "IMPLIED_PERMISSIONS",
     "ROSTER_RECOVERY",
     "RbacStoreError",
     "RosterMissingError",

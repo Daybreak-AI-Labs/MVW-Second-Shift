@@ -2,8 +2,9 @@
 
 Read an agent's drift state, approve its baseline, acknowledge a finding, or
 run a check now. Reading needs the view permission, acknowledging and checking
-need operate, and approving a baseline needs admin: the baseline is what every
-later comparison is judged against.
+need respond (which every role that holds operate also holds), and approving a
+baseline needs admin: the baseline is what every later comparison is judged
+against.
 """
 from __future__ import annotations
 
@@ -85,8 +86,8 @@ async def drift_approve_baseline(request: Request, agent_id: str, body: Baseline
 
 @router.post("/external-agents/{agent_id}/drift/acknowledge")
 async def drift_acknowledge(request: Request, agent_id: str, body: AcknowledgeIn) -> dict:
-    """Acknowledge one open finding (operate)."""
-    require_permission(request, "operate")
+    """Acknowledge one open finding (respond)."""
+    require_permission(request, "respond")
     _require_governance_on()
     from maverick import agent_drift
 
@@ -96,8 +97,8 @@ async def drift_acknowledge(request: Request, agent_id: str, body: AcknowledgeIn
 
 @router.post("/external-agents/{agent_id}/drift/check")
 async def drift_check(request: Request, agent_id: str) -> dict:
-    """Compare the agent with its baseline now and report anything new (operate)."""
-    require_permission(request, "operate")
+    """Compare the agent with its baseline now and report anything new (respond)."""
+    require_permission(request, "respond")
     _require_governance_on()
     from maverick import agent_drift
 

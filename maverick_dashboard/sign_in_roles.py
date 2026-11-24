@@ -154,15 +154,20 @@ def _known_entries(raw: dict[str, str]) -> dict[str, str]:
 def strongest(roles: Iterable[str]) -> str | None:
     """The one role a person gets when several of their app roles are mapped.
 
-    The role with the most permissions wins. Roles with equally many are
-    ordered built-in roles first, in the order of ``rbac.ROLES`` (so operator
-    comes before auditor), then by name; the order of the values in the token
-    never matters."""
+    The role with the most permissions wins. A permission that only comes
+    with another one the role holds is not counted (``approve`` and ``respond``
+    come with ``operate``: ``rbac.IMPLIED_PERMISSIONS``), so roles compare as
+    they did before those two existed. Roles with equally many are ordered
+    built-in roles first, in the order of ``rbac.ROLES`` (so operator comes
+    before approver, responder and auditor), then by name; the order of the
+    values in the token never matters."""
     from . import rbac
 
     def rank(role: str) -> tuple[int, int, str]:
         built_in = rbac.ROLES.index(role) if role in rbac.ROLES else len(rbac.ROLES)
-        return -len(rbac.permissions_for(role)), built_in, role
+        held = rbac.permissions_for(role)
+        came_with = frozenset().union(*(rbac.IMPLIED_PERMISSIONS.get(permission, ()) for permission in held))
+        return -len(held - came_with), built_in, role
 
     return min(set(roles), key=rank, default=None)
 

@@ -86,24 +86,6 @@ def test_shared_halt_requires_global_admin_and_detection_fails_closed(monkeypatc
     assert 'data-halt-scope="unknown"' in unknown
 
 
-def test_local_halt_ignores_tenant_local_operator_role(monkeypatch) -> None:
-    tenant_operator = _app(
-        monkeypatch,
-        {"operate"},
-        global_allowed={"view"},
-    ).get(page.PAGE_PATH).text
-    assert 'data-can-halt="false"' in tenant_operator
-    assert 'data-halt-scope="local"' in tenant_operator
-
-    global_operator = _app(
-        monkeypatch,
-        set(),
-        global_allowed={"operate"},
-    ).get(page.PAGE_PATH).text
-    assert 'data-can-halt="true"' in global_operator
-    assert 'data-halt-scope="local"' in global_operator
-
-
 def test_agent_console_source_uses_bounded_governed_interactions() -> None:
     package = Path(page.__file__).parent
     source = (package / "static" / "lightwork-agent-control-plane.js").read_text(

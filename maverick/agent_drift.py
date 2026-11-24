@@ -97,7 +97,7 @@ _REACTIONS = ("alert", "contain")
 #: was off, the agent was already contained, or Second Shift could not finish
 #: the check. They are not recorded, so an outage here cannot look like drift
 #: and time spent contained cannot keep an agent contained after release.
-_NOT_JUDGED_RULES = frozenset({"disabled", "contained", "screen_error",
+_NOT_JUDGED_RULES = frozenset({"disabled", "contained", "halted", "screen_error",
                                "approval_unavailable", "approval_backlog"})
 _APPROVAL_RULE = "approval_required"
 

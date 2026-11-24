@@ -1125,6 +1125,8 @@ def start_run(agent_id: str, run: dict, *, shield: Any | None = None) -> dict:
     with a restart marker. Schema: ``{title, summary?, department?}``."""
     if not enabled():
         raise ExternalAgentsError("external agents plane is disabled")
+    if _emergency_stop_on():
+        raise ExternalAgentsError("denied: the emergency stop is on; nothing is allowed until an administrator lifts it")
     from .agent_trust import decide_inbound, record_denied
     decision = decide_inbound(agent_id, enforced=True)
     if not decision.allowed:
@@ -1178,6 +1180,8 @@ def heartbeat(agent_id: str, goal_id: int) -> dict:
     refreshing its liveness anyway and gets reclaimed."""
     if not enabled():
         return {"continue": False, "reason": "external agents plane disabled"}
+    if _emergency_stop_on():
+        return {"continue": False, "reason": "the emergency stop is on; nothing is allowed until an administrator lifts it"}
     from .agent_trust import decide_inbound
     decision = decide_inbound(agent_id, enforced=True)
     if not decision.allowed:
@@ -1352,6 +1356,9 @@ def _screen_decision(
     if not enabled():
         return _screen_verdict(agent_id, tool, False, "disabled",
                                "external agents plane is disabled")
+    if _emergency_stop_on():
+        return _screen_verdict(agent_id, tool, False, "halted",
+                               "the emergency stop is on; nothing is allowed until an administrator lifts it")
     from .safety.tool_risk import risk_rank
     deny, meta, _decision, req_risk = _screen_admission(
         agent_id, tool, risk=risk, detail=detail, shield=shield)
@@ -1625,6 +1632,21 @@ def _approval_floor() -> str:
         return v if v in RISK_LEVELS else "high"
     except Exception:
         return "high"
+
+
+def _emergency_stop_on() -> bool:
+    """Whether the emergency stop is on. A stop that cannot be read counts as
+    on: an outside agent is refused, never waved through."""
+    from . import killswitch
+
+    try:
+        killswitch.check(fail_closed=True)
+    except killswitch.Halted:
+        return True
+    except Exception:
+        log.warning("external_agents: the emergency stop could not be read; refusing", exc_info=True)
+        return True
+    return False
 
 
 def _screen_verdict(agent_id: str, tool: str, allowed: bool, rule: str,

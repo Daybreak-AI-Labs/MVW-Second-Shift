@@ -28,7 +28,7 @@
         <td class="muted">{{ f.baseline if f.baseline is not none else '—' }}</td>
         <td>{{ f.current if f.current is not none else '—' }}</td>
         <td>{% if f.acknowledged %}<span class="muted">Acknowledged</span>{% else %}
-          <button type="button" class="btn btn--ghost" data-drift-ack="{{ f.key }}"{% if not can_operate %} disabled aria-disabled="true"{% endif %}>Acknowledge</button>{% endif %}</td>
+          <button type="button" class="btn btn--ghost" data-drift-ack="{{ f.key }}"{% if not can_respond %} disabled aria-disabled="true"{% endif %}>Acknowledge</button>{% endif %}</td>
       </tr>
       {% endfor %}
     </tbody>
@@ -36,7 +36,7 @@
   {% endif %}
   <div class="mv-row__actions" style="flex-wrap: wrap; margin-top: var(--space-3);">
     <button type="button" class="btn {{ 'btn--primary' if not drift.baseline else 'btn--ghost' }}" id="drift-approve"{% if not can_manage %} disabled aria-disabled="true"{% endif %}>{{ 'Approve a new baseline' if drift.baseline else 'Approve current behaviour as the baseline' }}</button>
-    <button type="button" class="btn btn--ghost" id="drift-check"{% if not can_operate %} disabled aria-disabled="true"{% endif %}>Check now</button>
+    <button type="button" class="btn btn--ghost" id="drift-check"{% if not can_respond %} disabled aria-disabled="true"{% endif %}>Check now</button>
   </div>
   {% if not can_manage %}<p class="muted" style="margin: var(--space-2) 0 0; font-size: var(--text-sm);">Only an administrator can approve a baseline.</p>{% endif %}
   {% endif %}

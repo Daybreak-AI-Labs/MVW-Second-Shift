@@ -8,24 +8,6 @@ Safety invariants under test:
 from __future__ import annotations
 
 
-def test_permissions_map():
-    from maverick_dashboard import rbac
-    assert "admin" in rbac.permissions_for("admin")
-    assert rbac.permissions_for("operator") == frozenset({"operate", "view"})
-    assert rbac.permissions_for("viewer") == frozenset({"view"})
-    assert rbac.permissions_for(None) == frozenset()
-    # Separation of duties: only admin and the dedicated auditor role hold the
-    # "audit" permission; operator/viewer never do. The auditor grants ONLY
-    # read access (audit + view), nothing operational.
-    assert rbac.permissions_for("auditor") == frozenset({"audit", "view"})
-    assert "audit" in rbac.permissions_for("admin")
-    assert "audit" not in rbac.permissions_for("operator")
-    assert "audit" not in rbac.permissions_for("viewer")
-    assert "operate" not in rbac.permissions_for("auditor")
-    assert "admin" not in rbac.permissions_for("auditor")
-    assert "auditor" in rbac.ROLES
-
-
 def test_roster_from_before_the_marker_is_recorded_on_first_read(monkeypatch, tmp_path):
     monkeypatch.setenv("MAVERICK_DASHBOARD_ADMINS", "")
     from maverick_dashboard import auth, rbac

@@ -49,7 +49,7 @@ def _halt_authority(request: Request) -> tuple[bool, str]:
     try:
         if _shared_halt_backend():
             return has_global_permission(request, "admin"), "cluster"
-        return has_global_permission(request, "operate"), "local"
+        return has_global_permission(request, "respond"), "local"
     except Exception:
         return False, "unknown"
 
@@ -85,7 +85,8 @@ def create_agent_control_plane_page_router(templates: Jinja2Templates) -> APIRou
                 "api_base": API_BASE,
                 "page_path": PAGE_PATH,
                 "csp_style_nonce": nonce,
-                "acp_can_operate": has_permission(request, "operate"),
+                # The page's suspend, resume, limits and group forms; the name is the template's.
+                "acp_can_operate": has_permission(request, "respond"),
                 "acp_can_audit": has_permission(request, "audit"),
                 "acp_can_admin": has_permission(request, "admin"),
                 "acp_can_halt": acp_can_halt,

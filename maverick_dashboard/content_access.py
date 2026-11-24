@@ -94,7 +94,7 @@ def may_read_employee_content(request, owner: str, *, resource_kind: str, resour
         return not owner
     if owner and actor == owner:
         return True
-    eligible = auth.has_permission(request, "operate") if resource_kind == "approval" else auth.has_global_permission(request, "admin")
+    eligible = auth.has_permission(request, "approve") if resource_kind == "approval" else auth.has_global_permission(request, "admin")
     if not enabled() or not eligible:
         return False
     if scim_groups.active_for_principal(actor) is False:
@@ -151,10 +151,10 @@ def can_read_approval(request, approval, world=None) -> bool:
     # notifications. Those projections must honor the same key scope as the
     # queue, even when the card belongs to the key's owner.
     if (auth.api_key_permissions(request) is not None
-            and not auth.has_permission(request, "operate", api_scope="approvals:decide")):
+            and not auth.has_permission(request, "approve", api_scope="approvals:decide")):
         return False
     if _governance_request(approval):
-        return auth.has_permission(request, "operate")
+        return auth.has_permission(request, "approve")
     if world is None:
         from ._shared import _world
         world = _world()

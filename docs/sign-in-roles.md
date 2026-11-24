@@ -9,16 +9,56 @@ of `~/.maverick/config.toml`).
 
 ## The roles
 
-| Role | Name in settings | View | Run work | Read the audit record | Administer |
-| --- | --- | --- | --- | --- | --- |
-| Administrator | `admin` | yes | yes | yes | yes |
-| Governance lead | `governance_lead` | yes | yes | yes | no |
-| Operator | `operator` | yes | yes | no | no |
-| Auditor | `auditor` | yes | no | yes | no |
-| Viewer | `viewer` | yes | no | no | no |
+| Role | Name in settings | View | Decide approvals | Stop and resume agents | Read the audit record | Administer |
+| --- | --- | --- | --- | --- | --- | --- |
+| Administrator | `admin` | yes | yes | yes | yes | yes |
+| Governance lead | `governance_lead` | yes | yes | yes | yes | no |
+| Operator | `operator` | yes | yes | yes | no | no |
+| Approver | `approver` | yes | yes | no | no | no |
+| Responder | `responder` | yes | no | yes | no | no |
+| Auditor | `auditor` | yes | no | no | yes | no |
+| Viewer | `viewer` | yes | no | no | no | no |
 
 A governance lead does the day-to-day work of an operator and can also read
 the audit record, without administrator rights.
+
+An operator can do everything an approver and a responder can. Use the two
+narrower roles when a person should do only one of those jobs.
+
+### Approver
+
+An approver decides the requests that wait for a person:
+
+- opens the **Approvals** page and sees what is waiting;
+- approves or rejects a request. The usual rules still apply: a high-risk
+  request needs an acknowledgement, and a person who asked for a high-risk
+  action leaves the decision to someone else when someone else can decide.
+
+An approver can look at the **Agent controls** and **Outside agents** pages
+but cannot change anything there: no pausing, no limits, no emergency stop.
+
+### Responder
+
+A responder acts on agents when something looks wrong:
+
+- on the **Agent controls** page: pause and resume an agent or a person,
+  limit an outside agent (its highest risk, spending, time and tools), and
+  pause or resume a group;
+- the emergency stop, **Stop all agents now** and **Resume all work**, on an
+  installation that keeps its data in its own local database. Where Second
+  Shift uses a shared PostgreSQL database the stop reaches every server that
+  shares it, and only an administrator can use it;
+- on an outside agent's page: acknowledge a reported change and run
+  **Check now**.
+
+A responder cannot open the **Approvals** page or decide a request.
+
+### What stays with an administrator
+
+Neither role, nor an operator, can isolate an agent or end its isolation,
+enroll or remove an outside agent, create an access key, reset an agent's
+spending, approve a drift baseline, or change settings. Those need an
+administrator, as before.
 
 ## 1. Define the app roles in Entra
 
@@ -65,6 +105,8 @@ left and the Second Shift role name on the right:
 "SecondShift.Admin" = "admin"
 "SecondShift.GovernanceLead" = "governance_lead"
 "SecondShift.Operator" = "operator"
+"SecondShift.Approver" = "approver"
+"SecondShift.Responder" = "responder"
 "SecondShift.Auditor" = "auditor"
 "SecondShift.Viewer" = "viewer"
 ```
@@ -88,11 +130,18 @@ Second Shift uses the first of these that applies:
 3. The role from their sign-in, as set up on this page.
 4. The default role (`[dashboard] default_role`; Viewer unless you change it).
 
-If a person holds several app roles, they get the one that allows the most.
-When two allow equally much, the one higher in the table above wins (Operator
-before Auditor); for any other roles, built-in roles come first and then the
-name that sorts first. To give someone both operator and auditor rights, use
-Governance lead.
+A person gets one role. If they hold several app roles, they get the one
+highest in the table above: Operator before Approver, Approver before
+Responder, Responder before Auditor. So a person who holds both the approver
+and the responder app role is an approver only. To give someone both jobs,
+use Operator; to give someone operator and auditor rights, use Governance
+lead.
+
+For any other role (one your installation defined itself), the role that
+allows the most wins. Deciding approvals (`approve`) and stopping agents
+(`respond`) are not counted separately for a role that has `operate`, because
+they come with it. When two roles allow equally much, built-in roles come
+first and then the name that sorts first.
 
 ## Good to know
 

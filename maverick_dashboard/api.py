@@ -67,7 +67,7 @@ def _require_halt_permission(request: Request) -> bool:
     else:
         # The local HALT file is tenant=None and stops every tenant in this
         # process. A tenant-local role must not gain deployment-wide authority.
-        require_global_permission(request, "operate")
+        require_global_permission(request, "respond")
     return shared
 
 
@@ -1083,10 +1083,10 @@ async def external_agent_unenroll(request: Request, agent_id: str) -> None:
 def list_approvals(request: Request, response: Response) -> dict:
     """Actions waiting for a person's decision.
 
-    The queue has no per-user owner, so listing it requires the ``operate``
+    The queue has no per-user owner, so listing it requires the ``approve``
     permission: the same gate as approving and rejecting.
     """
-    require_permission(request, "operate")
+    require_permission(request, "approve")
     response.headers["Cache-Control"] = "private, no-store"
     w = _world()
     from .content_access import can_read_approval
@@ -1100,7 +1100,7 @@ def list_approvals(request: Request, response: Response) -> dict:
 @router.get("/approvals/waiting-count")
 def approvals_waiting_count(request: Request, response: Response) -> dict:
     """How many requests this person can open and decide now."""
-    require_permission(request, "operate")
+    require_permission(request, "approve")
     response.headers["Cache-Control"] = "private, no-store"
     w = _world()
     from .content_access import can_read_approval
@@ -1377,8 +1377,8 @@ async def deny_approval(request: Request, approval_id: int) -> Response:
 @router.get("/approvals/{approval_id}/state")
 def approval_state(request: Request, approval_id: int) -> dict:
     """N-of-M quorum progress for an approval (status, approvers so far vs.
-    required) — the operator view of an in-flight multi-party decision."""
-    require_permission(request, "operate")
+    required) — the approver's view of an in-flight multi-party decision."""
+    require_permission(request, "approve")
     from .content_access import require_approval_content
     require_approval_content(request, approval_id)
     world = _world()

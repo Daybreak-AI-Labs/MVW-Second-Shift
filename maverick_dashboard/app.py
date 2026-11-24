@@ -247,7 +247,7 @@ def _nav_context_now(request: Request) -> dict:
         can_halt = (
             has_global_permission(request, "admin")
             if _shared_halt_backend()
-            else has_global_permission(request, "operate")
+            else has_global_permission(request, "respond")
         )
     except Exception:  # pragma: no cover -- shell rendering stays fail-closed
         can_halt = False
@@ -1706,7 +1706,7 @@ async def external_agent_scorecard(request: Request, agent_id: str) -> HTMLRespo
     return templates.TemplateResponse(
         request, "external_agent_detail.html",
         {"a": detail, "can_manage": can_manage, "access": access,
-         "can_operate": has_permission(request, "operate"),
+         "can_respond": has_permission(request, "respond"),
          "drift": await run_in_threadpool(_agent_drift_view, agent_id)},
         headers={"Cache-Control": "private, no-store"}
     )
@@ -1768,9 +1768,9 @@ def _approval_progress(approvals: list, request: Request) -> dict:
     the page instead of fetched once per card after load. Callers pass only
     the approvals the viewer may open (the page routes filter with
     ``can_read_approval``, the state API's content check); the state API's
-    operate floor applies here too.
+    approve floor applies here too.
     """
-    if not has_permission(request, "operate"):
+    if not has_permission(request, "approve"):
         return {}
     from maverick.safety.dual_control import allow_self_approval
 
@@ -1885,10 +1885,10 @@ def approvals_page(request: Request) -> HTMLResponse:
     """Actions waiting for a person to approve or reject.
 
     An outside agent's high-risk action waits here, and so does a request for
-    an access key when step-up approval is on. Gated on ``operate``, the same
+    an access key when step-up approval is on. Gated on ``approve``, the same
     as the API the page calls.
     """
-    require_permission(request, "operate")
+    require_permission(request, "approve")
     from .content_access import can_read_approval
 
     world = _world()

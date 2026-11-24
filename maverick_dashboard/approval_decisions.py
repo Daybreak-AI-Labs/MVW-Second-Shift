@@ -134,12 +134,12 @@ def _record_vote_or_raise(world, approval_id: int, status: str, who: str, *,
 
 
 def _may_decide(principal: str) -> bool:
-    """Holds ``operate`` in this workspace and is not deprovisioned."""
+    """Holds ``approve`` in this workspace and is not deprovisioned."""
     from . import rbac, scim_groups
     from .auth import role_for_principal
 
     try:
-        if "operate" not in rbac.permissions_for(role_for_principal(principal)):
+        if "approve" not in rbac.permissions_for(role_for_principal(principal)):
             return False
         return scim_groups.active_for_principal(principal) is not False
     except Exception:  # an unreadable roster lets nobody decide, so nobody counts
@@ -189,10 +189,10 @@ def eligible_approvers(world, approval) -> set[str]:
     """Everyone who could decide ``approval`` now, by the rules each surface
     already enforces.
 
-    On the Approvals page: people holding ``operate`` in this workspace who
+    On the Approvals page: people holding ``approve`` in this workspace who
     can open the request -- its owner, or a current, reviewed read grant for
     exactly this card (:func:`content_access.approval_readers`). In Slack or
-    Teams, where its card is posted: linked people holding ``operate``. A
+    Teams, where its card is posted: linked people holding ``approve``. A
     deprovisioned person never counts. Nobody here is invented: no new role,
     and a store that can't be read adds nobody."""
     from .content_access import approval_readers

@@ -448,7 +448,7 @@ def create_agent_control_plane_router() -> APIRouter:  # noqa: C901 - route-loca
     async def bulk_select(request: Request, body: BulkSelectIn):
         """Materialize an exact roster snapshot before any fleet mutation."""
 
-        require_permission(request, "operate")
+        require_permission(request, "respond")
         selection = await _call(
             acp.select_bulk,
             tenant=body.tenant,
@@ -463,7 +463,7 @@ def create_agent_control_plane_router() -> APIRouter:  # noqa: C901 - route-loca
         if body.verb in {"contain", "release"}:
             require_permission(request, "admin")
         else:
-            require_permission(request, "operate")
+            require_permission(request, "respond")
         selection = body.selection.to_core()
         result = await _bulk_mutation_call(
             f"bulk-{body.verb}",
@@ -528,7 +528,7 @@ def create_agent_control_plane_router() -> APIRouter:  # noqa: C901 - route-loca
 
     @router.post("/principals/suspend")
     async def opaque_suspend(request: Request, body: PrincipalReasonIn):
-        require_permission(request, "operate")
+        require_permission(request, "respond")
         result = await _mutation_call(
             "suspend",
             body.principal,
@@ -541,7 +541,7 @@ def create_agent_control_plane_router() -> APIRouter:  # noqa: C901 - route-loca
 
     @router.post("/principals/resume")
     async def opaque_resume(request: Request, body: PrincipalIn):
-        require_permission(request, "operate")
+        require_permission(request, "respond")
         result = await _mutation_call(
             "resume",
             body.principal,
@@ -593,7 +593,7 @@ def create_agent_control_plane_router() -> APIRouter:  # noqa: C901 - route-loca
 
     @router.post("/principals/attenuate")
     async def opaque_attenuate(request: Request, body: PrincipalAttenuateIn):
-        require_permission(request, "operate")
+        require_permission(request, "respond")
         result = await _mutation_call(
             "attenuate",
             body.principal,
@@ -616,7 +616,7 @@ def create_agent_control_plane_router() -> APIRouter:  # noqa: C901 - route-loca
 
     @router.post("/agents/{principal}/suspend")
     async def suspend(request: Request, principal: Principal, body: ReasonIn):
-        require_permission(request, "operate")
+        require_permission(request, "respond")
         result = await _mutation_call(
             "suspend",
             principal,
@@ -629,7 +629,7 @@ def create_agent_control_plane_router() -> APIRouter:  # noqa: C901 - route-loca
 
     @router.post("/agents/{principal}/resume")
     async def resume(request: Request, principal: Principal):
-        require_permission(request, "operate")
+        require_permission(request, "respond")
         result = await _mutation_call(
             "resume",
             principal,
@@ -666,7 +666,7 @@ def create_agent_control_plane_router() -> APIRouter:  # noqa: C901 - route-loca
 
     @router.post("/agents/{principal}/attenuate")
     async def attenuate(request: Request, principal: Principal, body: AttenuateIn):
-        require_permission(request, "operate")
+        require_permission(request, "respond")
         result = await _mutation_call(
             "attenuate",
             principal,

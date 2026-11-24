@@ -39,7 +39,12 @@ Early. What works today:
 - **Sign-in and roles.** OpenID Connect (for example Microsoft Entra ID), or a
   single break-glass token. With neither configured the app only answers on
   the local machine. A person's role can come from the app roles in their
-  sign-in token. See [docs/sign-in-roles.md](docs/sign-in-roles.md).
+  sign-in token. Besides administrator, operator, auditor and viewer there
+  are a governance lead, an approver (decides waiting requests and nothing
+  else) and a responder (pauses, resumes and limits agents, and uses the
+  emergency stop). See [docs/sign-in-roles.md](docs/sign-in-roles.md).
+- **Emergency stop.** While it is on, an outside agent is told no before it
+  acts, told to stop at its next heartbeat, and cannot start live work.
 - **Ekko work discovery, without its page.** The content-free desktop
   recorder, its store and repeated-work discovery, and the server API for a
   person's own consent and enrollment, sessions, importing an activity file,

@@ -55,6 +55,8 @@ _ROLE_LABELS = {
     "admin": "Administrator",
     "governance_lead": "Governance lead",
     "operator": "Operator",
+    "approver": "Approver",
+    "responder": "Responder",
     "auditor": "Auditor",
     "viewer": "Viewer",
     # The approval authority for suggested instruction changes (harness_refine).
@@ -66,6 +68,8 @@ _PERMISSION_LABELS = {
     "admin": "Administer",
     "audit": "Review audit trail",
     "operate": "Run work",
+    "approve": "Decide approvals",
+    "respond": "Stop and resume agents",
     "view": "View",
 }
 

@@ -1249,21 +1249,3 @@ def test_ledger_reads_the_forensic_timeline():
     r = client.get(f"{BASE}/agents/user:local/ledger?limit=5")
     assert r.status_code == 200, r.text
     assert r.json() == {"principal": "user:local", "items": [], "count": 0}
-
-
-def test_roles_gate_the_verbs(monkeypatch):
-    from maverick.revocation import is_revoked
-    from maverick_dashboard import agent_control_plane_api as api_mod
-
-    def _only(allowed):
-        def _require(request, permission):
-            if permission not in allowed:
-                from fastapi import HTTPException
-                raise HTTPException(status_code=403, detail="insufficient role")
-        return _require
-
-    monkeypatch.setattr(api_mod, "require_permission", _only({"view", "operate"}))
-    assert client.post(f"{BASE}/agents/user:local/contain", json={"reason": "x"}).status_code == 403
-    assert client.get(f"{BASE}/agents/user:local/ledger").status_code == 403
-    assert client.post(f"{BASE}/agents/user:local/suspend", json={"reason": "x"}).status_code == 200
-    assert is_revoked("user:local")

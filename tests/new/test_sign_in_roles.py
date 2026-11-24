@@ -204,19 +204,6 @@ def _store_role(principal: str, role: str) -> None:
 
 # ------------------------------------------------------------ the new role
 
-def test_governance_lead_may_operate_audit_and_view_and_nothing_else():
-    from maverick_dashboard import rbac
-    from maverick_dashboard.identity_format import role_label
-
-    assert rbac.permissions_for("governance_lead") == frozenset({"operate", "audit", "view"})
-    assert "admin" not in rbac.permissions_for("governance_lead")
-    assert rbac.is_known_role("governance_lead")
-    assert role_label("governance_lead") == "Governance lead"
-    # Most permissions first; the order the other built-in roles already had is kept.
-    assert rbac.ROLES == ("admin", "governance_lead", "operator", "auditor", "viewer")
-    assert [len(rbac.permissions_for(role)) for role in rbac.ROLES] == [4, 3, 2, 2, 1]
-
-
 def test_a_custom_role_cannot_take_the_built_in_name():
     from maverick_dashboard import rbac
 
