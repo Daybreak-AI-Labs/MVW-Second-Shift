@@ -96,6 +96,17 @@ class EpisodeSpend:
     cache_write_tokens: int = 0
 
 
+@dataclass(frozen=True)
+class AgentSpendGroup:
+    """Completed run costs grouped by agent, department and UTC month."""
+
+    owner: str
+    department: str | None
+    month: str
+    dollars: float
+    runs: int
+
+
 @dataclass
 class GoalEvent:
     id: int
