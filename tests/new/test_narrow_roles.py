@@ -496,10 +496,22 @@ def _own_high_risk_request(world, person: str) -> tuple[int, dict]:
     return approval_id, {"X-Second-Shift-Approval-Binding": card["binding_sha256"]}
 
 
-def test_a_responder_is_not_someone_else_who_could_approve(world, signed_in):
-    """The person who asked for a high-risk action leaves it to someone else
-    whenever someone else could decide it. A responder cannot, so they do not
-    count; another approver does."""
+def test_with_the_default_nobody_approves_their_own_high_risk_request(world, signed_in):
+    """By default ``separate_approver`` is ``always``: even the only approver
+    cannot approve a high-risk request they asked for."""
+    _write_roles({"approver": "approver", "responder": "responder", "viewer": "viewer", "auditor": "auditor"})
+    alone, binding = _own_high_risk_request(world, "approver")
+    approver = signed_in("approver")
+    assert approver.get(f"/api/v1/approvals/{alone}/state").json()["self_approval_counts"] is False
+    refused = approver.post(f"/api/v1/approvals/{alone}/approve", json={"acknowledged": True}, headers=binding)
+    assert refused.status_code == 403 and world.get_approval(alone).status == "pending"
+
+
+def test_a_responder_is_not_someone_else_who_could_approve(world, signed_in, monkeypatch):
+    """With ``separate_approver = "when_available"``, the person who asked for a
+    high-risk action leaves it to someone else whenever someone else could
+    decide it. A responder cannot, so they do not count; another approver does."""
+    monkeypatch.setenv("MAVERICK_SEPARATE_APPROVER", "when_available")
     _write_roles({"approver": "approver", "responder": "responder", "viewer": "viewer", "auditor": "auditor"})
     alone, binding = _own_high_risk_request(world, "approver")
     approver = signed_in("approver")

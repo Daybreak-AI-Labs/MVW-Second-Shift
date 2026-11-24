@@ -16,6 +16,9 @@
     {% if drift.last_observed_at %}<span class="badge">Last activity {{ drift.last_observed_at | datetime }}</span>{% endif %}
   </p>
   {% if drift.reason %}<p class="muted">{{ drift.reason }}</p>{% endif %}
+  {% if drift.learning_period and drift.baseline %}
+  <p class="muted" id="drift-learning">{% if drift.learning_period.active %}Learning period until {{ drift.learning_period.ends_at | datetime }}. Changes found until then are listed here but no alert is sent and the agent is not contained automatically. A high-severity change to its set-up on its home platform is always alerted.{% elif drift.learning_period.ends_at %}The learning period ended {{ drift.learning_period.ends_at | datetime }}; changes are now alerted.{% else %}There is no learning period; changes are alerted at once.{% endif %}</p>
+  {% endif %}
   {% if drift.state == 'no_baseline' %}
   <p class="muted">A baseline is this agent's normal: the tools it uses, how often it runs, what it costs and how it is set up. Approve one after it has worked normally for a while; from then on any move away from it is reported here.</p>
   {% endif %}
@@ -26,7 +29,7 @@
       {% for f in drift.findings %}
       <tr>
         <td><span class="badge {{ 'failure' if f.severity == 'high' and not f.acknowledged else '' }}">{{ _SEVERITY.get(f.severity, f.severity) }}</span></td>
-        <td>{{ f.summary }}</td>
+        <td>{{ f.summary }}{% if f.learning %} <span class="badge">Learning period</span>{% endif %}</td>
         {% if f.kind == 'config_changed' and f.source == 'discovery' %}
         <td class="muted">Approved set-up</td>
         <td>Current set-up</td>

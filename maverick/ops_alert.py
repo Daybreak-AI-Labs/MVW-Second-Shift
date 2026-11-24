@@ -184,7 +184,37 @@ def delivery_status() -> dict:
     }
 
 
+def warn_if_alerts_cannot_reach_anyone() -> str:
+    """At start-up, log a warning when outside-agent governance is on and alerts
+    are off or have no working channel: blocked agents and drift findings are
+    still recorded, but nobody is told. Returns the warning (empty when alerts
+    can reach someone). Never raises."""
+    try:
+        from . import external_agents
+
+        if not external_agents.enabled():
+            return ""
+        status = delivery_status()
+        if not status["enabled"]:
+            why = "alerts are switched off"
+        elif not status["channels"]:
+            why = "alerts are on but have no channel to go to"
+        elif not any(c.get("ready") for c in status["channels"]):
+            why = "no alert channel is ready"
+        else:
+            return ""
+    except Exception as e:  # noqa: BLE001 -- a warning never blocks start-up
+        log.debug("alert check at start-up failed: %s", type(e).__name__)
+        return ""
+    message = (f"Second Shift is governing outside agents but {why}, so nobody will be told when an agent "
+               "is blocked, drifts or a request is about to run out. Turn alerts on and set up Teams "
+               "or email (see the Alerts page).")
+    log.warning(message)
+    return message
+
+
 __all__ = [
     "alert",
     "alerts_enabled",
+    "warn_if_alerts_cannot_reach_anyone",
 ]

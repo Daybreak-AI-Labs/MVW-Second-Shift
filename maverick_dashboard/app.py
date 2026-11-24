@@ -419,6 +419,24 @@ async def _platform_check_loop() -> None:
         await asyncio.sleep(max(1, int(minutes)) * 60)
 
 
+async def _expiry_reminder_loop() -> None:
+    """Remind people before a waiting request or an access key runs out.
+
+    What was sent is recorded by the check itself, so a restart sends nothing
+    twice. A failed pass is logged and the loop carries on."""
+    await asyncio.sleep(30)
+    while True:
+        try:
+            from maverick import expiry_reminders
+
+            await run_in_threadpool(expiry_reminders.check_all)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.warning("scheduled expiry reminders failed", exc_info=True)
+        await asyncio.sleep(300)
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     """Start-up and shut-down for the web app.
@@ -445,7 +463,14 @@ async def _lifespan(app: FastAPI):
             warn_if_untrusted_proxy_config()
         except Exception:  # pragma: no cover -- a warning must never block startup
             pass
-        timers = [asyncio.create_task(_drift_check_loop()), asyncio.create_task(_platform_check_loop())]
+        try:
+            from maverick.ops_alert import warn_if_alerts_cannot_reach_anyone
+
+            warn_if_alerts_cannot_reach_anyone()
+        except Exception:  # pragma: no cover -- a warning must never block startup
+            pass
+        timers = [asyncio.create_task(_drift_check_loop()), asyncio.create_task(_platform_check_loop()),
+                  asyncio.create_task(_expiry_reminder_loop())]
         try:
             yield
         finally:

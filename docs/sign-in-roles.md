@@ -32,7 +32,8 @@ An approver decides the requests that wait for a person:
 - opens the **Approvals** page and sees what is waiting;
 - approves or rejects a request. The usual rules still apply: a high-risk
   request needs an acknowledgement, and a person who asked for a high-risk
-  action leaves the decision to someone else when someone else can decide.
+  action never approves it themselves, even when nobody else could (see
+  [defaults](defaults.md)).
 
 An approver can look at the **Agent controls** and **Outside agents** pages
 but cannot change anything there: no pausing, no limits, no emergency stop.

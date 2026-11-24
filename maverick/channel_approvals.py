@@ -294,7 +294,7 @@ def separate_approver_refusal(world: Any, approval: Any, who: str) -> str:
 
     Only the person who asked is ever refused, only for a High or Critical
     request with one approver, and only as ``[approval] separate_approver``
-    says: always, or (the default) whenever another person could decide it.
+    says: always (the default), or whenever another person could decide it.
     A publication bypass (``ALWAYS_SEPARATE_PROVENANCES``) is always refused.
     Rejecting is never refused. Every surface asks this one question: the
     Approvals page disables its Approve button with the sentence, and
