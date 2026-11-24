@@ -47,6 +47,7 @@ class RunResult:
     goal_id: int | None = None
     report_sent: bool = False
     report_error: str = ""
+    refusal_kind: str = ""  # why Second Shift said no (see governance.KINDS), when that is why the run stopped
 
 
 class _Stop(Exception):
@@ -58,6 +59,11 @@ def estimate_cost(definition: AgentDefinition, input_tokens: int, output_tokens:
     if m.input_price_per_million is None or m.output_price_per_million is None:
         return None
     return (input_tokens * m.input_price_per_million + output_tokens * m.output_price_per_million) / 1_000_000
+
+
+def declared_build(d: AgentDefinition) -> dict[str, str]:
+    """What the agent tells Second Shift about its own build, at the start of a run and again in its report."""
+    return {"version": d.version, "config_digest": d.config_digest, "model": d.model.deployment}
 
 
 def run_agent(
@@ -88,9 +94,10 @@ def run_agent(
                     f"Second Shift is not set up: {definition.governance.address_env} and {definition.governance.agent_key_env} "
                     "must both be set. This runtime does not act without Second Shift.")
             gov = Governance(address, key, transport=governance_transport, sleep=sleep, clock=clock)
-        result.goal_id = gov.start(definition.name)
+        result.goal_id = gov.start(definition.name, declared=declared_build(definition))
     except GovernanceError as exc:
         result.reason = str(exc)
+        result.refusal_kind = exc.kind
         result.seconds = clock() - began
         if gov is not None:
             gov.close()
@@ -182,6 +189,7 @@ def _handle_call(call: ToolCall, skills: dict[str, BoundSkill], d: AgentDefiniti
     decision = gov.screen(call.name, bound.risk, detail)
     if not decision.allowed:
         steps.append(f"Stopped before {call.name}: not allowed.")
+        result.refusal_kind = decision.kind
         raise _Stop(f"Second Shift did not allow {call.name}: {decision.reason}")
     result.tool_calls += 1
     result.tools.append(call.name)
@@ -217,7 +225,7 @@ def _report(d: AgentDefinition, gov: Governance, result: RunResult, steps: list[
         "output_tokens": result.output_tokens,
         "tool_calls": result.tool_calls,
         "tools": result.tools,
-        "declared": {"version": d.version, "config_digest": d.config_digest, "model": d.model.deployment},
+        "declared": declared_build(d),
         "duration_seconds": round(result.seconds, 3),
         "idempotency_key": uuid.uuid4().hex,
     }
@@ -229,4 +237,4 @@ def _report(d: AgentDefinition, gov: Governance, result: RunResult, steps: list[
         log.warning("the run report could not be sent")
 
 
-__all__ = ["RunResult", "estimate_cost", "run_agent"]
+__all__ = ["RunResult", "declared_build", "estimate_cost", "run_agent"]

@@ -1193,6 +1193,13 @@ def start_run(agent_id: str, run: dict, *, shield: Any | None = None) -> dict:
     from .audit import EventKind, audit_event
     audit_event(EventKind.EXTERNAL_RUN_STARTED, agent="external_agents",
                 goal_id=gid, external_agent=agent_id)
+    declared = run.get("declared")
+    if declared:  # the agent's own word about its build, noted before its first action
+        try:
+            from . import agent_drift
+            agent_drift.observe_declared(agent_id, declared)
+        except Exception:
+            log.debug("external_agents: drift observation failed", exc_info=True)
     from .world_model import reclaim_window_seconds
     window = reclaim_window_seconds()
     # The reclaim window is a deadline, not a heartbeat cadence. Returning
@@ -1695,13 +1702,33 @@ def _emergency_stop_on() -> bool:
     return False
 
 
+#: What a refusal means to the agent, so it can tell "no" from "try later":
+#: ``denied`` (not allowed; asking again will not change it), ``approval_required``
+#: (a person must decide), ``halted`` (the emergency stop), ``contained`` (held
+#: for review), ``limit`` (a budget or backlog; try later) and ``unavailable``
+#: (Second Shift could not decide; try later). Any rule not listed is ``denied``.
+_REFUSAL_KINDS = {
+    "approval_required": "approval_required", "halted": "halted", "contained": "contained",
+    "budget": "limit", "approval_backlog": "limit", "execution_backlog": "limit",
+    "disabled": "unavailable", "screen_error": "unavailable", "approval_unavailable": "unavailable",
+    "not_enrolled": "unavailable",
+}
+
+
+def refusal_kind(rule: str) -> str:
+    return _REFUSAL_KINDS.get(str(rule or ""), "denied")
+
+
 def _screen_verdict(agent_id: str, tool: str, allowed: bool, rule: str,
                     reason: str) -> dict:
     from .audit import EventKind, audit_event
     audit_event(EventKind.EXTERNAL_ACTION_SCREENED, agent="external_agents",
                 external_agent=agent_id, tool=tool, allowed=allowed,
                 rule=rule, reason=reason)
-    return {"allowed": allowed, "rule": rule, "reason": reason}
+    verdict = {"allowed": allowed, "rule": rule, "reason": reason}
+    if not allowed:
+        verdict["kind"] = refusal_kind(rule)
+    return verdict
 
 
 def _deny_and_count(agent_id: str, tool: str, rule: str, reason: str) -> dict:

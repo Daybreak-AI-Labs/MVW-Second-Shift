@@ -270,3 +270,12 @@ def test_files_made_by_skills_are_in_the_result(tmp_path):
     result, _, fake, _ = go(tmp_path, [openai_reply(calls=[("create_word_document", args)]), openai_reply("made it")], skills=docs)
     assert result.outcome == "success" and len(result.files) == 1 and result.files[0].path.exists()
     assert fake.screened[0]["risk"] == "low" and "Word document" in fake.screened[0]["detail"]
+
+
+def test_the_run_start_declares_the_build_and_a_refusal_kind_reaches_the_result(tmp_path):
+    fake = FakeSecondShift()
+    fake.screens = lambda tool, body: {"allowed": False, "kind": "limit", "rule": "budget", "reason": "over the monthly budget"}
+    result, _, fake, _ = go(tmp_path, [openai_reply(calls=[("fetch_web_page", {"url": "https://example.com/"})])], fake=fake)
+    start = next(body for method, path, body in fake.calls if path == "/runs/start")
+    assert start["declared"] == fake.report["declared"] and start["declared"]["model"] == "gpt-test"
+    assert result.refusal_kind == "limit"

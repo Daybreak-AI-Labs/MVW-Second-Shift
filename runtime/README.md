@@ -126,6 +126,33 @@ Container Apps (point the ingress and the health probe at port 8080 and `/ping`)
 
 AgentCore needs an arm64 image; the repository does not build one.
 
+## The skills service (for Microsoft Foundry)
+
+`python -m second_shift_runtime serve-skills --definition agent.json` serves each skill of the definition as `POST /skills/<name>`
+(JSON body = the skill's arguments) with the same image and the same governance, for an agent that runs on Foundry, which has no
+step where Second Shift can check a tool call first. The calls are screened with Second Shift as the agent before they run;
+a refusal is an HTTP error (`denied` 403, `contained` 403, `approval_required` 408, `halted` 503, `limit` 429, `unavailable` 503)
+whose JSON body has `kind`, `reason` and `retry_later`. A skill error is a normal 200 with `status: "error"`.
+
+* The caller's key goes in the `x-api-key` header and is read from the variable named by `--inbound-key-env` (default
+  `SECOND_SHIFT_SKILLS_KEY`); without it the service does not start. `GET /ping` needs no key; every other route checks the key
+  before anything else. The agent's Second Shift key comes from the variable the definition names.
+* `python -m second_shift_runtime skills-openapi --definition agent.json --server-url https://...` prints the OpenAPI 3.0 file Foundry's
+  OpenAPI tool takes (operationIds of letters and `_`, JSON bodies, one apiKey scheme). With `--server-url` given to `serve-skills`,
+  `GET /openapi.json` serves it to the key holder.
+* Runs: one run is open at a time. It opens at the first call and ends (and is reported) after `--run-idle-seconds` (default 120) with
+  no call, after `limits.max_seconds`, or when Second Shift says stop. `limits.max_tool_calls` is the most calls in one run (kind
+  `limit` beyond it). The report has cost 0: the model runs on the platform hosting the agent.
+* `--approval-wait-seconds` (default 60) is how long a call waits for a person; after that the answer is 408 `approval_required` and
+  the agent may ask again later.
+
+## Why Second Shift said no
+
+A screening refusal carries `kind` (`denied`, `approval_required`, `halted`, `contained`, `limit`, `unavailable`), kept on the
+decision (`Decision.kind`) and, when it stopped a run, in `RunResult.refusal_kind`. An older Second Shift sends none; the kind is then
+read from the reason (the emergency stop and containment) and otherwise is `denied`. A run is opened with the same `declared` build the
+report carries.
+
 ## Environment variables
 
 Names are chosen in the definition; these are the ones used in the examples.

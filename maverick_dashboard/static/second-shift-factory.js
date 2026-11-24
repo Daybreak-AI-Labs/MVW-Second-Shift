@@ -1,4 +1,4 @@
-/* The agent factory pages: the new-agent flow and one agent's page (editor, test cases, tests, release).
+/* The agent factory pages: the new-agent flow and one agent's page (editor, test cases, tests, release, export).
    Everything that came from a person or a model is put on the page with textContent, never as markup. */
 (function () {
   'use strict';
@@ -26,6 +26,119 @@
   function badge(text, kind) { return E('span', 'badge' + (kind ? ' ' + kind : ''), text); }
   function field(label, input) {
     var l = E('label'); l.appendChild(document.createTextNode(label)); l.appendChild(input); return l;
+  }
+
+  /* ---- export -------------------------------------------------------------------------------------------- */
+
+  var TARGETS = [
+    { id: 'azure', title: 'Azure container', needs: 'An Azure subscription with a Container Apps environment, a Key Vault and a container registry. The package builds the image in your registry and creates one Container App with its own managed identity.' },
+    { id: 'aws', title: 'AWS Bedrock AgentCore container', needs: 'An AWS account in a Region where Bedrock AgentCore is available, Docker and the AWS CLI. The package builds an ARM64 image for Amazon ECR and creates the AgentCore runtime; keys are read from AWS Secrets Manager.' },
+    { id: 'foundry', title: 'Microsoft Foundry agent', needs: 'A Foundry project with a model deployment, and the skills service running in Azure (the package has it). The agent’s only tools are the skills service, which asks Second Shift before every call.' }
+  ];
+
+  function releasedVersion() {
+    var found = null;
+    agent.versions.forEach(function (v) { if (v.state === 'released') found = v; });
+    return found;
+  }
+
+  function downloadZip(out) {
+    var raw = atob(out.package_base64), bytes = new Uint8Array(raw.length);
+    for (var i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+    var url = URL.createObjectURL(new Blob([bytes], { type: 'application/zip' }));
+    var a = document.createElement('a'); a.href = url; a.download = out.filename;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+  }
+
+  function showKey(box, out) {
+    clear(box);
+    if (!out.key) return;
+    var k = out.key;
+    var p = E('p', null, 'The agent’s Second Shift access key. This is the only time it is shown. It replaces the agent’s earlier key, which no longer works.');
+    var code = E('input'); code.type = 'text'; code.readOnly = true; code.value = k.value; code.setAttribute('aria-label', 'Access key'); code.style.width = '100%';
+    var copy = E('button', 'btn btn--ghost', 'Copy the key'); copy.type = 'button';
+    copy.addEventListener('click', function () { window.mvCopy(k.value); });
+    box.appendChild(p); box.appendChild(code); box.appendChild(copy);
+    k.where_to_store.forEach(function (w) { box.appendChild(E('p', 'muted', w)); });
+    box.appendChild(E('p', 'muted', 'It is not in the package you downloaded. Anyone with this key can act as the agent.'));
+  }
+
+  function renderExport() {
+    var box = document.getElementById('fx-export'); if (!box) return;
+    clear(box);
+    var v = releasedVersion();
+    if (!v) { box.appendChild(E('p', 'muted', 'Only a released version can be exported. Release this agent first.')); return; }
+    box.appendChild(E('p', null, 'Download version ' + v.number + ' as a package you deploy yourself. Each package holds exactly this version’s definition and never a secret. The agent is governed by Second Shift from its first action in all three places.'));
+    if (!perms.admin) { box.appendChild(E('p', 'muted', 'Exporting needs the administrator role.')); return; }
+    TARGETS.forEach(function (t) {
+      var card = E('div', 'panel'); card.id = 'fx-export-' + t.id; card.style.marginTop = 'var(--space-2)';
+      card.appendChild(E('h3', null, t.title));
+      card.appendChild(E('p', 'muted', t.needs));
+      var urlIn, connIn;
+      if (t.id === 'foundry') {
+        urlIn = E('input'); urlIn.type = 'url'; urlIn.placeholder = 'https://your-skills-service.example.com'; urlIn.id = 'fx-skills-url';
+        connIn = E('input'); connIn.type = 'text'; connIn.placeholder = '/subscriptions/.../connections/skills-key'; connIn.id = 'fx-connection-id';
+        card.appendChild(field('Address of the skills service (optional for a download; the README says where it goes)', urlIn));
+        card.appendChild(field('Project connection resource id (optional for a download)', connIn));
+      }
+      var mint = E('input'); mint.type = 'checkbox'; mint.id = 'fx-mint-' + t.id;
+      var label = E('label'); label.appendChild(mint); label.appendChild(document.createTextNode(' Make a new access key for the agent and show it once. The agent’s current key stops working.'));
+      card.appendChild(label);
+      var keyBox = E('div'); keyBox.style.marginTop = 'var(--space-2)';
+      var btn = E('button', 'btn btn--primary', 'Download the package'); btn.type = 'button'; btn.id = 'fx-download-' + t.id;
+      btn.addEventListener('click', async function () {
+        if (mint.checked && !(await window.mvConfirm('Make a new access key for ' + agent.name + '? Its current key stops working at once, so anything using it must be given the new one.', { okText: 'Make the key and download', danger: true }))) return;
+        btn.disabled = true;
+        try {
+          var out = await api('POST', '/api/v1/factory/agents/' + encodeURIComponent(agent.id) + '/versions/' + v.number + '/exports/' + t.id,
+            { mint_key: mint.checked, skills_url: urlIn ? urlIn.value.trim() : '', connection_id: connIn ? connIn.value.trim() : '' }, 'make the package');
+          downloadZip(out); showKey(keyBox, out); mint.checked = false;
+          window.mvToast('The package was downloaded.');
+        } catch (e) { window.mvToast(e.message, { error: true }); }
+        btn.disabled = false;
+      });
+      card.appendChild(btn); card.appendChild(keyBox);
+      if (t.id === 'foundry') card.appendChild(foundryPush(v, urlIn, connIn));
+      box.appendChild(card);
+    });
+    box.appendChild(E('p', 'muted', 'Pushing straight to Azure Container Apps or AWS is not built in this version: download the package and follow its README.'));
+  }
+
+  function foundryPush(v, urlIn, connIn) {
+    var wrap = E('div'); wrap.id = 'fx-push'; wrap.style.marginTop = 'var(--space-3)';
+    var f = status.foundry_push || {};
+    wrap.appendChild(E('h4', null, 'Push to Foundry'));
+    if (!f.allowed) {
+      wrap.appendChild(E('p', 'muted', 'Pushing to Foundry is turned off. An administrator can turn it on with allow_push = true in the [factory.foundry] settings. Until then, download the package and follow its README.'));
+      return wrap;
+    }
+    if (!f.ready) {
+      wrap.appendChild(E('p', 'error', 'Pushing to Foundry is on but not set up yet:'));
+      var ul = E('ul'); (f.problems || []).forEach(function (x) { ul.appendChild(E('li', null, x)); }); wrap.appendChild(ul);
+      return wrap;
+    }
+    var name = agent.foundry_agent_name;
+    wrap.appendChild(E('p', 'muted', 'Second Shift signs in with its own credentials and creates the agent ' + name + ' in the project ' + f.project + '. It needs the skills service address and the project connection above. The request is recorded in the audit log and is sent once.'));
+    var mode = E('select'); mode.id = 'fx-push-mode';
+    [['create', 'Create a new agent'], ['new_version', 'Add a version to the existing agent']].forEach(function (m) { var o = E('option', null, m[1]); o.value = m[0]; mode.appendChild(o); });
+    wrap.appendChild(field('What to do', mode));
+    if (agent.foundry) wrap.appendChild(E('p', 'muted', 'Pushed before as ' + agent.foundry.agent + ' in ' + agent.foundry.project + ' on ' + when(agent.foundry.pushed_at) + '.'));
+    var go = E('button', 'btn btn--primary', 'Push to Foundry'); go.type = 'button'; go.id = 'fx-push-go';
+    go.addEventListener('click', async function () {
+      var verb = mode.value === 'create' ? 'Create the agent ' + name + ' in the project ' + f.project : 'Add version ' + v.number + ' to the agent ' + name + ' in the project ' + f.project;
+      if (!(await window.mvConfirm(verb + '? Second Shift sends this once and does not retry. You cannot undo it from here.', { okText: 'Push to Foundry' }))) return;
+      go.disabled = true;
+      try {
+        var out = await api('POST', '/api/v1/factory/agents/' + encodeURIComponent(agent.id) + '/versions/' + v.number + '/push/foundry',
+          { confirm_project: f.project, confirm_agent: name, skills_url: urlIn.value.trim(), connection_id: connIn.value.trim(), mode: mode.value }, 'push to Foundry');
+        window.mvToast(out.message);
+        refresh();
+      } catch (e) { window.mvToast(e.message, { error: true }); }
+      go.disabled = false;
+    });
+    wrap.appendChild(go);
+    return wrap;
   }
 
   /* ---- the editor ---------------------------------------------------------------------------------------- */
@@ -166,7 +279,7 @@
     document.getElementById('fx-title').textContent = agent.name;
     var sub = 'Version ' + t.number + ' · ' + t.state_label + ' · identity ' + agent.agent_id;
     document.getElementById('fx-subtitle').textContent = sub;
-    renderRelease(t); renderTests(t);
+    renderRelease(t); renderTests(t); renderExport();
     if (!partial) { renderEditor(t); renderCases(t); renderVersions(); }
     var running = t.tests && t.tests.status === 'running';
     if (running && !poll) poll = setInterval(refresh, 2000);

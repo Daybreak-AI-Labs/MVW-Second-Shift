@@ -190,3 +190,54 @@ def test_background_beats_notice_a_stop():
         time.sleep(0.01)
     gov.close()
     assert "contained" in gov.stop_reason
+
+
+# --- refusal kinds and the build declared at start ------------------------------------------------------
+
+@pytest.mark.parametrize("answer,kind", [
+    ({"allowed": False, "kind": "limit", "reason": "over budget"}, "limit"),
+    ({"allowed": False, "kind": "unavailable", "reason": "try later"}, "unavailable"),
+    ({"allowed": False, "kind": "halted", "reason": "the emergency stop is on"}, "halted"),
+    ({"allowed": False, "kind": "made-up", "reason": "no"}, "denied"),                      # an unknown kind is "no"
+    ({"allowed": False, "reason": "the emergency stop is on"}, "halted"),                   # an older Second Shift: read the reason
+    ({"allowed": False, "reason": "agent is contained pending review"}, "contained"),
+    ({"allowed": False, "reason": "tool not permitted"}, "denied"),
+])
+def test_a_refusal_carries_its_kind(answer, kind):
+    fake = FakeSecondShift()
+    fake.screens = lambda tool, body: answer
+    gov, _ = make(fake)
+    decision = gov.screen("t", "low", "d")
+    assert not decision.allowed and decision.kind == kind
+
+
+def test_an_allowed_decision_has_no_kind_and_failures_to_decide_are_unavailable():
+    fake = FakeSecondShift()
+    gov, _ = make(fake)
+    assert gov.screen("t", "low", "d").kind == ""
+    fake.unreachable = True
+    assert gov.screen("t", "low", "d").kind == "unavailable"
+
+
+def test_an_approval_wait_that_runs_out_is_approval_required_and_a_person_saying_no_is_denied():
+    from test_loop import approval_fake
+
+    gov, _ = make(approval_fake("pending"), approval_wait=10.0, poll_interval=3.0)
+    assert gov.screen("t", "low", "d").kind == "approval_required"
+    gov, _ = make(approval_fake("denied"))
+    assert gov.screen("t", "low", "d").kind == "denied"
+
+
+def test_start_sends_the_declared_build_only_when_given():
+    fake = FakeSecondShift()
+    gov, _ = make(fake)
+    gov.start("x", declared={"version": "1", "config_digest": "d", "model": "m"})
+    assert fake.calls[0][2]["declared"] == {"version": "1", "config_digest": "d", "model": "m"}
+
+
+def test_a_refused_start_keeps_the_kind():
+    fake = FakeSecondShift()
+    fake.start_status = 403
+    with pytest.raises(GovernanceError) as seen:
+        make(fake)[0].start("x")
+    assert seen.value.kind == "contained"

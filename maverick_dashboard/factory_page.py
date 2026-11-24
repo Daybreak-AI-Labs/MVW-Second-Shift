@@ -11,7 +11,7 @@ import logging
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
@@ -56,6 +56,21 @@ class CaseIn(_Strict):
     checks: list[dict[str, Any]] = Field(default_factory=list, max_length=20)
 
 
+class ExportIn(_Strict):
+    mint_key: bool = False
+    skills_url: str = Field("", max_length=300)
+    connection_id: str = Field("", max_length=500)
+    approval_id: int | None = Field(None, ge=1)
+
+
+class PushIn(_Strict):
+    confirm_project: str = Field("", max_length=200)
+    confirm_agent: str = Field("", max_length=200)
+    skills_url: str = Field("", max_length=300)
+    connection_id: str = Field("", max_length=500)
+    mode: str = Field("create", max_length=20)
+
+
 def _who(request: Request) -> str:
     return caller_principal(request) or "operator"
 
@@ -92,7 +107,7 @@ def page(request: Request, name: str, **context: Any) -> HTMLResponse:
 
 
 def status_view() -> dict[str, Any]:
-    from maverick.factory import definitions, settings, store
+    from maverick.factory import definitions, foundry_push, settings, store
 
     if not available():
         return {"installed": False}
@@ -103,7 +118,7 @@ def status_view() -> dict[str, Any]:
             "max_test_cases": s.max_test_cases, "max_test_run_cost_dollars": s.max_test_run_cost_dollars,
             "max_test_run_seconds": s.max_test_run_seconds, "max_case_seconds": s.max_case_seconds,
             "check_kinds": store.CHECK_KINDS,
-            "default_limits": definitions.default_limits(s)}
+            "default_limits": definitions.default_limits(s), "foundry_push": foundry_push.status()}
 
 # ---- pages ---------------------------------------------------------------------------------------------------
 
@@ -314,6 +329,53 @@ async def api_retire(request: Request, fac_id: str) -> dict:
 
     try:
         return await run_in_threadpool(lambda: views.agent_view(release.retire(fac_id, _who(request))))
+    except Exception as exc:
+        raise _fail(exc) from exc
+
+
+@router.post("/api/v1/factory/agents/{fac_id}/versions/{number}/exports/{target}")
+
+
+async def api_export(request: Request, fac_id: str, number: int, target: str, body: ExportIn) -> JSONResponse:
+    """A download for one place the released version can run (Azure, AWS or Foundry), and, when asked, a new access
+    key for the agent, shown once in this answer. Needs ``admin``."""
+    require_permission(request, "admin")
+    require_installed()
+    from maverick import external_agents as xa
+    from maverick.factory import export
+
+    from .approval_authority import require_approval_authority
+
+    def run() -> dict:
+        from maverick.factory import store
+
+        authority = require_approval_authority(request, action="external_agents.credential_mint",
+                                               resource=f"{store.get(fac_id)['agent_id']}:{export.KEY_SURFACE}") if body.mint_key else None
+        return export.export_agent(fac_id, number, target, _who(request), mint_key=body.mint_key, skills_url=body.skills_url,
+                                   connection_id=body.connection_id, mint_authority=authority, mint_approval_id=body.approval_id)
+
+    try:
+        return JSONResponse(await run_in_threadpool(run), headers=NO_STORE)
+    except xa.MintApprovalPending as exc:
+        return JSONResponse({"detail": str(exc), "status": "approval_required", "approval_id": exc.approval_id}, status_code=409, headers=NO_STORE)
+    except Exception as exc:
+        raise _fail(exc) from exc
+
+
+@router.post("/api/v1/factory/agents/{fac_id}/versions/{number}/push/foundry")
+
+
+async def api_push_foundry(request: Request, fac_id: str, number: int, body: PushIn) -> dict:
+    """Create the agent in the configured Microsoft Foundry project. Off unless ``[factory.foundry] allow_push`` is true.
+    Needs ``admin``; the request must name the project and agent; it is audited and never retried."""
+    require_permission(request, "admin")
+    require_installed()
+    from maverick.factory import foundry_push
+
+    try:
+        return await run_in_threadpool(lambda: foundry_push.push(
+            fac_id, number, _who(request), confirm_project=body.confirm_project, confirm_agent=body.confirm_agent,
+            skills_url=body.skills_url, connection_id=body.connection_id, mode=body.mode))
     except Exception as exc:
         raise _fail(exc) from exc
 

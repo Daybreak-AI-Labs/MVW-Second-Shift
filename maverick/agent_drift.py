@@ -547,6 +547,16 @@ def observe_run(agent_id: str, *, cost_dollars: float = 0.0, input_tokens: int =
     _observe(agent_id, now, note)
 
 
+def observe_declared(agent_id: str, declared: dict | None, *, now: float | None = None) -> None:
+    """Note the build an agent says it is (``version``, ``config_digest``, ``model``) when it opens a run,
+    before it has done anything. Counts nothing else. Never raises; a no-op when drift detection is off."""
+    def note(record: dict, moment: float) -> bool:
+        _note_declared(record, declared, moment)
+        return isinstance(declared, Mapping)
+
+    _observe(agent_id, now, note)
+
+
 def observe_discovered(agent_id: str, *, version_digest: str, binding_strength: str = "",
                        source: str = "", now: float | None = None,
                        description: Mapping[str, Any] | None = None) -> None:

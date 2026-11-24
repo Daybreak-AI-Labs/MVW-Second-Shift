@@ -155,7 +155,7 @@ def _back_to_tested(fac_id: str, number: int, who: str, why: str, *, outcome: st
     store.change(fac_id, who, "release_returned", apply)
 
 
-def _enroll(record: dict[str, Any], version: dict[str, Any], approvers: list[str]) -> dict[str, Any]:
+def _enroll(record: dict[str, Any], version: dict[str, Any], approvers: list[str], external_ref: str | None = None) -> dict[str, Any]:
     """Enroll (or update) the agent as an outside agent. Tools are its skills with their ratings; the wall time is the
     definition's own; the highest rating is the riskiest action allowed."""
     from maverick import external_agents
@@ -169,7 +169,7 @@ def _enroll(record: dict[str, Any], version: dict[str, Any], approvers: list[str
             record["agent_id"], PLATFORM, description=str(raw.get("description") or raw["name"])[:500],
             owner=str(record["created_by"]), allow_tools=[f"{n}:{r}" for n, r in sorted(risks.items())], deny_tools=removed or None,
             max_risk=defs.highest_risk(risks), max_wall_seconds=float(raw["limits"]["max_seconds"]),
-            enrolled_by=", ".join(approvers))
+            enrolled_by=", ".join(approvers), external_ref=external_ref)
     except external_agents.ExternalAgentsError as exc:
         raise FactoryError(f"The agent was approved but could not be enrolled: {exc}", 409) from exc
     return summary

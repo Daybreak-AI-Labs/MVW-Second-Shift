@@ -127,6 +127,9 @@ class ExternalRunStartIn(BaseModel):
     title: str = Field(min_length=1, max_length=500)
     summary: str = Field(default="", max_length=4000)
     department: str = Field(default="", max_length=100)
+    # The agent's own statement of its build, as in a run report: drift knows
+    # it before the first action.
+    declared: ExternalDeclaredIn | None = None
 
 
 class ExternalRunFinishIn(BaseModel):
@@ -396,6 +399,17 @@ _OPENAPI: dict = {
                             "reason": {"type": "string"},
                             "requires_approval": {"type": "boolean"},
                             "approval_id": {"type": "integer"},
+                            "kind": {
+                                "type": "string",
+                                "enum": ["denied", "approval_required", "halted",
+                                         "contained", "limit", "unavailable"],
+                                "description": "Present when allowed is false. denied: not "
+                                               "allowed, asking again will not change it. "
+                                               "approval_required: wait for a person. halted: "
+                                               "the emergency stop is on. contained: held for "
+                                               "review. limit: a budget or backlog, try "
+                                               "later. unavailable: Second Shift could not "
+                                               "decide, try later."},
                         }}}}}},
             },
         },
@@ -460,6 +474,14 @@ _OPENAPI: dict = {
                             "title": {"type": "string"},
                             "summary": {"type": "string"},
                             "department": {"type": "string"},
+                            "declared": {
+                                "type": "object",
+                                "description": "What the agent says about its own build, "
+                                               "noted before its first action. A change from "
+                                               "the approved baseline is reported as drift.",
+                                "properties": {"version": {"type": "string"},
+                                               "config_digest": {"type": "string"},
+                                               "model": {"type": "string"}}},
                         }}}}},
                 "responses": {"201": {"description": "Opened", "content": {
                     "application/json": {"schema": {

@@ -3,6 +3,8 @@ export interface RunStart {
   title: string;
   summary?: string;
   department?: string;
+  /** Your build, told to Second Shift before the first action so drift knows it. */
+  declared?: { version: string; config_digest: string; model: string };
 }
 export interface RunResult {
   outcome: "success" | "failure";
