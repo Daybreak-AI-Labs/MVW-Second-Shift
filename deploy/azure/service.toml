@@ -1,0 +1,11 @@
+[kms]
+provider = "azure"
+
+[auth.oidc.role_map]
+"SecondShift.Admin" = "admin"
+"SecondShift.GovernanceLead" = "governance_lead"
+"SecondShift.Operator" = "operator"
+"SecondShift.Approver" = "approver"
+"SecondShift.Responder" = "responder"
+"SecondShift.Auditor" = "auditor"
+"SecondShift.Viewer" = "viewer"
