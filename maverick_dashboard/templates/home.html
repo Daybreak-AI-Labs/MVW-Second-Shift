@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %}Home · Second Shift{% endblock %}
+{% block content %}
+  {#- What needs the signed-in person today. The page only shows: every item
+      links to the page where it is dealt with. A section whose source could
+      not be read says so in one line; the others still show. -#}
+  <h1 class="page-title">Home</h1>
+  <p class="page-subtitle">What needs you today, most serious first. Each item opens the place where you deal with it.</p>
+
+  <div class="panel" id="home-summary">
+    <p style="margin: 0;">
+      {% if home.attention %}<span class="badge failure">{{ home.attention }} {{ 'item needs' if home.attention == 1 else 'items need' }} you</span>
+      {% elif home.all_clear %}<span class="badge active">All clear</span>
+      {% else %}<span class="badge pending">Some things could not be read</span>{% endif %}
+      {% if home.can_approve %}<a class="btn btn--ghost" href="/approvals">Approvals</a>{% endif %}
+      <a class="btn btn--ghost" href="/external-agents">Outside agents</a>
+      {% if home.can_audit %}<a class="btn btn--ghost" href="/audit">Audit trail</a>{% endif %}
+    </p>
+  </div>
+
+  {% for line in home.failed %}
+  <div class="panel" role="status"><p style="margin: 0;"><span class="badge pending">Not shown</span> {{ line }} An administrator should look at the server log.</p></div>
+  {% endfor %}
+
+  {% if home.all_clear %}
+  <div class="panel" id="home-all-clear">
+    <div class="mv-empty">
+      <p class="mv-empty__title">Nothing needs you right now</p>
+      <p class="mv-empty__body">{% if home.watching %}Second Shift is watching {{ home.watching | join(', ') }}. It will show here as soon as something needs you.{% else %}Nothing is being watched yet. Once outside agents are turned on and connected, anything that needs you shows here.{% endif %}</p>
+    </div>
+  </div>
+  {% endif %}
+
+  {% for section in home.sections if section.lines %}
+  <div class="section-head"><h2 id="home-{{ section.key }}-title">{{ section.title }}</h2></div>
+  <div class="panel" id="home-{{ section.key }}" aria-labelledby="home-{{ section.key }}-title">
+    <ul style="list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-3);">
+      {% for item in section.lines %}
+      <li data-severity="{{ item.severity }}">
+        <a href="{{ item.href }}"><strong>{{ item.text }}</strong></a>
+        <span class="badge {{ 'failure' if item.severity == 'high' else 'pending' }}">{{ 'Serious' if item.severity == 'high' else 'Needs a look' }}</span>
+        {% if item.detail %}<br><span class="muted" style="font-size: var(--text-sm);">{{ item.detail }}</span>{% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+    <p style="margin: var(--space-3) 0 0;">
+      {% if section.count > section.lines | length %}<span class="muted">Showing {{ section.lines | length }} of {{ section.count }}. </span>{% endif %}
+      <a href="{{ section.link }}">{{ section.link_label }}</a>
+    </p>
+  </div>
+  {% endfor %}
+{% endblock %}

@@ -51,7 +51,14 @@ from . import rbac
 # by URL) but is offered nowhere: not in the sidebar, not in the page finder,
 # not in the Settings visibility matrix. Flip it back to ready when the page
 # speaks to a non-technical user.
-PAGES: tuple[dict, ...] = ({'path': '/approvals',
+PAGES: tuple[dict, ...] = ({'path': '/',
+  'label': 'Home',
+  'aliases': 'Today What needs me',
+  'group': 'Home',
+  'icon': 'overview',
+  'floor': 'view',
+  'default': 'view'},
+ {'path': '/approvals',
   'label': 'Approvals',
   'group': 'Govern',
   'icon': 'check',
