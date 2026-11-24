@@ -16,7 +16,8 @@ Three ways a Teams account is tied to a person:
   person sends ``link <code>`` to the bot. The code is never accepted while
   Entra sign-in is on.
 
-The file ``~/.maverick/teams-identities.json`` (private to the server) holds
+The record ``teams-identities.json`` (private to the server, kept with the
+other records, ``maverick.record_documents``) holds
 links, hashed one-time codes and the last personal chat the bot saw for each
 person, which is how a card is posted to someone proactively. It holds no
 secret. This module does not decide who may approve; the dashboard's roles do.
@@ -75,15 +76,21 @@ def _is_upn(key: str) -> bool:
 
 
 def _load() -> dict:
-    from .file_lock import atomic_read_text, ensure_private_directory, ensure_private_file
+    from .record_documents import at, using_postgres
 
     path = store_path()
-    ensure_private_directory(path.parent)
-    if not path.exists():
-        return {name: {} for name in _EMPTY}
-    ensure_private_file(path)
+    if not using_postgres():
+        from .file_lock import ensure_private_directory, ensure_private_file
+
+        ensure_private_directory(path.parent)
+        if not path.exists():
+            return {name: {} for name in _EMPTY}
+        ensure_private_file(path)
     try:
-        data = json.loads(atomic_read_text(path))
+        text = at(path).read_text()
+        if text is None:
+            return {name: {} for name in _EMPTY}
+        data = json.loads(text)
     except (OSError, ValueError) as exc:
         raise TeamsIdentityError("The Teams account links could not be read.") from exc
     if not isinstance(data, dict):
@@ -92,9 +99,9 @@ def _load() -> dict:
 
 
 def _write(data: dict) -> None:
-    from .file_lock import atomic_write_text
+    from .record_documents import at
 
-    atomic_write_text(store_path(), json.dumps(data, indent=2, sort_keys=True))
+    at(store_path()).write_text(json.dumps(data, indent=2, sort_keys=True))
 
 
 class _locked:
@@ -103,12 +110,12 @@ class _locked:
     def __enter__(self) -> dict:
         from contextlib import ExitStack
 
-        from .file_lock import cross_process_lock
+        from .record_documents import at
 
         self._stack = ExitStack()
         self._stack.enter_context(_LOCK)
         try:
-            self._stack.enter_context(cross_process_lock(store_path()))
+            self._stack.enter_context(at(store_path()).locked())
             self.data = _load()
         except BaseException:
             self._stack.close()

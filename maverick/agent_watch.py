@@ -34,7 +34,8 @@ only what the configured platforms list to the account it signs in with.
 A platform's run either yields its complete list or fails: reaching a cap, a
 malformed page or a paging loop is an error, never a shorter list. One
 platform failing does not stop the others and leaves what was known about it
-untouched. The record lives in one JSON file beside the enrollment sidecar,
+untouched. The record is one JSON document kept with the other records
+(``maverick.record_documents``), next to the enrollment sidecar,
 written atomically under a cross-process lock and bounded in every direction.
 A file that cannot be read is never replaced and never read as empty: every
 entry point raises :class:`AgentWatchStoreError`, before any platform is asked.
@@ -647,10 +648,12 @@ def _load_store(path: Path | None = None) -> dict[str, dict]:
     raises, so no caller mistakes it for "nothing known" and nothing is
     written over it."""
     path = path or store_path()
+    from .record_documents import at
     try:
-        if not path.exists():
+        text = at(path).read_text()
+        if text is None:
             return {"platforms": {}, "unenrolled": {}, "agents": {}}
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(text)
         if not isinstance(data, dict) or data.get("version") != SCHEMA_VERSION:
             raise ValueError("unknown platform record layout")
         store = {name: data.get(name) for name in ("platforms", "unenrolled", "agents")}
@@ -685,16 +688,16 @@ def _editing() -> Iterator[dict[str, dict]]:
     and a block that raises writes nothing. The block must not call a platform
     (the lock would be held for as long as the platform takes) and must not
     take the enrollment sidecar lock."""
-    from .file_lock import atomic_write_text, cross_process_lock, ensure_private_directory
+    from .record_documents import at
     path = store_path()
-    ensure_private_directory(path.parent)
-    with cross_process_lock(path):
+    record = at(path)
+    with record.locked():
         store = _load_store(path)
         before = _dump(store)
         yield store
         after = _dump(store)
         if after != before:
-            atomic_write_text(path, after, mode=0o600)
+            record.write_text(after)
 
 
 def _dict(value: Any) -> dict:

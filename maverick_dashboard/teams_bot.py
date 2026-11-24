@@ -675,30 +675,28 @@ def _cards_path() -> Path:
 
 def _cards_update(change) -> object:
     """Read, change and write the record of cards the bot posted, under a lock."""
-    from maverick.file_lock import (
-        atomic_read_text,
-        atomic_write_text,
-        cross_process_lock,
-        ensure_private_directory,
-        ensure_private_file,
-    )
+    from maverick.record_documents import at, using_postgres
 
     path = _cards_path()
-    ensure_private_directory(path.parent)
-    with _CARDS_LOCK, cross_process_lock(path):
+    record = at(path)
+    with _CARDS_LOCK, record.locked():
         data: dict = {}
-        if path.exists():
+        if not using_postgres() and path.exists():
+            from maverick.file_lock import ensure_private_file
+
             ensure_private_file(path)
-            try:
-                loaded = json.loads(atomic_read_text(path))
+        try:
+            text = record.read_text()
+            if text is not None:
+                loaded = json.loads(text)
                 data = loaded if isinstance(loaded, dict) else {}
-            except (OSError, ValueError):
-                data = {}
+        except (OSError, ValueError):
+            data = {}
         approvals = data.setdefault("approvals", {})
         result = change(approvals)
         while len(approvals) > _MAX_CARD_APPROVALS:
             approvals.pop(next(iter(approvals)))
-        atomic_write_text(path, json.dumps(data, sort_keys=True))
+        record.write_text(json.dumps(data, sort_keys=True))
         return result
 
 

@@ -30,7 +30,8 @@ whether a change is good or bad, only that the agent no longer matches what a
 person approved. It sees only what passes through Second Shift, so an agent
 that stops reporting looks quiet, not safe.
 
-The record lives in one JSON file beside the enrollment sidecar, written
+The record is one JSON document kept with the other records
+(``maverick.record_documents``), next to the enrollment sidecar, written
 atomically under a cross-process lock and bounded in every direction. A file
 that cannot be read is never replaced: the hooks record nothing and every
 other entry point raises :class:`AgentDriftStoreError`.
@@ -258,10 +259,12 @@ def _load_store(path: Path | None = None) -> dict[str, dict]:
     that cannot be read or understood raises, so no caller mistakes it for
     "nothing recorded" and nothing is written over it."""
     path = path or store_path()
+    from .record_documents import at
     try:
-        if not path.exists():
+        text = at(path).read_text()
+        if text is None:
             return {}
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(text)
         if not isinstance(data, dict) or data.get("version") != SCHEMA_VERSION:
             raise ValueError("unknown drift store layout")
         agents = data.get("agents")
@@ -302,16 +305,16 @@ def _editing() -> Iterator[dict[str, dict]]:
     not read is never replaced. The block must not take the enrollment sidecar
     lock (``external_agents.contain`` and friends): the gateway may come to
     call a hook while holding that lock, and the two orders would deadlock."""
-    from .file_lock import atomic_write_text, cross_process_lock, ensure_private_directory
+    from .record_documents import at
     path = store_path()
-    with cross_process_lock(path):
+    record = at(path)
+    with record.locked():
         agents = _load_store(path)
         before = _dump(agents)
         yield agents
         after = _dump(agents)
         if after != before:
-            ensure_private_directory(path.parent)
-            atomic_write_text(path, after, mode=0o600)
+            record.write_text(after)
 
 
 def _enrolled_ids() -> dict[str, float]:

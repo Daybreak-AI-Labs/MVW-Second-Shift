@@ -507,3 +507,29 @@ async def test_the_app_timer_runs_a_pass_and_survives_a_failure(monkeypatch):
     with pytest.raises(asyncio.CancelledError):
         await dashboard._owner_note_loop()
     assert len(passes) == 2
+
+
+# ------------------------------------------------------------------- Postgres
+
+def test_with_postgres_what_was_sent_is_kept_there_and_still_goes_once(home, mail, records_in_postgres):
+    from tests.new.conftest import saved_records
+
+    _configure(home)
+    _enroll()
+    owner_note.run_due(now=NOW)
+    owner_note.run_due(now=NOW + 300)
+    assert len(mail) == 1
+    assert not (home / "owner_notes.json").exists()
+    assert "owner_notes.json" in saved_records(records_in_postgres)
+    assert [row["state"] for row in owner_note.sent_record().values()] == ["sent"]
+
+
+def test_with_postgres_a_damaged_record_is_refused_not_read_as_empty(home, mail, records_in_postgres):
+    from maverick import record_documents
+
+    _configure(home)
+    _enroll()
+    record_documents.at(owner_note._path()).write_text("[1]")
+    with pytest.raises(ValueError, match="not an object"):
+        owner_note.run_due(now=NOW)
+    assert mail == []

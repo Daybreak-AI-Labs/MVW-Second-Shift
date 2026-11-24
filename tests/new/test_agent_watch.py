@@ -1434,3 +1434,30 @@ def test_status_before_any_check(fake):
         "listed": 0, "matched": 0, "not_enrolled": 0, "not_enrolled_shown": 0, "missing": 0}]
     assert (status["not_enrolled_count"], status["missing_count"]) == (0, 0)
     assert not watch.store_path().exists()  # reading writes nothing
+
+
+# ------------------------------------------------------------------ Postgres
+
+def test_with_postgres_the_platform_record_is_kept_there(fake, observed, records_in_postgres):
+    from tests.new.conftest import saved_records
+
+    _enroll()
+    fake.agents["fake"] = [_seen("bot-1")]
+    watch.sync(now=T0)
+    assert _platform()["last_success_at"] == T0
+    assert not watch.store_path().exists()
+    assert "external_agents_watch.json" in saved_records(records_in_postgres)
+
+
+def test_with_postgres_a_damaged_platform_record_is_refused_and_left_alone(fake, observed, records_in_postgres):
+    from maverick import record_documents
+    from tests.new.conftest import saved_records
+
+    _enroll()
+    fake.agents["fake"] = [_seen("bot-1")]
+    record_documents.at(watch.store_path()).write_text("{ not json")
+    for refused in (lambda: watch.sync(now=T0), watch.status):
+        with pytest.raises(watch.AgentWatchStoreError, match="cannot be read"):
+            refused()
+    assert fake.calls == []
+    assert saved_records(records_in_postgres)["external_agents_watch.json"] == "{ not json"

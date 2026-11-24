@@ -1747,3 +1747,27 @@ def test_an_agent_that_only_works_now_and_then_is_not_called_silent():
     drift.approve_baseline(AGENT, actor="dana@corp.test", now=_at(13, 23))
     # about half a run a day: three days of quiet is usual for it
     assert "silent" not in _kinds(drift.evaluate(AGENT, now=_at(16, 23)))
+
+
+# ------------------------------------------------------------------ Postgres
+
+def test_with_postgres_the_drift_record_is_kept_there(tmp_path, records_in_postgres):
+    from tests.new.conftest import saved_records
+
+    _enroll()
+    drift.observe_run(AGENT, cost_dollars=1.5, tool_calls=2, now=_at(0))
+    assert drift._load_store()[AGENT]["days"][drift._day_key(20_000)]["runs"] == 1
+    assert not drift.store_path().exists()
+    assert "external_agents_drift.json" in saved_records(records_in_postgres)
+
+
+def test_with_postgres_a_damaged_drift_record_is_refused_and_left_alone(tmp_path, records_in_postgres):
+    from maverick import record_documents
+    from tests.new.conftest import saved_records
+
+    _enroll()
+    record_documents.at(drift.store_path()).write_text('{"version": 1, "agents": []}')
+    drift.observe_run(AGENT, cost_dollars=1.0)
+    with pytest.raises(drift.AgentDriftStoreError, match="cannot be read"):
+        drift.evaluate(AGENT)
+    assert saved_records(records_in_postgres)["external_agents_drift.json"] == '{"version": 1, "agents": []}'

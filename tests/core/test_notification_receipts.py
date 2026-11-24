@@ -4,6 +4,7 @@ from uuid import uuid4
 import pytest
 
 from maverick.notification_receipts import DeliveryReceipts
+from tests.new.conftest import records_in_postgres  # noqa: F401
 
 
 def test_accepted_delivery_cannot_be_replayed(tmp_path):
@@ -123,3 +124,28 @@ def test_only_definite_failures_that_are_safe_to_retry_are_ever_dropped(tmp_path
         receipts.claim('another event', 'ntfy')
     assert len(receipts._load()) == 1000
 
+
+
+@pytest.mark.usefixtures("records_in_postgres")
+def test_with_postgres_receipts_are_kept_there(tmp_path):
+    import os
+
+    from tests.new.conftest import saved_records
+
+    receipts = DeliveryReceipts()
+    ident, acquired = receipts.claim("event-1", "ntfy")
+    assert acquired and receipts.claim("event-1", "ntfy") == (ident, False)
+    receipts.update(ident, "delivered", "Accepted")
+    assert [row["state"] for row in receipts.recent()] == ["delivered"]
+    assert not (tmp_path / "notification-deliveries.json").exists()
+    assert "notification-deliveries.json" in saved_records(os.environ["MAVERICK_PG_DSN"])
+
+
+@pytest.mark.usefixtures("records_in_postgres")
+def test_with_postgres_a_damaged_history_is_refused(tmp_path):
+    from maverick import record_documents
+
+    receipts = DeliveryReceipts()
+    record_documents.at(receipts.path).write_text('{"not": "a list"}')
+    with pytest.raises(ValueError, match="could not be read"):
+        receipts.claim("event-1", "ntfy")

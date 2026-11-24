@@ -162,3 +162,45 @@ def test_blocked_incident_opens_only_when_the_agent_is_contained(setup, monkeypa
 
     xa._deny_and_count("an-agent", "send_email", "ceiling", "too risky")
     assert len(opened) == 1
+
+
+def test_with_postgres_the_queue_is_kept_there_and_delivered(setup, monkeypatch, records_in_postgres):
+    from maverick import agent_watch
+    from maverick import servicenow_incidents as sn
+    from tests.new.conftest import saved_records
+
+    monkeypatch.setattr(agent_watch, "client_credentials_token", lambda *args, **kwargs: "fixture-token")
+
+    def service(method, url, **kwargs):
+        if method == "GET":
+            return 200, json.dumps({"result": []}).encode()
+        payload = kwargs["json_body"]
+        row = {**payload, "sys_id": "b" * 32, "state": "1"}
+        return 201, json.dumps({"result": row}).encode()
+
+    monkeypatch.setattr(agent_watch, "_request", service)
+    sn.enqueue("blocked", "an-agent", cause="rule")
+    sn.enqueue("blocked", "an-agent", cause="rule")
+    assert sn.status()["pending"] == 1
+    sn.deliver_due()
+    assert sn.status()["pending"] == 0
+    assert not (setup / "servicenow_incidents.json").exists()
+    kept = saved_records(records_in_postgres)
+    assert json.loads(kept["servicenow_incidents.json"])["records"][0]["delivered"] is True
+    assert kept["servicenow_incidents.delivery"] is None
+
+
+def test_with_postgres_a_damaged_queue_is_refused_and_the_size_limit_applies(setup, records_in_postgres):
+    from maverick import record_documents
+    from maverick import servicenow_incidents as sn
+    from tests.new.conftest import saved_records
+
+    record = record_documents.at(sn._path())
+    record.write_text('{"version": 2, "records": []}')
+    with pytest.raises(sn.IncidentError):
+        sn.enqueue("blocked", "an-agent", cause="rule")
+    assert sn.status()["ready"] is False
+    assert saved_records(records_in_postgres)["servicenow_incidents.json"] == '{"version": 2, "records": []}'
+    record.write_text('{"version": 1, "records": [], "pad": "' + "x" * (4 * 1024 * 1024) + '"}')
+    with pytest.raises(sn.IncidentError):
+        sn._read(sn._path())
