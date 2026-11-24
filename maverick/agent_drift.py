@@ -1452,6 +1452,23 @@ def roster_view(*, now: float | None = None) -> list[dict]:
     return rows
 
 
+def findings_reported_since(since: float, *, now: float | None = None) -> list[dict]:
+    """Current findings reported since the given time, from one read of the store."""
+    cfg = settings()
+    moment = _now(now)
+    active = _active(cfg)
+    agents = _load_store()
+    enrolled = _enrolled_ids()
+    rows = []
+    for agent_id in sorted(enrolled):
+        record = _current_record(agents, agent_id, enrolled)
+        for finding in _evaluate_record(agent_id, record, cfg, moment, active=active)["findings"]:
+            when = _amount(finding.get("reported_at"))
+            if since <= when <= moment and when > 0:
+                rows.append({**finding, "agent_id": agent_id, "reported_at": when})
+    return sorted(rows, key=lambda row: (-row["reported_at"], row["agent_id"]))
+
+
 def detail(agent_id: str, *, now: float | None = None) -> dict:
     """One enrolled agent's evaluation (state, findings, baseline, current
     window) plus the configuration last seen and a daily series for charts,

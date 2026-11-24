@@ -1,0 +1,23 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/teams/v1.30/MicrosoftTeams.schema.json",
+  "manifestVersion": "1.30",
+  "version": "1.0.0",
+  "id": "__PACKAGE_ID__",
+  "developer": {
+    "name": "Second Shift",
+    "websiteUrl": "__ORIGIN__",
+    "privacyUrl": "__PRIVACY_URL__",
+    "termsOfUseUrl": "__TERMS_URL__"
+  },
+  "name": {"short": "Second Shift", "full": "Ask Second Shift"},
+  "description": {
+    "short": "Ask about agent changes, approvals, blocks, and spend.",
+    "full": "Get read-only summaries from your Second Shift workspace using your company sign-in and existing permissions."
+  },
+  "icons": {"outline": "outline.png", "color": "color.png"},
+  "accentColor": "#0b1020",
+  "validDomains": ["__HOST__"],
+  "copilotAgents": {
+    "declarativeAgents": [{"id": "secondShift", "file": "declarative-agent.json"}]
+  }
+}

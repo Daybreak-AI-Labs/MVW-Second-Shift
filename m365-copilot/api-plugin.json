@@ -1,0 +1,18 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/copilot/plugin/v2.4/schema.json",
+  "schema_version": "v2.4",
+  "name_for_human": "Second Shift",
+  "namespace": "SecondShift",
+  "description_for_human": "Read the latest governance summaries your role lets you see.",
+  "description_for_model": "Read Second Shift governance summaries for the current user. Use the exact enrolled name for a specific agent. This API reports observed information and cannot decide requests or modify agents.",
+  "runtimes": [
+    {
+      "type": "OpenApi",
+      "auth": {"type": "OAuthPluginVault", "reference_id": "__AUTH_CONFIG_ID__"},
+      "spec": {"url": "openapi.json"},
+      "run_for_functions": [
+        "listChangedAgents", "listWaitingApprovals", "listAgentsNeedingAttention", "listFoundAgents", "getAgentStatus"
+      ]
+    }
+  ]
+}
