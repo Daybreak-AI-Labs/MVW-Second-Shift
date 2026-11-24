@@ -240,7 +240,8 @@ async def _require_agent(request: Request) -> str:
         log.info("external gateway: %s auth refused (%s)", scheme, rule)
         raise HTTPException(status_code=401, detail="invalid credentials")
     from maverick import external_agents as xa
-    xa.note_seen(agent.id)  # throttled credential-audit stamp
+    path = request.url.path
+    xa.note_seen(agent.id, "screen" if path.endswith("/screen") else "run" if "/runs" in path else "call")
     return agent.id
 
 

@@ -175,21 +175,32 @@ def _seat_limit() -> int:
         return _MAX_AGENTS
 
 
-def note_seen(agent_id: str) -> None:
-    """Stamp the agent's last authenticated contact (credential audit trail).
+#: Most often one agent's "last heard from" time is written to the sidecar.
+_HEARD_EVERY_SECONDS = 60
 
-    Throttled to 5-minute granularity so the hot path never write-amplifies
-    the sidecar; failures are swallowed — liveness bookkeeping must never
-    break a request."""
+#: What the last call from an agent was, in words a person reads. The route
+#: decides which; anything else is stored as the plainest one.
+HEARD_KINDS = {"screen": "a screening call", "run": "a run report", "call": "a call"}
+
+
+def note_seen(agent_id: str, kind: str = "call") -> None:
+    """Stamp the agent's last authenticated contact (credential audit trail,
+    and the "Connected" level on the roster).
+
+    Written at most once a minute per agent so the hot path never
+    write-amplifies the sidecar (the common case reads only); ``kind`` is one
+    of ``HEARD_KINDS`` and anything else is stored as ``"call"``. Failures are
+    swallowed: liveness bookkeeping must never break a request."""
     try:
         now = time.time()
         meta = _load_sidecar().get(agent_id)
-        if meta is None or now - float(meta.get("last_seen") or 0) < 300:
+        if meta is None or now - float(meta.get("last_seen") or 0) < _HEARD_EVERY_SECONDS:
             return
         with _sidecar_locked():
             sidecar = _load_sidecar()
             if agent_id in sidecar:
                 sidecar[agent_id]["last_seen"] = now
+                sidecar[agent_id]["last_seen_kind"] = kind if kind in HEARD_KINDS else "call"
                 _save_sidecar(sidecar)
     except Exception:  # pragma: no cover -- bookkeeping never blocks
         log.debug("external_agents: last-seen stamp failed", exc_info=True)
@@ -365,6 +376,8 @@ def enroll(
     budget_period: str | None = None,
     enrolled_by: str = "",
     external_ref: str | None = None,
+    approval_at: str | None = None,
+    starter: str | None = None,
 ) -> dict:
     """Enroll one external agent across every plane in a single call.
 
@@ -376,8 +389,22 @@ def enroll(
     does not set (``budget_period=None``; a new agent gets "monthly").
     ``external_ref`` links the agent to its record on its home platform
     (``None`` keeps the stored link, "" removes it). Returns
-    a summary; raises :class:`ExternalAgentsError` on bad input."""
+    a summary; raises :class:`ExternalAgentsError` on bad input.
+
+    ``approval_at`` is the risk rating from which a person must approve each
+    action of this agent (``None`` keeps the stored one, "" removes it; the
+    organisation-wide floor still applies and the stricter of the two wins).
+    ``starter`` names the starter rule set the person began from (see
+    ``starter_rules``); it is recorded, never applied here."""
     from .agent_trust import AgentTrustError, put_agent
+    from .safety.tool_risk import RISK_LEVELS
+    from .starter_rules import STARTERS
+    if approval_at is not None and approval_at != "" and approval_at not in RISK_LEVELS:
+        raise ExternalAgentsError(
+            f"unknown approval level {approval_at!r}; expected one of {', '.join(RISK_LEVELS)}")
+    if starter is not None and starter != "" and starter not in STARTERS:
+        raise ExternalAgentsError(
+            f"unknown starter {starter!r}; expected one of {', '.join(sorted(STARTERS))}")
     platform = str(platform or "").strip().lower()
     if platform not in PLATFORMS:
         raise ExternalAgentsError(
@@ -457,6 +484,10 @@ def enroll(
             "denials": list(prior.get("denials") or []),
             "contained": bool(prior.get("contained")),
             "wall_violations": int(prior.get("wall_violations") or 0),
+            "approval_at": (str(prior.get("approval_at") or "")
+                            if approval_at is None else approval_at),
+            "starter": (str(prior.get("starter") or "")
+                        if starter is None else starter),
         }
         _save_sidecar(sidecar)
     from .audit import EventKind, audit_event
@@ -1364,7 +1395,7 @@ def _screen_decision(
         agent_id, tool, risk=risk, detail=detail, shield=shield)
     if deny is not None:
         return deny
-    floor = _approval_floor()
+    floor = _approval_floor(meta)
     if req_risk and risk_rank(req_risk) >= risk_rank(floor):
         from .approval_cards import (
             decode_approval_detail,
@@ -1620,7 +1651,17 @@ def _notify_approval(approval_id: int, agent_id: str, tool: str,
                     exc_info=True)
 
 
-def _approval_floor() -> str:
+def _approval_floor(meta: dict | None = None) -> str:
+    """The risk rating from which a person must approve: the organisation's
+    ``[actions] require_approval_at``, or the agent's own ``approval_at`` if
+    that is stricter (an agent's setting never loosens the organisation's)."""
+    from .safety.tool_risk import RISK_LEVELS, risk_rank
+    floor = _organisation_approval_floor()
+    own = str((meta or {}).get("approval_at") or "")
+    return own if own in RISK_LEVELS and risk_rank(own) < risk_rank(floor) else floor
+
+
+def _organisation_approval_floor() -> str:
     from .safety.tool_risk import RISK_LEVELS
     try:
         from .config import config_source_errors, load_config
@@ -2269,7 +2310,7 @@ def execute(
         out["request_sha256"] = digest
         return out
     from .safety.tool_risk import risk_rank
-    floor = _approval_floor()
+    floor = _approval_floor(meta)
     if req_risk and risk_rank(req_risk) >= risk_rank(floor):
         from .governed_rest import GOVERNED_REST_FACTORIES
 
@@ -2303,7 +2344,7 @@ def execute(
         if runtime_verdict is not None:
             return runtime_verdict
         if current_risk and risk_rank(current_risk) >= risk_rank(
-            _approval_floor()
+            _approval_floor(_load_sidecar().get(agent_id))
         ):
             return _screen_verdict(
                 agent_id,
@@ -3400,6 +3441,9 @@ def roster(*, registry: dict[str, Any] | None = None,
             "runs": int(meta.get("runs") or 0),
             "last_run_at": meta.get("last_run_at"),
             "last_seen": meta.get("last_seen"),
+            "last_seen_kind": meta.get("last_seen_kind"),
+            "approval_at": str(meta.get("approval_at") or ""),
+            "starter": str(meta.get("starter") or ""),
             "executions_total": int(meta.get("executions_total") or 0),
             "pending_executions": sum(
                 1 for e in (meta.get("executions") or {}).values()

@@ -941,7 +941,18 @@ async def external_agent_enroll(request: Request, payload: ExternalAgentIn) -> d
     fleet-memory roster + platform metadata in one call."""
     require_permission(request, "admin")
     from maverick import external_agents as xa
+    from maverick import starter_rules
 
+    limits = {
+        key: getattr(payload, key)
+        for key in ("max_risk", "max_dollars", "expires_days", "budget_period", "approval_at")
+    }
+    if payload.starter:
+        try:  # what the person sent wins; the starter fills only what they left out
+            sent = {k: v for k, v in limits.items() if k in payload.model_fields_set}
+            limits = starter_rules.resolve(payload.starter, sent)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail="That starter rule set does not exist.") from e
     try:
         out = xa.enroll(
             payload.id,
@@ -951,14 +962,16 @@ async def external_agent_enroll(request: Request, payload: ExternalAgentIn) -> d
             department=payload.department,
             allow_tools=payload.allow_tools,
             deny_tools=payload.deny_tools,
-            max_risk=payload.max_risk,
-            max_dollars=payload.max_dollars,
+            max_risk=limits["max_risk"],
+            max_dollars=limits["max_dollars"],
             max_wall_seconds=payload.max_wall_seconds,
             data_scopes=payload.data_scopes,
-            expires_days=payload.expires_days,
-            budget_period=payload.budget_period,
+            expires_days=limits["expires_days"],
+            budget_period=limits["budget_period"],
             enrolled_by=caller_principal(request) or "admin",
             external_ref=payload.external_ref,
+            approval_at=limits["approval_at"],
+            starter=payload.starter,
         )
     except xa.ExternalAgentsError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
