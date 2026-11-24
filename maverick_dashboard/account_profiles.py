@@ -10,8 +10,8 @@ neither removes the record.
 Store: ``<maverick_home>/account-profiles.json`` (0600), one installation-wide
 file keyed by sign-in, written atomically under a cross-process lock and
 sealed with the deployment key when at-rest encryption is on. With Postgres as the
-main database it is kept with the other records (``maverick.record_documents``)
-and the database's own encryption applies instead. Bounded to
+main database it is kept with the other records (``maverick.record_documents``),
+sealed with the same key in text form. Bounded to
 ``_MAX_ENTRIES`` by last sign-in. It grants nothing: it only names people
 where they are already shown. My data exports it and its reviewed deletion
 erases it; deleting the account in the company directory (SCIM) erases it too.
@@ -68,10 +68,12 @@ def _read() -> dict[str, dict]:
     from maverick import crypto_at_rest
 
     if record_documents.using_postgres():
-        # The database keeps the record (its own encryption at rest applies).
         text = record_documents.at(_path()).read_text()
         if text is None:
             return {}
+        if crypto_at_rest.is_sealed_str(text):
+            with crypto_at_rest.deployment_key_scope():
+                text = crypto_at_rest.unseal_from_str(text)
         raw = text.encode("utf-8")
     else:
         try:
@@ -96,7 +98,11 @@ def _write(profiles: dict[str, dict]) -> None:
         profiles = {key: profiles[key] for key in newest}
     payload = json.dumps({"schema": 1, "profiles": profiles}, sort_keys=True).encode("utf-8")
     if record_documents.using_postgres():
-        record_documents.at(_path()).write_text(payload.decode("utf-8"))
+        text = payload.decode("utf-8")
+        if crypto_at_rest.deployment_at_rest_enabled():
+            with crypto_at_rest.deployment_key_scope():
+                text = crypto_at_rest.seal_to_str(text)
+        record_documents.at(_path()).write_text(text)
         return
     from maverick.file_lock import atomic_write_bytes, ensure_private_directory
 

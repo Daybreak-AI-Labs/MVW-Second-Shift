@@ -123,3 +123,18 @@ def test_a_corrupt_revocation_record_in_postgres_refuses_every_session(records_i
     with pytest.raises(sr.RevocationStoreError):
         sr.revocation_epoch("user:eve")
     assert sr.is_revoked("user:eve", issued_at=9e12) is True
+
+
+def test_account_names_stay_encrypted_in_postgres_when_encryption_is_on(records_in_postgres, tmp_path, monkeypatch):
+    """The file was sealed with the deployment key when at-rest encryption is on;
+    the database row must be too, not plain text."""
+    from maverick import crypto_at_rest
+    from maverick_dashboard import account_profiles
+
+    monkeypatch.setenv("MAVERICK_REMEMBER_ACCOUNT_NAMES", "1")
+    monkeypatch.setenv("MAVERICK_ENCRYPT_AT_REST", "1")
+    assert crypto_at_rest.deployment_at_rest_enabled()
+    account_profiles.record_sign_in("user:u1", {"name": "Ada Lovelace"})
+    stored = saved_records(records_in_postgres)["account-profiles.json"]
+    assert "Ada Lovelace" not in stored and crypto_at_rest.is_sealed_str(stored)
+    assert account_profiles._read()["user:u1"]["name"] == "Ada Lovelace"
