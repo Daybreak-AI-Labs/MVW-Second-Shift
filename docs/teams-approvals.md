@@ -166,9 +166,13 @@ Second Shift knows a Teams account in one of three ways:
 A person checks their own state with `GET /api/v1/teams/me`.
 
 People who only hold their role through an app role in their Entra sign-in
-token, and have no role assigned in Second Shift itself, cannot receive or
-decide cards in Teams: their role exists only inside their own browser
-session. Assign them a role in Second Shift to include them.
+token, and have no role assigned in Second Shift itself, have that role only
+inside their own browser session. Turn on the
+[Entra directory lookups](entra-directory.md) and Second Shift reads their
+current app roles from Entra instead, so they receive cards and their button
+presses are decided like anyone else's. With the lookups off (the default),
+assign such a person a role in Second Shift to include them. They must also
+be linked or have signed in once, as above.
 
 ## 6. Check that it works
 
@@ -282,4 +286,7 @@ Not confirmed, and why it matters:
 - **Manifest version.** The template uses Teams manifest schema 1.25; newer
   versions exist. Teams admin center validates the package when you upload it.
 - **The role of someone who signs in only through an Entra app role** is not
-  known to Second Shift outside their browser session (see step 5).
+  known to Second Shift outside their browser session unless the
+  [Entra directory lookups](entra-directory.md) are on. With them on, a role
+  removed in Entra stops working after the cache time (5 minutes by default);
+  if Entra cannot be read, that person gets no cards and is refused.
