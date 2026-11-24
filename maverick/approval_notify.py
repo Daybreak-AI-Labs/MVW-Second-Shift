@@ -101,6 +101,21 @@ def approval_created(approval_id: int, *, provenance: str = "", world=None) -> N
     _spawn(_run, "post_approval", int(approval_id), world)
 
 
+def approval_reminder(approval_id: int, *, world=None) -> bool:
+    """Post a fresh card for a request that is still waiting and running out of
+    time, and wait for the answer: True when at least one person or channel got
+    it. Never raises."""
+    if not teams_approvals_enabled():
+        return False
+    try:
+        from maverick_dashboard import teams_bot
+
+        return any(r.get("ok") for r in teams_bot.post_approval(int(approval_id), world=world))
+    except Exception as exc:  # noqa: BLE001 -- a reminder never changes an approval
+        log.warning("teams: reminder for approval #%s failed (%s)", approval_id, type(exc).__name__)
+        return False
+
+
 def approval_decided(approval_id: int, *, world=None) -> None:
     """Show the outcome on every card posted for this approval."""
     if not teams_approvals_enabled():
