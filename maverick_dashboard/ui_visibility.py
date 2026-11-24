@@ -51,7 +51,14 @@ from . import rbac
 # by URL) but is offered nowhere: not in the sidebar, not in the page finder,
 # not in the Settings visibility matrix. Flip it back to ready when the page
 # speaks to a non-technical user.
-PAGES: tuple[dict, ...] = ({'path': '/approvals',
+PAGES: tuple[dict, ...] = ({'path': '/',
+  'label': 'Home',
+  'aliases': 'Today What needs me',
+  'group': 'Home',
+  'icon': 'overview',
+  'floor': 'view',
+  'default': 'view'},
+ {'path': '/approvals',
   'label': 'Approvals',
   'group': 'Govern',
   'icon': 'check',
@@ -71,7 +78,14 @@ PAGES: tuple[dict, ...] = ({'path': '/approvals',
   'icon': 'agents',
   'floor': 'view',
   'default': 'view',
-  'module': 'external_agents'})
+  'module': 'external_agents'},
+ {'path': '/audit',
+  'label': 'Audit trail',
+  'aliases': 'Activity log',
+  'group': 'Govern',
+  'icon': 'audit',
+  'floor': 'audit',
+  'default': 'audit'})
 
 # Moderate sidebar declutter: keep a focused set of everyday destinations in the
 # rail; fold the rest OUT of the sidebar (in_nav=False) while leaving them fully

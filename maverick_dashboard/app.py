@@ -660,6 +660,9 @@ from .agent_control_plane_page import (  # noqa: E402
 )
 
 app.include_router(create_agent_control_plane_page_router(templates))
+from .audit_page import create_audit_page_router  # noqa: E402
+
+app.include_router(create_audit_page_router(templates))
 from .agent_control_plane_api import router as agent_control_plane_router  # noqa: E402
 
 app.include_router(agent_control_plane_router, prefix="/api/v1")
@@ -1945,10 +1948,15 @@ def approvals_page(request: Request) -> HTMLResponse:
     )
 
 
-@app.get("/", response_class=HTMLResponse, response_model=None)
-async def home(request: Request) -> RedirectResponse:
-    """The landing page is the outside-agent roster."""
-    return RedirectResponse("/external-agents", status_code=302)
+@app.get("/", response_class=HTMLResponse)
+async def home(request: Request) -> HTMLResponse:
+    """What needs the signed-in person today (see ``home_page``)."""
+    from .home_page import build
+
+    return templates.TemplateResponse(
+        request, "home.html", {"home": await run_in_threadpool(build, request)},
+        headers={"Cache-Control": "private, no-store"},
+    )
 
 
 @app.get("/livez")
