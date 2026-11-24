@@ -38,12 +38,14 @@ itself, so a revoked/expired/outbound-only entry never authenticates.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import logging
 import math
 import threading
 import time
 from collections import OrderedDict
+from dataclasses import dataclass
 from pathlib import Path
 
 from .agent_trust import TrustedAgent, load_registry
@@ -402,6 +404,30 @@ def _verify_agent_jwt(
     return entry, "ok"
 
 
+@dataclass(frozen=True)
+class SignedTarget:
+    method: str
+    raw_path: bytes
+    query: bytes
+    origin: str
+
+
+def request_message_v2(scheme: str, agent_id: str, timestamp: str, nonce: str,
+                       body: bytes, target: SignedTarget) -> bytes:
+    """Encode the exact request target and body digest with unambiguous fields."""
+    return json.dumps([
+        "second-shift-external-request-v2", scheme, agent_id, timestamp, nonce,
+        target.method, target.raw_path.decode("ascii"), target.query.decode("ascii"),
+        target.origin, hashlib.sha256(body).hexdigest(),
+    ], ensure_ascii=True, separators=(",", ":")).encode("ascii")
+
+
+def _legacy_allowed(entry: TrustedAgent) -> bool:
+    from .config import get_external_agents
+
+    return entry.allow_legacy_signatures and get_external_agents()["allow_legacy_signatures"]
+
+
 def verify_agent_hmac(
     agent_id_header: str,
     body: bytes,
@@ -409,6 +435,8 @@ def verify_agent_hmac(
     signature: str,
     *,
     registry: dict[str, TrustedAgent] | None = None,
+    target: SignedTarget | None = None,
+    nonce: str = "",
 ) -> tuple[TrustedAgent | None, str]:
     """Authenticate a request signed in the Second Shift webhook HMAC format.
 
@@ -418,7 +446,7 @@ def verify_agent_hmac(
     bound, constant-time). Returns ``(agent, "ok")`` or ``(None, rule)``."""
     try:
         return _verify_agent_hmac(
-            agent_id_header, body, timestamp, signature, registry=registry)
+            agent_id_header, body, timestamp, signature, registry=registry, target=target, nonce=nonce)
     except Exception:
         log.warning("external_identity: HMAC verification error (fail-closed)",
                     exc_info=True)
@@ -432,6 +460,8 @@ def _verify_agent_hmac(
     signature: str,
     *,
     registry: dict[str, TrustedAgent] | None,
+    target: SignedTarget | None,
+    nonce: str,
 ) -> tuple[TrustedAgent | None, str]:
     agent_id = str(agent_id_header or "").strip()
     reg = load_registry() if registry is None else registry
@@ -448,9 +478,22 @@ def _verify_agent_hmac(
         return None, "bad_body"
     from .webhooks import verify_signature
     sig = str(signature or "")
-    if not verify_signature(body, sig, secret,
-                            timestamp=str(timestamp or ""),
-                            max_age=HMAC_MAX_AGE_SECONDS):
+    if target is None:
+        if not _legacy_allowed(entry):
+            return None, "legacy_signature_disabled"
+        valid = verify_signature(body, sig, secret, timestamp=timestamp, max_age=HMAC_MAX_AGE_SECONDS)
+        replay_key = "hmac:" + hashlib.sha256(sig.encode("utf-8")).hexdigest()
+    else:
+        input_error = _envelope_input_error(body, timestamp, nonce, sig)
+        if input_error is not None:
+            return None, input_error
+        if abs(time.time() - float(timestamp)) > HMAC_MAX_AGE_SECONDS:
+            return None, "stale"
+        message = request_message_v2("hmac", agent_id, timestamp, nonce, body, target)
+        expected = "sha256=" + hmac.new(secret.encode(), message, hashlib.sha256).hexdigest()
+        valid = hmac.compare_digest(sig.encode(), expected.encode())
+        replay_key = f"nonce:{nonce}"
+    if not valid:
         return None, "bad_signature"
     why = _active_inbound(entry)
     if why is not None:
@@ -464,7 +507,7 @@ def _verify_agent_hmac(
     # retry re-signs with a fresh timestamp.
     try:
         refusal = claim_once(
-            agent_id, "hmac:" + hashlib.sha256(sig.encode("utf-8")).hexdigest(),
+            agent_id, replay_key,
             expires_at=time.time() + HMAC_MAX_AGE_SECONDS * 2,
             now=time.time())
     except ReplayStoreError:
@@ -499,6 +542,7 @@ def verify_agent_envelope(
     *,
     registry: dict[str, TrustedAgent] | None = None,
     now: float | None = None,
+    target: SignedTarget | None = None,
 ) -> tuple[TrustedAgent | None, str]:
     """Authenticate a detached Ed25519 request signature against the entry's
     pinned ``pubkey``.
@@ -511,7 +555,7 @@ def verify_agent_envelope(
     try:
         return _verify_agent_envelope(
             agent_id_header, body, timestamp, nonce, signature_hex,
-            registry=registry, now=now)
+            registry=registry, now=now, target=target)
     except Exception:
         log.warning("external_identity: envelope verification error "
                     "(fail-closed)", exc_info=True)
@@ -549,6 +593,7 @@ def _verify_agent_envelope(
     *,
     registry: dict[str, TrustedAgent] | None,
     now: float | None,
+    target: SignedTarget | None,
 ) -> tuple[TrustedAgent | None, str]:
     agent_id = str(agent_id_header or "").strip()
     reg = load_registry() if registry is None else registry
@@ -564,7 +609,12 @@ def _verify_agent_envelope(
     from .audit import signing
     if not signing._have_crypto():
         return None, "no_crypto"  # "verified" is meaningless without crypto
-    message = envelope_message(agent_id, timestamp, nonce, body)
+    if target is None:
+        if not _legacy_allowed(entry):
+            return None, "legacy_signature_disabled"
+        message = envelope_message(agent_id, timestamp, nonce, body)
+    else:
+        message = request_message_v2("ed25519", agent_id, timestamp, nonce, body, target)
     if not signing.verify_ed25519(entry.pubkey, signature_hex, message):
         return None, "bad_signature"
     current = time.time() if now is None else float(now)

@@ -217,6 +217,23 @@ its local SQLite-backed workflows on your storage before enabling them.
 Second Shift strips callback queries from its Uvicorn access log. Apply
 the same rule to any ingress or proxy logs and restrict log access.
 
+## Limit traffic at the gateway
+
+For Internet-facing deployments, put Azure Front Door Premium with a WAF
+policy in front of Container Apps. Restrict direct ingress to the trusted
+Front Door path. Set `SECOND_SHIFT_PUBLIC_URL` and the Entra redirect to
+the public HTTPS host. Add a rate-limit rule for `/api/v1/external/` using
+its host and path, with a separate threshold for the public schema. Size
+the rule to accommodate agents that share a NAT address. Set body-size,
+header-size, connection and request timeout limits on the edge products
+you operate. Preserve the gateway's 256 KiB body limit and timeouts as
+a second boundary. Bare requests are refused before the service reads
+their bodies. Requests whose signatures need the body use a separate
+reader pool until authentication can complete.
+
+Every change made using the break-glass token requires a fresh audit record.
+An unavailable audit record blocks the change. Read-only use may be sampled.
+
 ## Upgrades, rollback, and cost
 
 - Schedule a maintenance window for each upgrade. Record the current

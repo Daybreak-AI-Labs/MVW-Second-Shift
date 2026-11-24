@@ -1224,10 +1224,10 @@ def get_auth_sessions() -> dict:
         days = 30
     limits = {}
     for name, maximum in (("company_hours", 168), ("idle_minutes", 1440)):
-        value = cfg.get(name, 0)
+        value = cfg.get(name, 8 if name == "company_hours" else 0)
         if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= maximum:
             raise ValueError(f"auth.sessions.{name} must be an integer from zero to {maximum}")
-        limits[name] = value
+        limits[name] = (value or 8) if name == "company_hours" else value
     return {"retention_days": max(1, min(days, 3650)), **limits}
 
 
@@ -1458,6 +1458,8 @@ def get_external_agents() -> dict:
         # (fail closed — this is a tightening switch).
         "require_signed": _strict_config_bool(
             cfg, "require_signed", False, invalid=True),
+        "allow_legacy_signatures": _strict_config_bool(
+            cfg, "allow_legacy_signatures", True, invalid=False),
         # Governed-REST connectors external agents may EXECUTE through (the
         # enforcement tier above screening). Empty = screen-only; naming one
         # here is the operator's explicit decision to let foreign agents act

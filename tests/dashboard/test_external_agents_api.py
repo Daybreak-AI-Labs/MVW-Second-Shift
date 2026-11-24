@@ -63,10 +63,11 @@ def _isolated(tmp_path, monkeypatch):
     config.reset_config_cache()
 
 
-def test_chunked_external_body_stops_reading_at_limit(monkeypatch):
+def test_chunked_external_body_stops_reading_at_limit():
     import httpx
 
-    monkeypatch.setenv("MAVERICK_EXTERNAL_AGENTS", "0")
+    _enroll()
+    headers = {"Authorization": f"Bearer {_mint()}"}
     sent = []
 
     async def chunks():
@@ -77,17 +78,19 @@ def test_chunked_external_body_stops_reading_at_limit(monkeypatch):
     async def run():
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
                                      base_url="http://127.0.0.1") as requester:
-            return await requester.post("/api/v1/external/runs", content=chunks())
+            return await requester.post("/api/v1/external/runs", content=chunks(), headers=headers)
 
     assert asyncio.run(run()).status_code == 413
     assert sent == [0, 1]
 
 
-def test_signed_get_body_is_limited_before_authentication(monkeypatch):
-    monkeypatch.setenv("MAVERICK_EXTERNAL_AGENTS", "0")
+def test_signed_get_body_is_limited_before_authentication():
     response = client.request(
         "GET", "/api/v1/external/approvals/1", content=b"{}",
-        headers={"Content-Length": str(256 * 1024 + 1), "X-Agent-Signature": "synthetic"},
+        headers={"Content-Length": str(256 * 1024 + 1),
+                 "X-Second-Shift-Agent-Id": "sf-quotebot",
+                 "X-Second-Shift-Request-Signature": "a" * 128,
+                 "X-Second-Shift-Timestamp": str(time.time()), "X-Second-Shift-Nonce": "test"},
     )
     assert response.status_code == 413
 
@@ -97,7 +100,8 @@ def test_slow_external_body_times_out_and_releases_capacity(monkeypatch):
 
     from maverick_dashboard import app as dash_app
 
-    monkeypatch.setenv("MAVERICK_EXTERNAL_AGENTS", "0")
+    _enroll()
+    headers = {"Authorization": f"Bearer {_mint()}"}
     monkeypatch.setattr(dash_app, "_EXTERNAL_BODY_SLOTS", 1)
     monkeypatch.setattr(dash_app, "_EXTERNAL_BODY_TIMEOUT_SECONDS", 0.03)
 
@@ -109,8 +113,8 @@ def test_slow_external_body_times_out_and_releases_capacity(monkeypatch):
     async def run():
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
                                      base_url="http://127.0.0.1") as requester:
-            first = await requester.post("/api/v1/external/runs", content=slow())
-            second = await requester.post("/api/v1/external/runs", content=b"{}")
+            first = await requester.post("/api/v1/external/runs", content=slow(), headers=headers)
+            second = await requester.post("/api/v1/external/runs", content=b"{}", headers=headers)
             return first.status_code, second.status_code
 
     first, second = asyncio.run(run())
@@ -423,19 +427,29 @@ def _ed25519_pair():
     return priv, pub_hex
 
 
-def _envelope_headers(priv, body: bytes, *, nonce: str) -> dict:
+def _v2_message(scheme, ts, nonce, body):
+    from maverick.external_identity import SignedTarget, request_message_v2
+
+    target = SignedTarget("POST", b"/api/v1/external/screen", b"", "http://127.0.0.1")
+    return request_message_v2(scheme, "sf-quotebot", ts, nonce, body, target)
+
+
+def _envelope_headers(priv, body: bytes, *, nonce: str, version: str = "2") -> dict:
     from maverick.external_identity import envelope_message
     ts = str(int(time.time()))
-    sig = priv.sign(envelope_message("sf-quotebot", ts, nonce, body)).hex()
+    message = _v2_message("ed25519", ts, nonce, body) if version == "2" else envelope_message("sf-quotebot", ts, nonce, body)
+    sig = priv.sign(message).hex()
     return {"X-Second-Shift-Agent-Id": "sf-quotebot",
             "X-Maverick-Timestamp": ts,
             "X-Second-Shift-Nonce": nonce,
             "X-Second-Shift-Request-Signature": sig,
+            "X-Second-Shift-Signature-Version": version,
             "Content-Type": "application/json"}
 
 
 @requires_crypto
-def test_envelope_auth_over_http():
+def test_envelope_auth_over_http(monkeypatch):
+    monkeypatch.setenv("MAVERICK_PUBLIC_URL", "http://127.0.0.1")
     _enroll()
     priv, pub_hex = _ed25519_pair()
     _identity(pubkey=pub_hex)
@@ -448,7 +462,8 @@ def test_envelope_auth_over_http():
 
 
 @requires_crypto
-def test_envelope_replayed_nonce_is_401():
+def test_envelope_replayed_nonce_is_401(monkeypatch):
+    monkeypatch.setenv("MAVERICK_PUBLIC_URL", "http://127.0.0.1")
     _enroll()
     priv, pub_hex = _ed25519_pair()
     _identity(pubkey=pub_hex)
@@ -465,15 +480,19 @@ def test_envelope_replayed_nonce_is_401():
 
 def _hmac_headers(body: bytes, *, ts: str | None = None) -> dict:
     ts = ts or str(int(time.time()))
-    mac = hmac_mod.new(_HMAC_SECRET.encode(), f"{ts}.".encode() + body,
+    nonce = "hmac-test"
+    mac = hmac_mod.new(_HMAC_SECRET.encode(), _v2_message("hmac", ts, nonce, body),
                        hashlib.sha256)
     return {"X-Second-Shift-Agent-Id": "sf-quotebot",
             "X-Maverick-Timestamp": ts,
             "X-Maverick-Signature": "sha256=" + mac.hexdigest(),
+            "X-Second-Shift-Signature-Version": "2",
+            "X-Second-Shift-Nonce": nonce,
             "Content-Type": "application/json"}
 
 
 def test_hmac_auth_over_http(monkeypatch):
+    monkeypatch.setenv("MAVERICK_PUBLIC_URL", "http://127.0.0.1")
     monkeypatch.setenv(_HMAC_REF, _HMAC_SECRET)
     _enroll()
     _identity(hmac_secret_ref=_HMAC_REF)
@@ -485,6 +504,7 @@ def test_hmac_auth_over_http(monkeypatch):
 
 
 def test_hmac_stale_timestamp_is_401(monkeypatch):
+    monkeypatch.setenv("MAVERICK_PUBLIC_URL", "http://127.0.0.1")
     monkeypatch.setenv(_HMAC_REF, _HMAC_SECRET)
     _enroll()
     _identity(hmac_secret_ref=_HMAC_REF)
@@ -598,3 +618,24 @@ def test_require_signed_covers_hmac_only_agents(tmp_path):
                   headers={"Authorization": f"Bearer {token}"},
                   json={"tool": "crm_update", "risk": "low"})
     assert r.status_code == 401
+
+
+@requires_crypto
+def test_version_one_requires_legacy_policy(tmp_path):
+    from maverick import config
+
+    _enroll()
+    private, public = _ed25519_pair()
+    _identity(pubkey=public)
+    bare = TestClient(app, base_url="http://127.0.0.1")
+    path = "/api/v1/external/screen"
+    headers = _envelope_headers(private, _SCREEN_BODY, nonce="v1-policy", version="1")
+    assert bare.post(path, content=_SCREEN_BODY, headers=headers).status_code == 401
+
+    _identity(allow_legacy_signatures=True)
+    assert bare.post(path, content=_SCREEN_BODY, headers=headers).status_code == 200
+
+    (tmp_path / "config.toml").write_text("[external_agents]\nallow_legacy_signatures = false\n")
+    config.reset_config_cache()
+    headers = _envelope_headers(private, _SCREEN_BODY, nonce="v1-global", version="1")
+    assert bare.post(path, content=_SCREEN_BODY, headers=headers).status_code == 401

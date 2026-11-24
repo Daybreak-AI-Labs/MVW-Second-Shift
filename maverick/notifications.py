@@ -36,6 +36,7 @@ never appears in a log line, a delivery record or a returned message.
 """
 from __future__ import annotations
 
+import ipaddress
 import logging
 import os
 import threading
@@ -353,6 +354,20 @@ def _email_config(cfg: dict | None = None) -> dict:
     }
 
 
+def _smtp_tls_problem(mail: dict) -> str:
+    if mail["tls"] != "none":
+        return ""
+    host = mail["host"].lower()
+    try:
+        local = ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        local = host == "localhost"
+    if local and not mail["user"]:
+        return ""
+    return ("Alerts require a mail server with verified TLS. "
+            "A relay on this machine may use a plain connection without a username.")
+
+
 def _smtp_session(mail: dict):
     import smtplib
     import ssl
@@ -360,7 +375,10 @@ def _smtp_session(mail: dict):
     if mail["tls"] == "ssl":
         return smtplib.SMTP_SSL(mail["host"], mail["port"], timeout=_EMAIL_TIMEOUT,
                                 context=ssl.create_default_context())
-    return smtplib.SMTP(mail["host"], mail["port"], timeout=_EMAIL_TIMEOUT)
+    host = mail["host"]
+    if mail["tls"] == "none" and host.lower() == "localhost":
+        host = "127.0.0.1"
+    return smtplib.SMTP(host, mail["port"], timeout=_EMAIL_TIMEOUT)
 
 
 def send_email(to: str, subject: str, text_body: str, *, html_body: str | None = None,
@@ -402,6 +420,9 @@ def send_email(to: str, subject: str, text_body: str, *, html_body: str | None =
             _network_unknown()  # the message may already be on the wire
             log.warning("notify email failed: %s", type(e).__name__)
             return False
+    problem = _smtp_tls_problem(mail)
+    if problem:
+        return _not_sent(problem, retry=False)
     message = EmailMessage()
     message["From"] = mail["from_address"]
     message["To"] = recipient
@@ -448,7 +469,7 @@ def _email_problem(cfg: dict | None = None) -> str:
     if "@" not in mail["to"]:
         return "The email address set to receive alerts is not valid."
     if mail["host"] and mail["from_address"]:
-        return ""
+        return _smtp_tls_problem(mail)
     from .mailer import unavailable_reason
 
     # No complete alert server: the platform mail account carries the message.

@@ -156,11 +156,14 @@ first and then the name that sorts first.
   also with one warning. In both cases people keep their stored or default
   role.
 - With no table, nothing changes: sign-in works as it did before.
-- A change you make in Entra takes effect the next time the person signs in. A
-  browser session lasts at most 12 hours. Another session the person still has
-  open keeps its earlier role until it ends.
-- If you remove a role from the table, or remove the table, sessions that got
-  that role from sign-in lose it straight away.
+- Removing someone's Entra app role takes effect when they next sign in or
+  when their open session reaches its limit. Company browser sessions last
+  at most eight hours by default. Set `company_hours` in `[auth.sessions]`
+  to a whole number of hours from 1 to 168 to change the limit. Open sessions
+  also retain their original expiry.
+- If you change or remove a mapping, open sessions use the current map on
+  their next request. People with sessions from an earlier release may need
+  to sign in again to recover permissions from their Entra app roles.
 - A program that calls the API with a token Entra issued for this application
   is treated the same way: the `roles` claim of that token is read on every
   call.

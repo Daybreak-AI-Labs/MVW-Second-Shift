@@ -4,9 +4,8 @@ from __future__ import annotations
 from maverick.config import get_auth_sessions
 
 
-def company_ttl(default: int) -> int:
-    hours = get_auth_sessions()["company_hours"]
-    return min(default, hours * 3600) if hours else default
+def company_ttl() -> int:
+    return get_auth_sessions()["company_hours"] * 3600
 
 
 def effective_end(*, expires_at: float, issued_at: float, last_seen: float,

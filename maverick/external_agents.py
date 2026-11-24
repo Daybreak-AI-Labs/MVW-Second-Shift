@@ -599,7 +599,7 @@ def mint_token(
         from .agent_trust import hash_token
         entry[f"{surface}_token"] = hash_token(token)
         try:
-            put_agent(entry)
+            put_agent({**entry, "allow_legacy_signatures": agent.allow_legacy_signatures})
         except AgentTrustError as e:
             raise ExternalAgentsError(
                 _safe_exception_text(e, fallback="external-agent credential update failed")
@@ -935,6 +935,7 @@ def _entry_from_agent(agent) -> dict:
         "not_before": agent.not_before,
         "expires_at": agent.expires_at,
         "revoked": agent.revoked,
+        **({"allow_legacy_signatures": False} if not agent.allow_legacy_signatures else {}),
     }
 
 
@@ -3417,6 +3418,9 @@ def roster(*, registry: dict[str, Any] | None = None,
     sidecar raises instead of returning a reassuring empty enrollment list.
     """
     from .agent_trust import load_registry
+    from .config import get_external_agents
+
+    legacy_allowed = get_external_agents()["allow_legacy_signatures"]
     registry = load_registry(strict=strict) if registry is None else registry
     out = []
     for agent_id, meta in sorted(_load_sidecar(strict=strict).items()):
@@ -3456,6 +3460,8 @@ def roster(*, registry: dict[str, Any] | None = None,
                 if isinstance(e, dict) and e.get("status") == "pending"
                 and time.time() - float(e.get("created_at") or 0)
                 <= _EXECUTION_TTL_SECONDS),
+            "legacy_signatures": bool(legacy_allowed and agent and (agent.pubkey or agent.hmac_secret_ref)
+                                      and agent.allow_legacy_signatures),
             "credentials": [s for s in TOKEN_SURFACES
                             if agent and getattr(agent, f"{s}_token", "")],
         })

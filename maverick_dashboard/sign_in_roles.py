@@ -24,7 +24,7 @@ What this module does:
   :data:`MAX_VALUE_LENGTH` characters. Several mapped values: the role with the
   most permissions wins (:func:`strongest` documents the tie rule);
 * attaches that role at the two places that verified the token: the browser
-  sign-in callback keeps it in the signed session (:func:`session_extra`,
+  sign-in callback keeps its originating values in the signed session (:func:`session_extra`,
   :func:`from_session`), and the bearer check keeps it on that request's
   identity (:func:`with_token_role`);
 * gives it back only for the caller of the request in hand (:func:`carried`,
@@ -37,7 +37,7 @@ What it does not do:
 * keep a record per person. The role lives in that person's own session or
   token and nowhere else, so a lookup with no request (background work) or
   about someone other than the caller finds none, and removing the app role at
-  the identity provider takes effect at the person's next sign-in;
+  the identity provider takes effect at the person's next sign-in or session expiry;
 * outrank an administrator named in settings or a role stored for the person:
   ``auth.global_role_for_principal`` asks here only after both, and before the
   default role;
@@ -45,6 +45,7 @@ What it does not do:
 """
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
@@ -66,6 +67,8 @@ _MAX_CLAIM_NAME_LENGTH = 128
 # Where the role travels: a field of the signed session payload, and an entry
 # in the claims of the request's verified identity.
 CLAIM_KEY = "claim_role"
+_SESSION_ROLE_KEY = "oidc_role_values"
+_SESSION_ROLE_BYTES = 1400
 
 # One warning per distinct problem, however often the settings are read.
 _WARNED: set[tuple] = set()
@@ -80,6 +83,14 @@ class ClaimRole(str):
     role. :func:`carried` accepts nothing else."""
 
     __slots__ = ()
+
+
+@dataclass(frozen=True)
+class SessionRoleClaims:
+    """Bounded app-role values from an authenticated browser session."""
+
+    name: str
+    values: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -201,17 +212,31 @@ def role_from_claims(claims: object) -> str | None:
         return None
 
 
-def session_extra(claims: object) -> dict[str, str]:
-    """What the sign-in callback adds to the signed session: the mapped role,
-    or nothing at all when the verified ID token maps to none."""
-    role = role_from_claims(claims)
-    return {CLAIM_KEY: role} if role else {}
+def session_extra(claims: object) -> dict[str, object]:
+    """Keep the originating claim and values under the session signature."""
+    if not isinstance(claims, Mapping):
+        return {}
+    settings = load_settings()
+    if not settings.role_map:
+        return {}
+    claim = settings.claim
+    values = _claim_values(claims.get(claim))
+    # Leave room for the other session claims and for base64 encoding.
+    if not values or len(json.dumps(values, ensure_ascii=True)) > _SESSION_ROLE_BYTES:
+        return {}
+    return {_SESSION_ROLE_KEY: {"name": claim, "values": values}}
 
 
-def from_session(payload: Mapping[str, object]) -> ClaimRole | None:
-    """The role the sign-in callback kept in this signed session, if any."""
-    role = payload.get(CLAIM_KEY)
-    return ClaimRole(role) if isinstance(role, str) and role else None
+def from_session(payload: Mapping[str, object]) -> SessionRoleClaims | None:
+    """Read verified role values. Older sessions need a fresh provider sign-in."""
+    saved = payload.get(_SESSION_ROLE_KEY)
+    if not isinstance(saved, dict):
+        return None
+    name = saved.get("name")
+    values = _claim_values(saved.get("values"))
+    if not isinstance(name, str) or not _valid_claim_name(name) or not values:
+        return None
+    return SessionRoleClaims(name, tuple(values))
 
 
 def with_token_role(principal: VerifiedPrincipal) -> VerifiedPrincipal:
@@ -223,7 +248,7 @@ def with_token_role(principal: VerifiedPrincipal) -> VerifiedPrincipal:
     return replace(principal, claims={**principal.claims, CLAIM_KEY: ClaimRole(role)})
 
 
-def carried(request: object, principal: str | None) -> ClaimRole | None:
+def carried(request: object, principal: str | None) -> ClaimRole | SessionRoleClaims | None:
     """The claim role ``request``'s own caller carries, when ``principal`` is
     that caller. Reads no settings.
 
@@ -237,7 +262,7 @@ def carried(request: object, principal: str | None) -> ClaimRole | None:
         return None
     claims = getattr(caller, "claims", None)
     role = claims.get(CLAIM_KEY) if isinstance(claims, dict) else None
-    return role if type(role) is ClaimRole else None
+    return role if type(role) in (ClaimRole, SessionRoleClaims) else None
 
 
 def for_request(request: object, principal: str | None) -> str | None:
@@ -250,7 +275,12 @@ def for_request(request: object, principal: str | None) -> str | None:
     role = carried(request, principal)
     if role is None:
         return None
-    return str(role) if role in load_settings().role_map.values() else None
+    settings = load_settings()
+    if isinstance(role, SessionRoleClaims):
+        if role.name != settings.claim:
+            return None
+        return strongest(settings.role_map[value] for value in role.values if value in settings.role_map)
+    return str(role) if role in settings.role_map.values() else None
 
 
 __all__ = [

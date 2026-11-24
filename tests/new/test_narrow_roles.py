@@ -1001,7 +1001,7 @@ def test_an_approver_signs_in_through_the_browser(installation, app, token, agen
     monkeypatch.setattr(oidc_login, "_exchange_code_for_tokens", exchange)
     assert browser.get(f"/auth/callback?code=c&state={query['state'][0]}", follow_redirects=False).status_code == 303
     session = verify_session(browser.cookies.get(oidc_login.SESSION_COOKIE), SESSION_SECRET)
-    assert session["sub"] == "amal" and session["claim_role"] == "approver"
+    assert session["sub"] == "amal" and session["oidc_role_values"]["values"] == ["SecondShift.Approver"]
 
     page = browser.get("/approvals")
     assert page.status_code == 200 and f'id="approval-{parked["approval_id"]}"' in page.text

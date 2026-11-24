@@ -1088,7 +1088,9 @@ def test_the_status_endpoint_shows_how_delivery_is_set_up_and_no_secret(client, 
         "enabled": True,
         "channels": [
             {"channel": "teams", "ready": True, "problem": "", "webhook_set": True},
-            {"channel": "email", "ready": True, "problem": "", "recipient": "ops@example.test"},
+            {"channel": "email", "ready": False, "recipient": "ops@example.test",
+             "problem": ("Alerts require a mail server with verified TLS. "
+                         "A relay on this machine may use a plain connection without a username.")},
         ],
         "ignored": ["slack"],
         "available": ["teams", "email"],
