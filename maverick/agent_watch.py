@@ -22,8 +22,10 @@ listed:
 
 What it does not do. It only reads: a watcher makes a fixed set of GET calls
 (plus the sign-in), and nothing a caller passes in can change an address, a
-query or a method. It never changes, disables or deletes anything on a
-platform, and it does not contain or alert; a changed fingerprint becomes a
+query or a method. A check never changes, disables or deletes anything on a
+platform (the one guarded write, switching an agent off, lives in
+``agent_watch_switch`` and is never part of a check), and it does not contain
+or alert; a changed fingerprint becomes a
 drift finding through ``agent_drift``, which decides what happens next. It
 keeps names, states, version labels and fingerprints, never a platform's raw
 answer, and no token or secret is stored, logged or put in a message. It sees
@@ -53,7 +55,7 @@ import threading
 import time
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 from urllib.parse import SplitResult, urlsplit
@@ -153,7 +155,10 @@ class ObservedAgent:
     agent's configuration, worked out by the watcher from normalised values
     (see :func:`fingerprint`), never over the platform's raw answer.
     ``updated_at`` is whatever timestamp text the platform gives, ``state`` is
-    "enabled", "disabled" or "" when the platform does not say."""
+    "enabled", "disabled" or "" when the platform does not say.
+    ``details`` is the small description of the set-up kept beside the
+    fingerprint (see ``agent_watch_changes``); it holds short labels and
+    digests, never instruction text, and may be empty."""
 
     platform: str
     external_id: str
@@ -163,6 +168,7 @@ class ObservedAgent:
     state: str = ""
     fingerprint: str = ""
     binding_strength: str = OBSERVED_SNAPSHOT
+    details: dict = field(default_factory=dict, compare=False)
 
 
 class Watcher(Protocol):
@@ -466,10 +472,12 @@ def _https(url: str) -> SplitResult:
 
 
 def _request(method: str, url: str, *, headers: Mapping[str, str], timeout: float, max_bytes: int,
-             form: Mapping[str, str] | None = None, error_body: bool = False) -> tuple[int, bytes]:
+             form: Mapping[str, str] | None = None, error_body: bool = False,
+             json_body: Any = None, ok: tuple[int, ...] = (200,)) -> tuple[int, bytes]:
     """Send one request through the outbound guard. Returns the status and the
-    body: the whole body of a 200 (an error if it passes ``max_bytes``), the
-    start of any other answer when ``error_body``, otherwise nothing."""
+    body: the whole body of an ``ok`` status (200 unless said otherwise; an
+    error if it passes ``max_bytes``), the start of any other answer when
+    ``error_body``, otherwise nothing. ``json_body`` is sent as JSON."""
     import httpx
 
     from .enterprise import EgressBlocked
@@ -478,11 +486,11 @@ def _request(method: str, url: str, *, headers: Mapping[str, str], timeout: floa
     stop_at = _monotonic() + timeout
     try:
         with _ssrf.safe_client(url, timeout=timeout) as client:
-            with client.stream(method, url, headers=dict(headers), data=form) as response:
+            with client.stream(method, url, headers=dict(headers), data=form, json=json_body) as response:
                 status = response.status_code
-                if status != 200 and not error_body:
+                if status not in ok and not error_body:
                     return status, b""
-                return status, _bounded_body(response, max_bytes, stop_at, strict=status == 200)
+                return status, _bounded_body(response, max_bytes, stop_at, strict=status in ok)
     except WatchError:
         raise
     except _ssrf.BlockedHost:
@@ -1003,7 +1011,8 @@ def _tell_drift(runs: dict, refs: dict, moment: float) -> None:
             if agent is not None:
                 agent_drift.observe_discovered(
                     agent_id, version_digest=agent.fingerprint,
-                    binding_strength=agent.binding_strength, source=name, now=moment)
+                    binding_strength=agent.binding_strength, source=name, now=moment,
+                    description=agent.details)
 
 
 def status() -> dict:

@@ -152,7 +152,7 @@ def observed(monkeypatch):
     """Calls into drift observation, captured at the hook."""
     calls: list[dict] = []
 
-    def observe(agent_id, *, version_digest, binding_strength="", source="", now=None):
+    def observe(agent_id, *, version_digest, binding_strength="", source="", now=None, description=None):
         calls.append({"agent_id": agent_id, "version_digest": version_digest,
                       "binding_strength": binding_strength, "source": source, "now": now})
 

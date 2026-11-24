@@ -537,6 +537,7 @@ def test_a_check_matches_enrolled_agents_and_lists_the_rest(workday, tmp_path, c
     assert (view["listed"], view["name"], view["version"], view["state"], view["updated_at"]) == (
         True, "Change Business Title Agent", "v1", "", "")
     seen = agent_drift.detail("title-agent", now=T0)["config"]["discovered"]
+    assert seen.pop("description")["fields"]  # the description kept beside it is checked in test_agent_watch_changes
     assert seen == {"version_digest": _fingerprint(), "seen_at": T0, "source": "workday",
                     "binding_strength": "observed_snapshot"}
     assert all(platform["ready"] for platform in watch.status()["platforms"])
@@ -629,3 +630,31 @@ def test_a_check_only_ever_reaches_the_two_fixed_addresses(workday, tmp_path):
     watch.sync(now=T0)
     assert [(request.method, str(request.url)) for request in workday.requests] == [
         ("POST", SIGN_IN), ("GET", LIST)]
+
+
+# ------------------------------------------- the description kept beside a fingerprint
+
+def test_describes_the_definition_with_skill_names_and_digests(workday):
+    workday.lists(_definition())
+    agent, = _watcher().list_agents()
+    fields = agent.details["fields"]
+    assert (fields["name"], fields["version"], fields["extended_card"]) == (
+        "Change Business Title Agent", "v1", False)
+    assert fields["skills"] and all(isinstance(name, str) for name in fields["skills"])
+    for key in ("skill_definitions", "workday_config", "description", "url"):
+        assert fields[key].startswith("sha256:")
+    shown = repr(agent.details)
+    for text in (PURPOSE, "changetitleagent.example", "worker information", "checkAuth"):
+        assert text not in shown
+
+
+def test_a_changed_definition_is_told_in_words(workday):
+    from maverick import agent_watch_changes as changes
+    workday.lists(_definition())
+    before, = _watcher().list_agents()
+    workday.lists(_definition(version="v2", description="Something else entirely."))
+    after, = _watcher().list_agents()
+    text = changes.compare("workday", before.details, after.details)["summary"]
+    assert text == ("Change Business Title Agent changed on Workday: version v1 -> v2; description "
+                    "changed (Second Shift keeps a fingerprint of the description, not the text). "
+                    "Workday does not say who changed the definition or when.")

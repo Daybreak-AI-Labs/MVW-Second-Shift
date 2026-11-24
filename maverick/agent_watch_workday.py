@@ -40,7 +40,7 @@ import json
 import re
 from typing import Any
 
-from . import agent_watch
+from . import agent_watch, agent_watch_changes
 from .agent_watch import OBSERVED_SNAPSHOT, ObservedAgent, WatchConfigError, WatchError
 
 #: "Regional Availability of Agent Gateway": one public endpoint per region,
@@ -148,16 +148,42 @@ class WorkdayWatcher:
         parts = {key: _optional(row, key, str) for key in _TEXT_FIELDS}
         capabilities = _optional(row, "capabilities", dict) or {}
         description = _optional(row, "description", str)
+        provider, platform = _instance_id(row, "provider"), _instance_id(row, "platform")
+        flags = {key: _optional(capabilities, key, bool) for key in _CAPABILITIES}
+        extended = _optional(row, "supportsAuthenticatedExtendedCard", bool)
+        hashed = {key: _digest(_optional(row, key, list)) for key in _LIST_FIELDS}
         fingerprint = agent_watch.fingerprint({
-            **parts, "provider": _instance_id(row, "provider"), "platform": _instance_id(row, "platform"),
+            **parts, "provider": provider, "platform": platform,
             "description": None if description is None else _sha256(description),
-            "capabilities": {key: _optional(capabilities, key, bool) for key in _CAPABILITIES},
-            "supportsAuthenticatedExtendedCard": _optional(row, "supportsAuthenticatedExtendedCard", bool),
-            **{key: _digest(_optional(row, key, list)) for key in _LIST_FIELDS}})
+            "capabilities": flags, "supportsAuthenticatedExtendedCard": extended, **hashed})
         return ObservedAgent(
             platform=self.name, external_id=f"{self._tenant}/{identifier}", name=parts["name"] or "",
             version=(parts["version"] or "").strip(), fingerprint=fingerprint,
-            binding_strength=OBSERVED_SNAPSHOT)
+            binding_strength=OBSERVED_SNAPSHOT,
+            details=self._described(row, parts, provider, platform, flags, extended, description, hashed))
+
+    def _described(self, row: dict, parts: dict, provider: str | None, platform: str | None,
+                   flags: dict, extended: bool | None, description: str | None, hashed: dict) -> dict:
+        """What is kept to say later what changed: short labels, the names of
+        the skills and the capabilities that are on, and digests of everything
+        long. The skill, definition and description text is not kept. The
+        field names are those of the agent definition in
+        https://workday.github.io/asor/versions/v1.2.json (a skill's required
+        ``id``, ``name`` and ``description``)."""
+        skills = _optional(row, "skills", list) or []
+        names = [skill.get("name") for skill in skills if isinstance(skill, dict)]
+        digest = agent_watch_changes.digest
+        return agent_watch_changes.describe(self.name, {
+            "name": parts["name"], "version": parts["version"], "provider": provider,
+            "platform_id": platform, "capabilities": [key for key, on in flags.items() if on],
+            "extended_card": extended, "skills": names,
+            "skill_definitions": digest(hashed["skills"]), "workday_config": digest(hashed["workdayConfig"]),
+            "description": digest(None if description is None else _sha256(description)),
+            "input_modes": digest(hashed["defaultInputModes"]),
+            "output_modes": digest(hashed["defaultOutputModes"]),
+            "url": digest(parts["url"] and _sha256(parts["url"])),
+            "external_agent_id": digest(parts["externalAgentID"] and _sha256(parts["externalAgentID"])),
+            "external_tenant_id": digest(parts["externalTenantID"] and _sha256(parts["externalTenantID"]))})
 
 
 def _region(settings: dict, section: str) -> str:

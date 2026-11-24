@@ -1,5 +1,7 @@
 {# Drift for one outside agent: whether it still behaves like the baseline a
-   person approved, what changed, and the actions an operator can take. #}
+   person approved, what changed (field by field when its platform says), and
+   the actions an operator can take. Everything from a platform or an agent is
+   escaped by the template engine. #}
 {% set _DRIFT_STATE = {'no_baseline': 'No baseline yet', 'learning': 'Collecting activity',
                        'within_baseline': 'Matches its baseline', 'drifted': 'Changed since its baseline'} %}
 {% set _SEVERITY = {'high': 'High', 'medium': 'Medium', 'low': 'Low'} %}
@@ -25,18 +27,66 @@
       <tr>
         <td><span class="badge {{ 'failure' if f.severity == 'high' and not f.acknowledged else '' }}">{{ _SEVERITY.get(f.severity, f.severity) }}</span></td>
         <td>{{ f.summary }}</td>
+        {% if f.kind == 'config_changed' and f.source == 'discovery' %}
+        <td class="muted">Approved set-up</td>
+        <td>Current set-up</td>
+        {% else %}
         <td class="muted">{{ f.baseline if f.baseline is not none else '—' }}</td>
         <td>{{ f.current if f.current is not none else '—' }}</td>
+        {% endif %}
         <td>{% if f.acknowledged %}<span class="muted">Acknowledged</span>{% else %}
           <button type="button" class="btn btn--ghost" data-drift-ack="{{ f.key }}"{% if not can_respond %} disabled aria-disabled="true"{% endif %}>Acknowledge</button>{% endif %}</td>
       </tr>
+      {% if f.kind == 'config_changed' and f.source == 'discovery' %}
+      <tr class="drift-details">
+        <td></td>
+        <td colspan="4">
+          {% if f.details_recorded %}
+            {% if f.changes %}
+            <table class="drift-changes">
+              <caption class="sr-only">What changed in this agent's set-up</caption>
+              <thead><tr><th scope="col">Field</th><th scope="col">Before</th><th scope="col">Now</th></tr></thead>
+              <tbody>
+                {% for c in f.changes %}
+                <tr><th scope="row">{{ c.label | capitalize }}</th><td class="muted">{{ c.before if c.before is not none else 'Not reported' }}</td><td>{{ c.after if c.after is not none else 'Not reported' }}</td></tr>
+                {% endfor %}
+              </tbody>
+            </table>
+            {% else %}
+            <p class="muted">Its set-up changed in a way the platform does not describe field by field.</p>
+            {% endif %}
+            {% for note in f.not_known %}<p class="muted">{{ note }}</p>{% endfor %}
+          {% else %}
+          <p class="muted">{{ f.details_note or 'Details were not recorded for this change.' }}</p>
+          {% endif %}
+        </td>
+      </tr>
+      {% endif %}
       {% endfor %}
     </tbody>
   </table>
   {% endif %}
+  {% set _can_switch = platform_switch and platform_switch.supported and platform_switch.allowed %}
+  {% if drift.findings or (platform_switch and platform_switch.linked) %}
+  <div class="drift-actions" style="margin-top: var(--space-3);">
+    <h3 style="font-size: var(--text-md, 1rem); margin: 0 0 var(--space-2);">What you can do</h3>
+    <ul>
+      {% if drift.findings %}<li>If the new set-up is right, approve it as the baseline. Only an administrator can.</li>{% endif %}
+      <li>If you are not sure, pause the agent so Second Shift refuses its calls until you decide. <a href="/agent-control-plane">Pause it from Agent control</a> (needs permission to respond to agents).</li>
+      {% if _can_switch %}
+      <li>Or switch it off on {{ platform_switch.platform_name }}, so it stops working there too. Only an administrator can, and it can be switched back on.</li>
+      {% elif platform_switch and platform_switch.reason %}
+      <li>{{ platform_switch.reason }}</li>
+      {% endif %}
+    </ul>
+  </div>
+  {% endif %}
   <div class="mv-row__actions" style="flex-wrap: wrap; margin-top: var(--space-3);">
     <button type="button" class="btn {{ 'btn--primary' if not drift.baseline else 'btn--ghost' }}" id="drift-approve"{% if not can_manage %} disabled aria-disabled="true"{% endif %}>{{ 'Approve a new baseline' if drift.baseline else 'Approve current behaviour as the baseline' }}</button>
     <button type="button" class="btn btn--ghost" id="drift-check"{% if not can_respond %} disabled aria-disabled="true"{% endif %}>Check now</button>
+    {% if _can_switch %}
+    <button type="button" class="btn btn--ghost btn--danger" id="platform-switch" data-action="{{ 'on' if platform_switch.state == 'disabled' else 'off' }}" data-platform="{{ platform_switch.platform_name }}" data-name="{{ a.description or a.id }}"{% if not can_manage %} disabled aria-disabled="true"{% endif %}>{{ 'Switch back on at ' if platform_switch.state == 'disabled' else 'Switch off at ' }}{{ platform_switch.platform_name }}</button>
+    {% endif %}
   </div>
   {% if not can_manage %}<p class="muted" style="margin: var(--space-2) 0 0; font-size: var(--text-sm);">Only an administrator can approve a baseline.</p>{% endif %}
   {% endif %}
@@ -64,6 +114,20 @@
       if (out.failed) { window.mvToast(out.failed, { error: true }); return; }
     }
     done("Baseline approved.");
+  });
+  var platformSwitch = document.getElementById("platform-switch");
+  if (platformSwitch) platformSwitch.addEventListener("click", async function () {
+    var turnOn = platformSwitch.getAttribute("data-action") === "on";
+    var name = platformSwitch.getAttribute("data-name"), where = platformSwitch.getAttribute("data-platform");
+    var ask = turnOn
+      ? "Switch " + name + " back on at " + where + "? It will be able to work there again."
+      : "Switch " + name + " off at " + where + "? It stops working there, not only here, until someone switches it back on. The request is sent once and is not retried.";
+    if (!(await window.mvConfirm(ask, { okText: turnOn ? "Switch back on" : "Switch off" }))) return;
+    try {
+      var out = await window.mvFetchJSON("/api/v1/external-agents/" + encodeURIComponent(panel.getAttribute("data-agent")) + "/platform-switch",
+        post("", { action: turnOn ? "on" : "off", confirmed: true }), turnOn ? "switch the agent back on" : "switch the agent off");
+      done((out && out.message) || "Done.");
+    } catch (e) { window.mvToast(e.message || "The request did not go through.", { error: true }); }
   });
   var check = document.getElementById("drift-check");
   if (check) check.addEventListener("click", async function () {

@@ -49,6 +49,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
+from . import agent_watch_changes
+
 log = logging.getLogger("maverick.agent_drift")
 
 SCHEMA_VERSION = 1
@@ -541,21 +543,29 @@ def observe_run(agent_id: str, *, cost_dollars: float = 0.0, input_tokens: int =
 
 
 def observe_discovered(agent_id: str, *, version_digest: str, binding_strength: str = "",
-                       source: str = "", now: float | None = None) -> None:
+                       source: str = "", now: float | None = None,
+                       description: Mapping[str, Any] | None = None) -> None:
     """Remember the configuration fingerprint a discovery connector read from
     the agent's home platform. This is the authoritative fingerprint: it does
-    not depend on what the agent says about itself. Never raises; a no-op when
-    drift detection is off."""
+    not depend on what the agent says about itself. ``description`` is the
+    small description of the set-up that went with it (``agent_watch_changes``);
+    it is validated again here and kept beside the fingerprint, so a baseline
+    approved later keeps the description that was current with it. Never
+    raises; a no-op when drift detection is off."""
     def note(record: dict, moment: float) -> bool:
         digest = _fingerprint(version_digest)
         if not digest:
             return False
-        _config_of(record)["discovered"] = {
+        kept = {
             "version_digest": digest,
             "binding_strength": _label(binding_strength, limit=40),
             "source": _label(source),
             "seen_at": moment,
         }
+        described = agent_watch_changes.clean(kept["source"], description)
+        if described:
+            kept["description"] = described
+        _config_of(record)["discovered"] = kept
         return True
 
     _observe(agent_id, now, note)
@@ -1071,9 +1081,24 @@ def _config_findings(approved: dict, observed: dict) -> list[dict]:
         if not (isinstance(was, str) and isinstance(now, str) and was and now) or was == now:
             continue
         mark = hashlib.sha256(now.encode("utf-8", "replace")).hexdigest()[:12]
-        found.append(_finding(kind, severity, summary, was, now,
-                              key=f"{kind}:{source}:{mark}", source=source))
+        extra = _what_changed(approved, observed) if source == "discovery" else {}
+        found.append(_finding(kind, severity, extra.pop("summary", summary), was, now,
+                              key=f"{kind}:{source}:{mark}", source=source, **extra))
     return found
+
+
+def _what_changed(approved: dict, observed: dict) -> dict:
+    """For a changed platform fingerprint: the field-level difference between
+    the approved description and the current one, in plain words. A baseline
+    approved before descriptions were kept has none, and says so."""
+    was, now = _dict(approved.get("discovered")), _dict(observed.get("discovered"))
+    platform = now.get("source") if isinstance(now.get("source"), str) else ""
+    found = agent_watch_changes.compare(platform, was.get("description"), now.get("description"))
+    out: dict[str, Any] = {"details_recorded": found["recorded"], "changes": found["changes"],
+                           "not_known": found["not_known"], "details_note": found["details"]}
+    if found["recorded"]:
+        out["summary"] = found["summary"]
+    return out
 
 
 def _apply_acknowledgements(findings: list[dict], acknowledged: dict, reported: dict) -> None:
@@ -1248,7 +1273,7 @@ def _report_new(agent_id: str, cfg: dict, moment: float, *, contained: bool,
                     "agent_drift_detected", agent_id, finding=finding["key"],
                     finding_kind=finding["kind"], severity=finding["severity"],
                     baseline=finding["baseline"], current=finding["current"],
-                    reaction=cfg["on_drift"], contained=contained):
+                    summary=finding["summary"], reaction=cfg["on_drift"], contained=contained):
                 recorded.append(finding)
         hold = {f["key"] for f in unreported} - {f["key"] for f in recorded}
         record["reported"] = _remember(reported, result["findings"], moment,

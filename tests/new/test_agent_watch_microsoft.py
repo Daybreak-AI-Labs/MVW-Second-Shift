@@ -728,6 +728,7 @@ def test_a_check_across_all_three_platforms(microsoft, tmp_path, caplog):
         "entra_agent_id:1b7313c4-05d0-4a08-88e3-7b76c003a0a2",
         "foundry:contoso-ai/sales/unknown-agent"}
     seen = agent_drift.detail("quotes", now=T0)["config"]["discovered"]
+    assert seen.pop("description")["fields"]  # the description kept beside it is checked in test_agent_watch_changes
     assert seen == {"version_digest": _prompt_fingerprint(), "seen_at": T0, "source": "foundry",
                     "binding_strength": "immutable_provider_revision"}
     assert watch.platform_view("hr-helper")["updated_at"] == "2026-11-02T09:00:00Z"
@@ -801,3 +802,65 @@ def test_checks_only_ever_reach_the_fixed_microsoft_addresses(microsoft, tmp_pat
     watch.sync(now=T0)
     assert [(request.method, str(request.url)) for request in microsoft.requests] == [
         ("POST", LOGIN), ("GET", GRAPH), ("POST", LOGIN), ("GET", FOUNDRY), ("POST", LOGIN), ("GET", BOTS)]
+
+
+# ------------------------------------------- the description kept beside a fingerprint
+
+def test_entra_describes_the_fields_its_fingerprint_covers(microsoft):
+    microsoft.routes[GRAPH] = {"value": [_identity(accountEnabled=False)]}
+    agent, = _entra().list_agents()
+    assert agent.details["fields"] == {
+        "name": "My Agent Identity", "enabled": False,
+        "blueprint": "00001111-aaaa-2222-bbbb-3333cccc4444", "identity_type": "ServiceIdentity"}
+
+
+def test_foundry_describes_model_tools_and_a_digest_of_the_instructions(microsoft):
+    microsoft.routes[FOUNDRY] = _page([_foundry_agent()])
+    agent, = _foundry().list_agents()
+    fields = agent.details["fields"]
+    assert (fields["name"], fields["version"], fields["state"], fields["kind"], fields["model"]) == (
+        "quote-agent", "3", "enabled", "prompt", "gpt-4.1")
+    assert fields["tools"] == ["code_interpreter", "mcp:crm"]
+    assert set(fields["tool_settings"]) == {"code_interpreter", "mcp:crm"}
+    assert fields["instructions"] == "sha256:" + _sha("You write quotes.")[:16]
+    shown = repr(agent.details)
+    for text in ("You write quotes", "crm.example", "server_url"):
+        assert text not in shown
+
+
+def test_foundry_description_follows_a_change_to_each_defined_field(microsoft):
+    from maverick import agent_watch_changes as changes
+    microsoft.routes[FOUNDRY] = _page([_foundry_agent()])
+    before, = _foundry().list_agents()
+    microsoft.routes[FOUNDRY] = _page([_foundry_agent(version="4", definition={
+        "kind": "prompt", "model": "gpt-4.1-mini", "instructions": "Be brief.",
+        "tools": [{"type": "function", "name": "send_email", "parameters": {"type": "object"}},
+                  {"type": "code_interpreter"}, {"type": "mcp", "server_label": "crm",
+                                                 "server_url": "https://crm.example/other"}]})])
+    after, = _foundry().list_agents()
+    text = changes.compare("foundry", before.details, after.details)["summary"]
+    assert text == (
+        "quote-agent changed on Microsoft Foundry: version 3 -> 4; model gpt-4.1 -> gpt-4.1-mini; "
+        "tool added: function:send_email; tool settings changed: mcp:crm (Second Shift keeps a "
+        "fingerprint of the settings, not the settings); instructions changed (Second Shift keeps "
+        "a fingerprint of the instructions, not the text).")
+
+
+def test_foundry_labels_are_bounded_for_odd_tools(microsoft):
+    odd = _foundry_agent(definition={"kind": "prompt", "model": "m", "instructions": "x",
+                                     "tools": [{"type": "function", "name": "n" * 500}, "text", 7,
+                                               {"type": "function", "name": "dup"},
+                                               {"type": "function", "name": "dup", "extra": 1}]})
+    microsoft.routes[FOUNDRY] = _page([odd])
+    agent, = _foundry().list_agents()
+    tools = agent.details["fields"]["tools"]
+    assert all(len(tool) <= 80 for tool in tools)
+    assert {"tool", "function:dup", "function:dup#"} <= set(tools)
+
+
+def test_copilot_studio_describes_the_times_and_state_it_reads(microsoft):
+    microsoft.routes[BOTS] = _bots([_bot()])
+    agent, = _copilot().list_agents()
+    assert agent.details["fields"] == {
+        "name": "HR helper", "state": "enabled", "status_code": "1",
+        "published": "2026-10-30T08:15:00Z", "modified": "2026-11-02T09:00:00Z"}

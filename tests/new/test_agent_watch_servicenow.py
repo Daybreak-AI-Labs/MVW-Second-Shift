@@ -623,6 +623,7 @@ def test_a_check_matches_enrolled_agents_and_lists_the_rest(servicenow, tmp_path
     assert (view["listed"], view["state"], view["version"], view["updated_at"]) == (
         True, "enabled", "V1", "2026-11-02 09:00:00")
     seen = agent_drift.detail("reset-helper", now=T0)["config"]["discovered"]
+    assert seen.pop("description")["fields"]  # the description kept beside it is checked in test_agent_watch_changes
     assert seen == {"version_digest": _fingerprint(), "seen_at": T0, "source": "servicenow",
                     "binding_strength": "observed_snapshot"}
     assert all(platform["ready"] for platform in watch.status()["platforms"])
@@ -708,3 +709,42 @@ def test_a_check_only_ever_reaches_the_fixed_addresses(servicenow, tmp_path):
     assert [(request.method, str(request.url)) for request in servicenow.requests] == [
         ("POST", f"https://{HOST}/oauth_token.do"),
         *(("GET", _url(table, offset)) for table in _FIELDS for offset in (0, 100))]
+
+
+# ------------------------------------------- the description kept beside a fingerprint
+
+def test_describes_what_the_fingerprint_covers_without_the_text(servicenow):
+    _whole(servicenow)
+    agent, = _watcher().list_agents()
+    fields = agent.details["fields"]
+    assert (fields["name"], fields["active"], fields["version"], fields["agent_type"]) == (
+        "Password reset helper", True, "V1", "internal")
+    assert fields["versions"] == ["V1 (published)"] and fields["tools"] == ["Reset password"]
+    assert fields["role"] == "sha256:" + _sha(ROLE)[:16]
+    assert fields["instructions"].startswith("sha256:")
+    shown = repr(agent.details)
+    for text in (ROLE, STEPS, "Resets passwords for employees", "Verify the caller"):
+        assert text not in shown
+
+
+def test_a_change_to_the_active_flag_the_instructions_and_a_tool_is_told_in_words(servicenow):
+    from maverick import agent_watch_changes as changes
+    _whole(servicenow)
+    before, = _watcher().list_agents()
+    _whole(servicenow, configs=[_config_row(active="false")],
+           versions=[_version_row(version_name="V2", instructions="1. Do something else.")],
+           tools=[_tool_row(), _tool_row(tool="aa" + TOOL[2:], name="Unlock account")])
+    after, = _watcher().list_agents()
+    text = changes.compare("servicenow", before.details, after.details)["summary"]
+    assert text.startswith("Password reset helper changed on ServiceNow: active yes -> no; "
+                           "published version V1 -> V2;")
+    assert "version added: V2 (published); version removed: V1 (published)" in text
+    assert "tool added: Unlock account" in text and "instructions changed" in text
+
+
+def test_drafts_and_unnamed_tools_are_handled(servicenow):
+    _whole(servicenow, versions=[_version_row(), _version_row(state="draft", version_name="Draft")],
+           tools=[_tool_row(name="")])
+    agent, = _watcher().list_agents()
+    assert agent.details["fields"]["versions"] == ["V1 (published)"]
+    assert agent.details["fields"]["tools"] == [TOOL[:8]]
