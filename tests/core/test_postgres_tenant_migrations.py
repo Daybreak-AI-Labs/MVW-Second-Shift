@@ -7,6 +7,8 @@ The full round-trip lives in test_postgres_world.py (skipped without a DSN).
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
+
 import maverick.world_model_backends.postgres as pg
 import pytest
 from maverick import world_model
@@ -268,6 +270,49 @@ def test_provider_operation_attempt_migration_is_global_and_additive():
     assert "PRIMARY KEY (scope_sha256, operation_id, attempt_no)" in joined
     assert "UNIQUE (provider, period_key, request_id)" in joined
     assert "provider_operation_attempt_backfill" in joined
+
+
+def test_postgres_halt_clear_is_generation_bound(monkeypatch):
+    executed = []
+    cleared = []
+
+    class _Cursor:
+        rowcount = 0
+        selected_generation = "different-generation"
+
+        def execute(self, statement, params=None):
+            executed.append((statement, params))
+
+        def fetchone(self):
+            return (self.selected_generation,)
+
+    cursor = _Cursor()
+
+    @contextmanager
+    def _tx():
+        yield cursor
+
+    world = object.__new__(pg.PostgresWorldModel)
+    monkeypatch.setattr(world, "_tx", _tx)
+
+    assert world.disarm_halt(
+        expected_generation="observed-generation",
+        durable_clear=lambda: cleared.append("unexpected"),
+    ) is False
+    assert "SELECT generation" in executed[-1][0]
+    assert "FOR UPDATE" in executed[-1][0]
+    assert cleared == []
+
+    cursor.selected_generation = "current-generation"
+    cursor.rowcount = 1
+    assert world.disarm_halt(
+        expected_generation="current-generation",
+        durable_clear=lambda: cleared.append("cleared"),
+    ) is True
+    assert cleared == ["cleared"]
+    assert "DELETE FROM halt" in executed[-1][0]
+    assert "generation = %s" in executed[-1][0]
+    assert executed[-1][1] == ("current-generation",)
 
 
 def test_goal_decoder_keeps_owner_and_execution_principal_distinct(monkeypatch):

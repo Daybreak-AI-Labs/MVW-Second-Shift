@@ -1,0 +1,246 @@
+"""One control plane per data root, proven rather than documented.
+
+The single-replica invariant was asserted in eleven places -- the chart, two
+raw manifests, six docs, a runbook -- and enforced in exactly one: a
+``helm template`` guard. Build-time only, and itself untested and absent from
+CI. ``kubectl apply`` on a hand-edited manifest, ``compose up --scale``, or a
+second ``maverick dashboard`` on one host all walked past it.
+
+The failure mode is why this matters more than a crash would. Individual
+writes are already serialized, so two writers do not tear a record; they
+interleave *valid* records into append-only hash chains that assume one
+author. The result verifies clean and cannot be reconstructed.
+
+These tests use real processes and real file locks. A mocked lock would prove
+the code calls a function, which was never the thing in doubt.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+import textwrap
+from pathlib import Path
+
+import pytest
+from maverick import control_plane_lease as lease
+
+
+@pytest.fixture(autouse=True)
+def _isolated_root(tmp_path, monkeypatch):
+    monkeypatch.setenv("MAVERICK_HOME", str(tmp_path))
+    monkeypatch.delenv(lease.OVERRIDE_ENV, raising=False)
+    lease.release()
+    yield
+    lease.release()
+
+
+def _child(root: Path, *, hold_seconds: float = 0.0) -> subprocess.CompletedProcess:
+    """Acquire the lease in a REAL separate process.
+
+    Threads share a file-descriptor table and POSIX ``flock`` is per-open-file,
+    so a same-process attempt could pass while genuine cross-process exclusion
+    is broken. The case that matters is two OS processes.
+    """
+    code = textwrap.dedent(f"""
+        import json, os, sys, time
+        os.environ["MAVERICK_HOME"] = {str(root)!r}
+        from maverick import control_plane_lease as lease
+        try:
+            got = lease.acquire()
+        except lease.ControlPlaneBusy as e:
+            print(json.dumps({{"result": "busy", "message": str(e)}}))
+            sys.exit(0)
+        except lease.LeaseUnavailable as e:
+            print(json.dumps({{"result": "unavailable", "message": str(e)}}))
+            sys.exit(0)
+        print(json.dumps({{
+            "result": "acquired" if got else "overridden",
+            "token": got.fencing_token if got else None,
+            "pid": os.getpid(),
+        }}))
+        sys.stdout.flush()
+        time.sleep({hold_seconds})
+    """)
+    return subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, timeout=60,
+    )
+
+
+def _result(proc: subprocess.CompletedProcess) -> dict:
+    assert proc.returncode == 0, proc.stderr
+    return json.loads(proc.stdout.strip().splitlines()[-1])
+
+
+def test_the_first_process_acquires_the_root(tmp_path) -> None:
+    held = lease.acquire()
+    assert held is not None
+    assert held.holder.pid == os.getpid()
+    assert lease.lock_path().exists()
+
+
+def test_a_second_process_is_refused(tmp_path) -> None:
+    """The whole point. A real second OS process must not get the root."""
+    lease.acquire()
+    out = _result(_child(tmp_path))
+    assert out["result"] == "busy", out
+
+
+def test_the_refusal_names_the_holder_and_what_is_at_stake(tmp_path) -> None:
+    """An operator meeting this at 3am needs to know who and why.
+
+    "Could not acquire lock" would send them looking for a stuck process; the
+    actual cause is usually a replica count someone raised on purpose.
+    """
+    lease.acquire()
+    message = _result(_child(tmp_path))["message"]
+    assert str(os.getpid()) in message, message
+    assert "hash-chained" in message or "single author" in message, message
+    assert "MAVERICK_HOME" in message, message
+    # The remedy must match docs/deployment.md: remote workers exist but are
+    # not packaged, so "scale remote workers" alone sent operators nowhere.
+    assert "Scale remote workers" not in message, message
+    assert '[queue] backend = "arq"' in message and "not packaged" in message, message
+
+
+def test_two_data_roots_do_not_contend(tmp_path, monkeypatch) -> None:
+    """Negative control: the lock must be per-root, not global.
+
+    A guard that refused every second process regardless of root would pass
+    every test above and break every multi-deployment host.
+    """
+    other = tmp_path / "other"
+    other.mkdir()
+    lease.acquire()
+    assert _result(_child(other))["result"] == "acquired"
+
+
+def test_concurrent_same_process_admission_shares_one_owner(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        owners = list(executor.map(lambda _: lease.acquire(tmp_path), range(8)))
+    assert all(owner is owners[0] for owner in owners)
+    assert owners[0].fencing_token == 1
+
+
+def test_the_token_starts_at_one_on_a_fresh_root(tmp_path) -> None:
+    assert lease.acquire().fencing_token == 1
+
+
+def test_the_holder_record_is_readable_by_another_process(tmp_path) -> None:
+    """The refusal message is only useful if the record is parseable."""
+    held = lease.acquire()
+    data = json.loads(lease.holder_path().read_text(encoding="utf-8"))
+    assert data["pid"] == os.getpid()
+    assert data["fencing_token"] == held.fencing_token
+    assert data["role"] == "control-plane"
+
+
+def test_the_override_permits_a_second_process(tmp_path, monkeypatch) -> None:
+    lease.acquire()
+    env = dict(os.environ, **{lease.OVERRIDE_ENV: "1"})
+    proc = subprocess.run(
+        [sys.executable, "-c", textwrap.dedent(f"""
+            import json, os
+            os.environ["MAVERICK_HOME"] = {str(tmp_path)!r}
+            from maverick import control_plane_lease as lease
+            print(json.dumps({{"got": lease.acquire() is None}}))
+        """)], capture_output=True, text=True, env=env, timeout=60)
+    assert proc.returncode == 0, proc.stderr
+    assert json.loads(proc.stdout.strip())["got"] is True
+
+
+def test_an_unreadable_config_does_not_grant_the_override(
+    tmp_path, monkeypatch,
+) -> None:
+    """Fail closed: "we cannot tell" must read as "enforcement stays on"."""
+    monkeypatch.setattr(
+        "maverick.config.load_config",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("broken toml")))
+    assert lease.override_enabled() is False
+
+
+@pytest.mark.parametrize("value,expected", [
+    ("1", True), ("true", True), ("YES", True), ("on", True),
+    ("0", False), ("false", False), ("", False), ("maybe", False),
+])
+def test_override_parsing(monkeypatch, value, expected) -> None:
+    monkeypatch.setenv(lease.OVERRIDE_ENV, value)
+    assert lease.override_enabled() is expected
+
+
+def test_acquire_refuses_to_reset_a_corrupt_fencing_record(tmp_path) -> None:
+    """Corruption cannot silently turn a mature deployment back into token 1."""
+    record = lease.holder_path()
+    record.write_text("{not json", encoding="utf-8")
+
+    with pytest.raises(lease.LeaseUnavailable, match="fencing token cannot be proven"):
+        lease.acquire()
+
+    assert record.read_text(encoding="utf-8") == "{not json"
+
+
+def test_acquire_is_idempotent_within_a_process(tmp_path) -> None:
+    """Two components asking for the root must not deadlock the process."""
+    first = lease.acquire()
+    assert lease.acquire() is first
+
+
+def test_a_filesystem_without_locking_refuses_to_start(tmp_path, monkeypatch) -> None:
+    """The one outcome worse than refusing: believing you are alone.
+
+    Some NFS and overlay mounts return ENOLCK. Treating that as success would
+    mean shipping the exact corruption this module exists to prevent, while
+    reporting single-writer safety on /readyz.
+    """
+    def _enolck(fd, op):
+        raise OSError(38, "Function not implemented")
+
+    if os.name == "nt":
+        import msvcrt
+
+        monkeypatch.setattr(
+            msvcrt,
+            "locking",
+            lambda fd, mode, n: _enolck(fd, mode),
+        )
+    else:
+        import fcntl
+
+        monkeypatch.setattr(fcntl, "flock", _enolck)
+    with pytest.raises(lease.LeaseUnavailable) as exc:
+        lease.acquire()
+    assert "cannot provide advisory locking" in str(exc.value)
+    assert lease.OVERRIDE_ENV in str(exc.value), "must name the escape hatch"
+
+
+def test_a_contended_lock_is_not_mistaken_for_a_broken_filesystem(
+    tmp_path, monkeypatch,
+) -> None:
+    """Negative control for the branch above.
+
+    EAGAIN means "someone else holds it" and must raise ControlPlaneBusy;
+    only a genuine backend failure may raise LeaseUnavailable. Collapsing the
+    two would turn every second replica into a filesystem bug report.
+    """
+    import errno as _errno
+
+    if os.name == "nt":
+        import msvcrt
+
+        def _contended(fd, mode, n):
+            raise OSError(_errno.EACCES, "Permission denied")
+
+        monkeypatch.setattr(msvcrt, "locking", _contended)
+    else:
+        import fcntl
+
+        def _contended(fd, op):
+            raise OSError(_errno.EAGAIN, "Resource temporarily unavailable")
+
+        monkeypatch.setattr(fcntl, "flock", _contended)
+    with pytest.raises(lease.ControlPlaneBusy):
+        lease.acquire()

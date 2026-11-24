@@ -40,6 +40,7 @@ import logging
 import os
 import threading
 import time
+from collections.abc import Mapping
 from contextvars import copy_context
 from typing import Any
 
@@ -316,6 +317,35 @@ def encode_body(envelope: dict[str, Any]) -> bytes:
     return json.dumps(envelope, default=str).encode("utf-8")
 
 
+def read_signature_headers(headers: Mapping[str, str]) -> tuple[str, str]:
+    """Read Second Shift or legacy authentication headers without ambiguity.
+
+    Matching aliases (including repeated header fields) are compatible. Any
+    conflicting signature or timestamp is refused before authentication, so a
+    caller cannot silently choose a different signed request interpretation.
+    """
+    observed: dict[str, str] = {}
+    accepted = {
+        "x-second-shift-signature", "x-maverick-signature",
+        "x-second-shift-timestamp", "x-maverick-timestamp",
+    }
+    for key, value in headers.items():
+        name = key.lower()
+        if name not in accepted:
+            continue
+        if name in observed and observed[name] != value:
+            raise ValueError("Conflicting webhook authentication headers.")
+        observed[name] = value
+    values = []
+    for field in ("signature", "timestamp"):
+        current = observed.get(f"x-second-shift-{field}")
+        legacy = observed.get(f"x-maverick-{field}")
+        if current is not None and legacy is not None and current != legacy:
+            raise ValueError("Conflicting webhook authentication headers.")
+        values.append(current if current is not None else legacy or "")
+    return values[0], values[1]
+
+
 def build_headers(body: bytes, event: str, secret: str | None, *,
                   event_id: str | None = None) -> dict[str, str]:
     """Request headers for one attempt. The signature binds a fresh timestamp
@@ -528,4 +558,5 @@ __all__ = [
     "fire",
     "verify_signature",
     "inbound_secret",
+    "read_signature_headers",
 ]

@@ -1,0 +1,250 @@
+"""Human-friendly rendering of identities and roles for the dashboard UI.
+
+Enterprise operators should never have to read a raw OIDC subject like
+``user:auth0|000000000000000000000001`` or a lowercase role slug like
+``operator`` in the interface. The identity provider only hands us an opaque
+``sub`` for federated accounts (there is no email for a break-glass admin
+pinned by ``sub``), so we cannot always show a real name -- but we can always
+show *what kind of account it is* ("Google account", "Email & password
+account") instead of the machine string, keep a short disambiguating tail, and
+tuck the exact principal into a tooltip for the operator who still needs it
+(matching the audit log, configuring the admin list).
+
+Pure string formatting, no I/O. Exposed to templates as Jinja filters
+(``identity``, ``role_label``) registered in :mod:`maverick_dashboard.app`.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+# Auth0 / OIDC connection prefixes -> the provider a person recognizes. The
+# ``sub`` is ``<connection>|<id>``; the connection names are Auth0's strategy
+# identifiers plus a few common OIDC ``iss``-derived ones.
+_PROVIDERS = {
+    "auth0": "Email & password",
+    "email": "Email & password",
+    "google-oauth2": "Google",
+    "google-apps": "Google Workspace",
+    "windowslive": "Microsoft",
+    "microsoft": "Microsoft",
+    "waad": "Microsoft Entra ID",
+    "adfs": "Microsoft Entra ID",
+    "samlp": "SAML single sign-on",
+    "oidc": "Single sign-on",
+    "github": "GitHub",
+    "gitlab": "GitLab",
+    "linkedin": "LinkedIn",
+    "facebook": "Facebook",
+    "apple": "Apple",
+    "okta": "Okta",
+    "sms": "Phone number",
+}
+
+# Principal kind prefixes (the part before the first colon).
+_KINDS = {
+    "user": "Person",
+    "agent": "AI agent",
+    "service": "Service account",
+    "svc": "Service account",
+}
+
+# Built-in role slugs -> the label an operator reads. Unknown (custom) roles
+# fall through to a generic title-casing so a "privacy-officer" role still reads
+# as "Privacy officer".
+_ROLE_LABELS = {
+    "admin": "Administrator",
+    "operator": "Operator",
+    "auditor": "Auditor",
+    "viewer": "Viewer",
+    # The approval authority for suggested instruction changes (harness_refine).
+    "harness_refinement_operator": "Instruction changes",
+}
+
+# Permission atoms -> plain verbs, for the custom-role builder.
+_PERMISSION_LABELS = {
+    "admin": "Administer",
+    "audit": "Review audit trail",
+    "operate": "Run work",
+    "view": "View",
+}
+
+
+@dataclass(frozen=True)
+class Identity:
+    """A principal rendered for people. ``name`` is the human label, ``detail``
+    a short disambiguating tail (or empty), ``raw`` the exact principal string
+    for a tooltip / copy, ``kind`` the account-kind label."""
+
+    name: str
+    detail: str
+    raw: str
+    kind: str
+
+    def __str__(self) -> str:  # so ``{{ p | identity }}`` alone is still safe
+        return self.name
+
+
+def _short(identifier: str) -> str:
+    """A short, stable tail of an opaque id for disambiguation (never the whole
+    thing -- that is the machine string we are hiding)."""
+    identifier = identifier.strip()
+    if len(identifier) <= 10:
+        return identifier
+    return "…" + identifier[-6:]
+
+
+def humanize_principal(principal: object) -> Identity:
+    """Turn a principal string into an :class:`Identity` for display.
+
+    Accepts the ``kind:subject`` form the platform uses (``user:...``,
+    ``agent:...``) as well as a bare subject. Never raises: anything
+    unparseable renders as itself.
+    """
+    raw = "" if principal is None else str(principal).strip()
+    if not raw:
+        return Identity(name="Unknown", detail="", raw="", kind="")
+
+    kind_prefix, sep, subject = raw.partition(":")
+    if sep:
+        kind = _KINDS.get(kind_prefix.lower(), kind_prefix.capitalize())
+    else:
+        kind, subject = "", raw
+
+    subject = subject.strip()
+
+    # An agent/service principal: the subject is already a chosen name.
+    if kind_prefix.lower() in ("agent", "service", "svc"):
+        return Identity(name=subject or kind, detail=kind, raw=raw, kind=kind)
+
+    # Email-based subject (non-SSO invites store ``user:<email>``): show it.
+    if "@" in subject and "|" not in subject:
+        return Identity(name=subject, detail="Email", raw=raw, kind=kind or "Person")
+
+    # Federated ``<connection>|<id>`` subject: show the provider + a short tail.
+    if "|" in subject:
+        connection, _, ident = subject.partition("|")
+        provider = _PROVIDERS.get(connection.lower())
+        if provider:
+            return Identity(
+                name=f"{provider} account", detail=_short(ident), raw=raw,
+                kind=kind or "Person",
+            )
+        # Unknown connection: still avoid dumping the whole sub.
+        pretty = connection.replace("-", " ").replace("_", " ").strip().capitalize()
+        return Identity(
+            name=f"{pretty or 'Federated'} account", detail=_short(ident), raw=raw,
+            kind=kind or "Person",
+        )
+
+    # Loopback / local operator.
+    if subject.lower() in ("local", "loopback", "localhost"):
+        return Identity(name="Local operator", detail="", raw=raw, kind=kind or "Person")
+
+    # A short, already-readable subject (or anything else): show it as-is.
+    return Identity(name=subject or raw, detail="", raw=raw, kind=kind or "Person")
+
+
+def role_label(role: object) -> str:
+    """A built-in or custom role slug rendered as a readable label."""
+    slug = "" if role is None else str(role).strip()
+    if not slug:
+        return ""
+    if slug in _ROLE_LABELS:
+        return _ROLE_LABELS[slug]
+    return slug.replace("-", " ").replace("_", " ").strip().capitalize()
+
+
+def permission_label(permission: object) -> str:
+    """A permission atom (``operate``/``audit``/``admin``/``view``) as a verb."""
+    slug = "" if permission is None else str(permission).strip()
+    return _PERMISSION_LABELS.get(slug, slug.replace("-", " ").replace("_", " ").capitalize())
+
+
+# Words a stored value spells in lowercase that a person reads differently.
+# Kept in step with ``WORDS`` in static/lightwork-ui.js (mvHuman).
+_WORDS = {
+    "ai": "AI", "api": "API", "id": "ID", "ids": "IDs", "url": "URL", "sso": "SSO",
+    "dsar": "DSAR", "gdpr": "GDPR", "ccpa": "CCPA", "hipaa": "HIPAA", "soc2": "SOC 2",
+    "pii": "personal data", "sla": "SLA", "mfa": "MFA", "eu": "EU", "us": "US", "uk": "UK",
+    "llm": "AI model", "mcp": "MCP", "sha256": "fingerprint", "csv": "CSV", "pdf": "PDF",
+    "iso": "ISO", "nist": "NIST", "dpia": "DPIA", "ropa": "record of processing",
+    "cmp": "consent banner", "ok": "OK", "cmmc": "CMMC", "omb": "OMB", "rmf": "RMF",
+}
+# Whole identifiers whose word-by-word reading is wrong ("Ec article 50",
+# "Omb m 25 22", "Kv memory"): regulations and frameworks by their published
+# names, and agent tools by what they let an agent do. One table for every
+# page that shows these identifiers through ``humanize``.
+LABELS = {
+    "ec_article_50": "EU AI Act, Article 50",
+    "eu_ai_act_article_50": "EU AI Act, Article 50",
+    "ec_gpai_guidelines": "EU guidelines for general-purpose AI models",
+    "nist_ai_rmf_1_0": "NIST AI RMF 1.0",
+    "omb_m_25_22": "OMB M-25-22",
+    "kv_memory": "Saved notes",
+    "recv_from_agent": "Read messages from other agents",
+    "send_to_agent": "Send messages to other agents",
+}
+
+
+def known_label(value: object) -> str:
+    """A whole identifier's label from :data:`LABELS`, else the value as
+    written: for codes that are already a name (a control such as
+    ``AI-DISCLOSURE-01``) where word-by-word humanizing would mangle them."""
+    raw = "" if value is None else str(value)
+    return LABELS.get(raw.strip().lower(), raw)
+
+
+def humanize(value: object) -> str:
+    """A generic enum/slug (status, risk level, action, kind) rendered as a
+    readable label: underscores/hyphens become spaces, the first letter is
+    capitalized and known abbreviations read as a person writes them
+    (``in_progress`` -> ``In progress``, ``ai_act`` -> ``AI act``). Empty in,
+    empty out."""
+    known = LABELS.get(("" if value is None else str(value)).strip().lower())
+    if known:
+        return known
+    words = ("" if value is None else str(value)).replace("-", " ").replace("_", " ").split()
+    if not words:
+        return ""
+    text = " ".join(_WORDS.get(word.lower(), word.lower()) for word in words)
+    return text[0].upper() + text[1:]
+
+
+# Job-title words: abbreviations as people write them in a role name. Kept
+# apart from ``_WORDS`` because some ("it", "ir", "rd") are ordinary words or
+# fragments elsewhere.
+_TITLE_WORDS = {
+    "it": "IT", "ciso": "CISO", "cfo": "CFO", "ceo": "CEO", "coo": "COO", "cio": "CIO",
+    "chro": "CHRO", "hr": "HR", "hris": "HRIS", "qa": "QA", "qc": "QC", "sre": "SRE",
+    "soc": "SOC", "ehs": "EHS", "hse": "HSE", "esg": "ESG", "noc": "NOC", "pmo": "PMO",
+    "sdr": "SDR", "seo": "SEO", "ui": "UI", "csm": "CSM", "cx": "CX", "bi": "BI",
+    "ir": "IR", "ip": "IP", "ml": "ML", "dpo": "DPO", "ot": "OT", "gp": "GP",
+    "vp": "VP", "ap": "AP", "dr": "DR", "iam": "IAM", "rd": "R&D", "fpa": "FP&A",
+    "revops": "RevOps", "devops": "DevOps", "bsa": "BSA", "mlro": "MLRO",
+}
+_TITLE_PHRASES = (("fp a", "FP&A"), ("m and a", "M&A"), ("f and b", "F&B"))
+
+
+def job_title(value: object) -> str:
+    """A role identifier as a job title: ``it_manager`` -> ``IT manager``,
+    ``ciso`` -> ``CISO``, ``fp_a_lead`` -> ``FP&A lead``. Empty in, empty out."""
+    words = ("" if value is None else str(value)).replace("-", " ").replace("_", " ").lower().split()
+    if not words:
+        return ""
+    text = " ".join(words)
+    for phrase, label in _TITLE_PHRASES:
+        text = (" " + text + " ").replace(" " + phrase + " ", " " + label + " ").strip()
+    text = " ".join(_TITLE_WORDS.get(word, _WORDS.get(word, word)) for word in text.split())
+    return text[0].upper() + text[1:]
+
+
+__all__ = [
+    "Identity",
+    "humanize_principal",
+    "role_label",
+    "permission_label",
+    "humanize",
+    "known_label",
+    "job_title",
+    "LABELS",
+]

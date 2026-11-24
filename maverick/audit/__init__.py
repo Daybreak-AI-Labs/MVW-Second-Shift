@@ -31,6 +31,8 @@ _EXPORT_MODULE = {
     "AuditRefused": ".errors",
     "EventKind": ".events",
     "audit_event": ".writer",
+    "default_audit_log": ".writer",
+    "global_audit_log": ".writer",
     "record": ".writer",
     "record_global": ".writer",
 }
@@ -48,6 +50,8 @@ __all__ = [
     "EventKind",
     "AuditRefused",
     "audit_event",
+    "default_audit_log",
+    "global_audit_log",
     "record",
     "record_global",
 ]

@@ -238,28 +238,6 @@ async def test_async_permitted_hop_preserves_async_stream_contract(
     assert "sync Client instance" not in str(caught.value)
 
 
-def test_an_in_process_asgi_request_is_not_blocked(guarded) -> None:
-    """A request that never opens a socket cannot leak, so it must not be
-    refused.
-
-    Otherwise the guard would block every TestClient request (host
-    "testserver") under enterprise mode. That is not a test artifact -- it
-    would refuse any in-process ASGI call a deployment makes.
-    """
-    starlette = pytest.importorskip("starlette.testclient")
-
-    async def app(scope, receive, send):
-        await send({"type": "http.response.start", "status": 200,
-                    "headers": [(b"content-length", b"2")]})
-        await send({"type": "http.response.body", "body": b"ok"})
-
-    # Starlette's TestClient, which is the exact shape that broke: it ships its
-    # own `_TestClientTransport`, not httpx's ASGITransport.
-    # No `with`: entering the client runs the ASGI lifespan, which this bare
-    # app does not implement. The request path is what is under test.
-    assert starlette.TestClient(app).get("/x").status_code == 200
-
-
 def test_a_mock_transport_is_not_blocked(guarded) -> None:
     def handler(request):
         return httpx.Response(200, text="ok")

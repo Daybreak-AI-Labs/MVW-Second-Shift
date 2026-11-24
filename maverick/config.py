@@ -569,6 +569,24 @@ def dashboard_overrides_path() -> Path:
     return config_path().parent / DASHBOARD_OVERRIDES_BASENAME
 
 
+def load_governed_records_config() -> dict:
+    """Load only sources allowed to select the governed-record backend.
+
+    Tenant overlays must not select a deployment-global persistence plane.
+    The deployment-global sources do: config.toml, the dashboard settings
+    overlay (written only by a global administrator on Settings > All
+    settings), then the operator overlay; environment variables still win in
+    the readers. This is :func:`load_global_config`, which never merges a
+    tenant overlay.
+    """
+    return load_global_config()
+
+
+def governed_records_config_source_errors() -> dict[str, str]:
+    """Unreadable sources participating in governed-backend selection."""
+    return config_source_errors(include_tenant=False)
+
+
 def _source_errors(paths: list[Path]) -> dict[str, str]:
     """Return current parse/I/O errors for exactly ``paths``."""
     # Optional overlays are skipped by ``load_config`` once they disappear, so
@@ -810,6 +828,16 @@ _KEEP_READ_SECONDS = 2.0
 _KEPT_READ: ContextVar[_KeptRead | None] = ContextVar("maverick_config_kept_read", default=None)
 
 
+@contextmanager
+def kept_reads():
+    """Let the decisions of one request share a read while its inputs are unchanged."""
+    token = _KEPT_READ.set(_KeptRead())
+    try:
+        yield
+    finally:
+        _KEPT_READ.reset(token)
+
+
 # st_ctime is the change time on POSIX but the creation time on Windows ("Changed
 # in version 3.12: st_ctime is deprecated on Windows", os.stat_result). An
 # in-place rewrite that restores the modification time and keeps the size then
@@ -991,6 +1019,216 @@ def _merge_tenant(cfg: dict, tenant: dict, path: Path) -> dict:
 def _tighten_tenant(cfg: dict, tenant: dict) -> tuple[dict, list[str], list[str]]:
     """This product runs one workspace; a per-workspace settings file is refused."""
     raise RuntimeError("per-workspace settings files are not supported")
+
+
+def signing_identity_transition_enabled() -> bool:
+    """Whole-installation trust admission requires a healthy global opt-in."""
+    try:
+        features = load_global_config().get("features") or {}
+        return (not config_source_errors(include_tenant=False) and isinstance(features, dict)
+                and features.get("signing_identity_transition") is True)
+    except Exception:
+        return False
+
+
+def get_features() -> dict:
+    """Return the [features] section. These toggle agent-facing behaviors that
+    are otherwise always on:
+
+    - ``skills``      inject distilled/installed skills into agent prompts.
+                      The MAVERICK_USE_SKILLS env var, when set, overrides this.
+    - ``world_model`` inject persisted world-model facts (cross-run memory)
+                      into the orchestrator brief. Off = run without prior
+                      stored facts; the per-run goal/event/checkpoint store
+                      (world.db) still functions regardless.
+    - ``streaming``   stream live progress to the terminal during `maverick
+                      start`. The MAVERICK_NO_PROGRESS env var / non-TTY output
+                      still suppress it.
+    - ``pack_editing`` allow editing/overriding domain packs (agents) from the
+                      dashboard editor. Off = the editor is read-only and the
+                      mutating REST endpoints return 403, so an operator can
+                      lock the agent roster in a governed deployment. Writing
+                      override TOML on the host is unaffected.
+    - ``role_editing`` allow editing the core agent roles (orchestrator, coder,
+                      ...) from the dashboard -- a per-tenant system-prompt
+                      addendum plus model/effort overrides per role (which win
+                      over the global [models]/[effort] config). Off = the roles
+                      editor is read-only and its mutating endpoints 403.
+    - ``scheduling`` allow arming recurring schedules (cron) from the dashboard
+                      workflow builder -- each fire enqueues a ``start_goal`` job
+                      run by ``maverick worker``. Off = the schedule endpoints
+                      return 403 and the UI hides; the ``maverick schedule`` CLI
+                      on the host is unaffected.
+    - ``triggers`` allow binding a saved template to an inbound webhook (POST
+                      /webhook/run) so an external event runs it as a goal. The
+                      inbound route is HMAC-signed exactly like /webhook/start
+                      and fails closed without a [webhooks] secret. Off = the
+                      /api/v1/triggers editor and the /webhook/run route 404/403
+                      and the builder panel hides.
+
+    Draft recovery, record search, Action Center, guided onboarding and workflow
+    readiness default on. Workspace recovery, project reviews and outcome
+    measurement and employee companions require explicit opt-in. The older
+    switches default on. Employee companions expose the enrolled person's task
+    status, private companion history controls and optional administrator-permitted
+    AI drafts through the existing writer role. Drafts may use eligible retained
+    history and currently permitted own-task titles/status; they do not enable
+    model tools, task actions, connected sources or learned memory.
+    """
+    cfg = load_config().get("features", {}) or {}
+    return {
+        "skills": coerce_bool(cfg.get("skills"), True),
+        "world_model": coerce_bool(cfg.get("world_model"), True),
+        "streaming": coerce_bool(cfg.get("streaming"), True),
+        "pack_editing": coerce_bool(cfg.get("pack_editing"), True),
+        "role_editing": coerce_bool(cfg.get("role_editing"), True),
+        "draft_recovery": cfg.get("draft_recovery", True) is True,
+        "personal_preferences": cfg.get("personal_preferences", True) is True,
+        "configuration_profiles": cfg.get("configuration_profiles", True) is True,
+        "employee_task_diagnostics": cfg.get("employee_task_diagnostics", True) is True,
+        "employee_activation": cfg.get("employee_activation", True) is True,
+        "support_center": cfg.get("support_center", True) is True,
+        "record_search": cfg.get("record_search", True) is True,
+        "workspace_recovery": cfg.get("workspace_recovery", False) is True,
+        "signing_identity_transition": signing_identity_transition_enabled(),
+        "action_center": cfg.get("action_center", True) is True,
+        "guided_onboarding": cfg.get("guided_onboarding", True) is True,
+        "workflow_readiness": cfg.get("workflow_readiness", True) is True,
+        "project_reviews": cfg.get("project_reviews", False) is True,
+        "deliverable_bundles": cfg.get("deliverable_bundles", False) is True,
+        "project_workspaces": cfg.get("project_workspaces", False) is True,
+        "task_handoffs": cfg.get("task_handoffs", False) is True,
+        "human_conversation_handoffs": cfg.get("human_conversation_handoffs", False) is True,
+        "outcome_measurement": cfg.get("outcome_measurement", False) is True,
+        "commitment_viability": cfg.get("commitment_viability", False) is True,
+        "commitment_capability_learning": cfg.get("commitment_capability_learning", False) is True,
+        "semantic_rule_reuse": cfg.get("semantic_rule_reuse", False) is True,
+        "procedure_interactions": cfg.get("procedure_interactions", False) is True,
+        "operational_competence_acquisition": cfg.get("operational_competence_acquisition", False) is True,
+        "request_program": cfg.get("request_program", False) is True,
+        "commitment_economic_alternatives": cfg.get("commitment_economic_alternatives", False) is True,
+        "workflow_step_checks": cfg.get("workflow_step_checks", False) is True,
+        "applicability_regions": cfg.get("applicability_regions", False) is True,
+        "governed_rule_evolution": cfg.get("governed_rule_evolution", False) is True,
+        "recovery_visibility": cfg.get("recovery_visibility", False) is True,
+        "private_task_computation": cfg.get("private_task_computation", False) is True,
+        "portable_competence": cfg.get("portable_competence", False) is True,
+        "work_restructuring": cfg.get("work_restructuring", False) is True,
+        "shared_decision_evidence": cfg.get("shared_decision_evidence", False) is True,
+        "employee_companions": (
+            not config_source_errors() and cfg.get("employee_companions", False) is True
+        ),
+        "employee_content_access_requests": (
+            not config_source_errors() and cfg.get("employee_content_access_requests", False) is True
+        ),
+        "permission_access_requests": (
+            not config_source_errors() and cfg.get("permission_access_requests", False) is True
+        ),
+        "employee_departures": (
+            not config_source_errors() and cfg.get("employee_departures", False) is True
+        ),
+        "personal_data_controls": (
+            not config_source_errors() and cfg.get("personal_data_controls", False) is True
+        ),
+        "copilot_operations": (not config_source_errors() and cfg.get("copilot_operations", False) is True),
+        "scheduling": coerce_bool(cfg.get("scheduling"), True),
+        "triggers": coerce_bool(cfg.get("triggers"), True),
+    }
+
+
+# RFC 8176 authentication-method values that mean a second factor was used,
+# plus "fido" (Okta/Auth0 emit it for WebAuthn). "pwd", "pin", "kba", "user"
+# and the plain biometric hints are single factors and deliberately absent;
+# an administrator extends this list in [auth.mfa] amr_values.
+DEFAULT_MFA_AMR_VALUES: tuple[str, ...] = (
+    "mfa", "mca", "otp", "hwk", "swk", "fido", "pop", "sms", "tel", "sc",
+)
+# SAML AuthnContextClassRef values that mean a second factor was used.
+DEFAULT_MFA_SAML_CONTEXTS: tuple[str, ...] = (
+    "http://schemas.microsoft.com/claims/multipleauthn",
+    "urn:oasis:names:tc:SAML:2.0:ac:classes:TimeSyncToken",
+    "urn:oasis:names:tc:SAML:2.0:ac:classes:MobileTwoFactorContract",
+    "urn:oasis:names:tc:SAML:2.0:ac:classes:MobileTwoFactorUnregistered",
+    "urn:oasis:names:tc:SAML:2.0:ac:classes:SmartcardPKI",
+    "urn:oasis:names:tc:SAML:2.0:ac:classes:Smartcard",
+    "urn:okta:loa:2fa:any",
+)
+DEFAULT_STEP_UP_MINUTES = 15
+
+
+def _str_list(value: object, default: tuple[str, ...]) -> list[str]:
+    if isinstance(value, str):
+        value = [part for part in value.split(",")]
+    if not isinstance(value, (list, tuple)):
+        return list(default)
+    return [str(v).strip() for v in value if str(v).strip()]
+
+
+def get_auth_mfa() -> dict:
+    """``[auth.mfa]``: require a second factor at sign-in, and step-up.
+
+    Off by default. ``require`` (``MAVERICK_MFA_REQUIRE``) accepts an OIDC
+    session only when the ID token's ``amr`` names one of ``amr_values`` or
+    its ``acr`` is in ``acr_values``, and a SAML session only when the
+    assertion's authentication context is in ``saml_authn_contexts``.
+    ``acr_values`` is also sent on the authorization request.
+    ``step_up_minutes`` (``MAVERICK_MFA_STEP_UP_MINUTES``) is how recent that
+    second factor must be for a sensitive action while ``require`` is on.
+    A workspace's own config.toml overlays these keys for its members.
+    """
+    cfg = (load_config().get("auth") or {}).get("mfa") or {}
+    if not isinstance(cfg, dict):
+        cfg = {}
+    require = env_flag("MAVERICK_MFA_REQUIRE")
+    if require is None:
+        # A present non-bool is uncertainty about a security policy: on.
+        require = _strict_config_bool(cfg, "require", False, invalid=True)
+    minutes_raw: object = os.environ.get("MAVERICK_MFA_STEP_UP_MINUTES") or cfg.get(
+        "step_up_minutes", DEFAULT_STEP_UP_MINUTES)
+    try:
+        minutes = int(float(str(minutes_raw)))
+    except (TypeError, ValueError, OverflowError):  # OverflowError: ``inf`` / ``1e999``
+        # An unusable window is invalid like any other: the documented default
+        # applies. Raising here would read as "policy unreadable" downstream and
+        # reject every named sign-in as missing a second factor.
+        minutes = DEFAULT_STEP_UP_MINUTES
+    if isinstance(minutes_raw, bool) or minutes < 1:
+        minutes = DEFAULT_STEP_UP_MINUTES
+    return {
+        "require": bool(require),
+        "step_up_minutes": minutes,
+        "amr_values": _str_list(cfg.get("amr_values"), DEFAULT_MFA_AMR_VALUES),
+        "acr_values": _str_list(cfg.get("acr_values"), ()),
+        "saml_authn_contexts": _str_list(
+            cfg.get("saml_authn_contexts"), DEFAULT_MFA_SAML_CONTEXTS),
+    }
+
+
+def get_auth_sessions() -> dict:
+    """Installation-wide browser limits and ended-session retention."""
+    if config_source_errors(include_tenant=False):
+        raise ValueError("Sign-in settings cannot be read.")
+    loaded = load_global_config()
+    if config_source_errors(include_tenant=False):  # the load itself may have found it
+        raise ValueError("Sign-in settings cannot be read.")
+    authentication = loaded.get("auth", {})
+    if not isinstance(authentication, dict):
+        raise ValueError("Sign-in settings must contain named choices.")
+    cfg = authentication.get("sessions", {})
+    if not isinstance(cfg, dict):
+        raise ValueError("Sign-in settings must contain named choices.")
+    raw = cfg.get("retention_days", 30)
+    try:
+        days = int(raw) if not isinstance(raw, bool) else 30
+    except (TypeError, ValueError, OverflowError):
+        days = 30
+    limits = {}
+    for name, maximum in (("company_hours", 168), ("idle_minutes", 1440)):
+        value = cfg.get(name, 0)
+        if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= maximum:
+            raise ValueError(f"auth.sessions.{name} must be an integer from zero to {maximum}")
+        limits[name] = value
+    return {"retention_days": max(1, min(days, 3650)), **limits}
 
 
 _EKKO_DEFAULT_BLOCKED_APPS = (

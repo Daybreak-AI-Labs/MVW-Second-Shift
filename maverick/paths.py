@@ -282,6 +282,21 @@ def explicit_tenant_id() -> str | None:
     return os.environ.get("MAVERICK_TENANT", "").strip() or None
 
 
+def implicit_tenant_id() -> str | None:
+    """The deployment's own default tenant: the ``MAVERICK_TENANT`` process
+    binding or the ``[client] id`` floor, ignoring any per-request scope.
+
+    This is the tenant every task ran in before an operator created the first
+    named workspace, so the tenant registry keeps it admitted rather than
+    treating it as an unknown tenant once a roster exists.
+    """
+    env = os.environ.get("MAVERICK_TENANT", "").strip()
+    if env:
+        return env
+    from .client import client_id
+    return client_id()
+
+
 def current_tenant_id() -> str | None:
     """The active raw tenant id, or ``None`` for the shared/legacy root.
 
@@ -381,6 +396,41 @@ def data_dir(*parts: str, tenant: str | None = "__active__") -> Path:
     return base.joinpath(*parts)
 
 
+def tenant_by_user_enabled() -> bool:
+    """Opt-in, off by default. ``MAVERICK_TENANT_BY_USER=1`` or
+    ``[tenancy] by_user = true`` makes the server isolate each channel user
+    into their own tenant (so one user's cross-session memory can't leak to
+    another). Off -> single shared tenant, behaviour unchanged."""
+    env = os.environ.get("MAVERICK_TENANT_BY_USER")
+    if env is not None and env.strip():
+        value = env.strip().lower()
+        if value in {"1", "true", "yes", "on"}:
+            return True
+        if value in {"0", "false", "no", "off"}:
+            return False
+        raise TenantPolicyError("MAVERICK_TENANT_BY_USER must be a boolean")
+    try:
+        from .config import config_source_errors, load_config
+
+        loaded = load_config()
+        if config_source_errors():
+            raise TenantPolicyError(
+                "tenant isolation policy unavailable: an active config source is invalid"
+            )
+        cfg = loaded.get("tenancy") or {}
+        if not isinstance(cfg, dict):
+            raise TenantPolicyError("[tenancy] must be a table")
+        raw = cfg.get("by_user", False)
+        if not isinstance(raw, bool):
+            raise TenantPolicyError("[tenancy] by_user must be a boolean")
+        base = raw
+    except TenantPolicyError:
+        raise
+    except Exception as exc:
+        raise TenantPolicyError(f"tenant isolation policy unavailable: {exc}") from exc
+    return base
+
+
 __all__ = [
     "current_tenant_id",
     "current_tenant_id_strict",
@@ -395,6 +445,7 @@ __all__ = [
     "TenantPolicyError",
     "MAX_TENANT_SEGMENT_LENGTH",
     "explicit_tenant_id",
+    "tenant_by_user_enabled",
     "canonical_tenant_id",
     "bind_tenant_namespace",
 ]

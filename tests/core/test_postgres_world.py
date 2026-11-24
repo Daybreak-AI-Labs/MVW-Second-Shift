@@ -303,6 +303,34 @@ def test_rls_enforces_tenant_isolation_at_db_level(monkeypatch):
             cur.execute("DROP ROLE IF EXISTS mvk_rls_app")
 
 
+def test_halt_durable_clear_failure_rolls_back_locked_generation(world):
+    prior = world.active_halt()
+    if prior is not None:
+        world.disarm_halt(expected_generation=prior["generation"])
+
+    try:
+        world.arm_halt("incident", source="postgres-test")
+        observed = world.active_halt()
+        callbacks = []
+
+        def _local_clear_failure():
+            callbacks.append("attempted")
+            raise OSError("local clear failed")
+
+        with pytest.raises(OSError, match="local clear failed"):
+            world.disarm_halt(
+                expected_generation=observed["generation"],
+                durable_clear=_local_clear_failure,
+            )
+
+        assert callbacks == ["attempted"]
+        assert world.active_halt() == observed
+    finally:
+        current = world.active_halt()
+        if current is not None:
+            world.disarm_halt(expected_generation=current["generation"])
+
+
 def test_list_approvals_newest_first(world, monkeypatch):
     from maverick.world_model_backends import postgres
 

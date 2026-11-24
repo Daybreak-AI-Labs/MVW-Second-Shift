@@ -8,7 +8,14 @@ https-only, fail-soft). No network: httpx is monkeypatched.
 from __future__ import annotations
 
 import pytest
-from maverick.oidc import load_oidc_config
+from maverick import oidc
+from maverick.oidc import (
+    OIDCConfig,
+    OIDCError,
+    load_oidc_config,
+    login_enabled,
+    resolve_endpoints,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -30,7 +37,9 @@ def _clean_env(monkeypatch, tmp_path):
         "MAVERICK_OIDC_TOKEN_ENDPOINT",
     ):
         monkeypatch.delenv(name, raising=False)
+    oidc._DISCOVERY_CACHE.clear()
     yield
+    oidc._DISCOVERY_CACHE.clear()
 
 
 def test_login_fields_default_empty():
@@ -73,3 +82,247 @@ def test_env_overrides_login_fields(monkeypatch):
     assert cfg.client_secret == "env-secret"  # pragma: allowlist secret
     assert cfg.redirect_uri == "https://x/auth/callback"
     assert cfg.session_secret == "env-hmac"  # pragma: allowlist secret
+
+
+def _full(**overrides) -> OIDCConfig:
+    base = dict(
+        enabled=True,
+        issuer="https://idp.example.com",
+        audience="maverick",
+        client_id="cid",
+        client_secret="client-secret",  # pragma: allowlist secret
+        redirect_uri="https://dash.example.com/auth/callback",
+        session_secret="hmac",  # pragma: allowlist secret
+    )
+    base.update(overrides)
+    return OIDCConfig(**base)
+
+
+def test_login_disabled_by_default():
+    assert login_enabled() is False
+
+
+def test_login_enabled_requires_oidc_enabled():
+    assert login_enabled(_full(enabled=False)) is False
+
+
+def test_login_enabled_requires_client_id():
+    assert login_enabled(_full(client_id="")) is False
+
+
+def test_login_enabled_requires_callback_secret_and_audience():
+    for field in ("redirect_uri", "client_secret", "audience"):
+        assert login_enabled(_full(**{field: ""})) is False
+
+
+def test_login_enabled_requires_session_secret():
+    assert login_enabled(_full(session_secret="")) is False
+
+
+def test_login_enabled_with_issuer():
+    assert login_enabled(_full()) is True
+
+
+def test_login_disabled_with_explicit_endpoints_but_no_issuer():
+    cfg = _full(
+        issuer="",
+        authorization_endpoint="https://idp.example.com/authorize",
+        token_endpoint="https://idp.example.com/token",
+    )
+    assert login_enabled(cfg) is False
+
+
+def test_login_disabled_without_issuer_or_endpoints():
+    # No issuer and only one endpoint -> can't resolve, stays off.
+    cfg = _full(issuer="", authorization_endpoint="https://idp.example.com/authorize")
+    assert login_enabled(cfg) is False
+
+
+def test_resolve_explicit_endpoints_skip_discovery(monkeypatch):
+    """Explicit endpoints are used verbatim; discovery is never called."""
+    def _boom(*a, **k):  # pragma: no cover - must not run
+        raise AssertionError("discovery should not run when endpoints are explicit")
+
+    monkeypatch.setattr(oidc, "_discover_endpoints", _boom)
+    cfg = _full(
+        authorization_endpoint="https://idp.example.com/authorize",
+        token_endpoint="https://idp.example.com/token",
+    )
+    got = resolve_endpoints(cfg)
+    assert got["authorization_endpoint"] == "https://idp.example.com/authorize"
+    assert got["token_endpoint"] == "https://idp.example.com/token"
+
+
+def test_resolve_via_discovery(monkeypatch):
+    """With no explicit endpoints, discovery fills them from the issuer doc."""
+    captured = {}
+
+    class _Resp:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "issuer": "https://idp.example.com",
+                "authorization_endpoint": "https://idp.example.com/auth",
+                "token_endpoint": "https://idp.example.com/tok",
+            }
+
+    def _fake_get(url, **kwargs):
+        captured["url"] = url
+        return _Resp()
+
+    import httpx
+
+    monkeypatch.setattr(httpx, "get", _fake_get)
+    got = resolve_endpoints(_full())
+    assert got["authorization_endpoint"] == "https://idp.example.com/auth"
+    assert got["token_endpoint"] == "https://idp.example.com/tok"
+    assert captured["url"] == (
+        "https://idp.example.com/.well-known/openid-configuration"
+    )
+
+
+def test_discovery_is_cached(monkeypatch):
+    calls = {"n": 0}
+
+    class _Resp:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "issuer": "https://idp.example.com/",  # a trailing slash is the same issuer
+                "authorization_endpoint": "https://idp.example.com/auth",
+                "token_endpoint": "https://idp.example.com/tok",
+            }
+
+    def _fake_get(url, **kwargs):
+        calls["n"] += 1
+        return _Resp()
+
+    import httpx
+
+    monkeypatch.setattr(httpx, "get", _fake_get)
+    resolve_endpoints(_full())
+    resolve_endpoints(_full())
+    assert calls["n"] == 1  # second call served from cache
+
+
+def test_discovery_must_name_the_configured_issuer_and_is_read_again_after_an_hour(monkeypatch):
+    """A document that names another issuer (or none) could send the browser
+    and the client secret to someone else's endpoints, and a cached answer
+    used to be kept for the life of the process."""
+    doc = {"authorization_endpoint": "https://idp.example.com/auth",
+           "token_endpoint": "https://idp.example.com/tok"}
+    calls = []
+
+    class _Resp:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            calls.append(1)
+            return dict(doc)
+
+    import httpx
+
+    monkeypatch.setattr(httpx, "get", lambda url, **k: _Resp())
+    clock = [1000.0]
+    monkeypatch.setattr(oidc.time, "monotonic", lambda: clock[0])
+    for wrong in (None, "https://other.example.com", "https://idp.example.com/tenant"):
+        doc.pop("issuer", None)
+        if wrong:
+            doc["issuer"] = wrong
+        with pytest.raises(OIDCError, match="issuer"):
+            resolve_endpoints(_full())
+    doc["issuer"] = "https://idp.example.com"
+    assert resolve_endpoints(_full())["token_endpoint"] == "https://idp.example.com/tok"
+    answered = len(calls)
+
+    doc["token_endpoint"] = "https://idp.example.com/tok2"  # the provider moved it
+    clock[0] += oidc._DISCOVERY_TTL_SECONDS - 1
+    assert resolve_endpoints(_full())["token_endpoint"] == "https://idp.example.com/tok"
+    assert len(calls) == answered
+    clock[0] += 2
+    assert resolve_endpoints(_full())["token_endpoint"] == "https://idp.example.com/tok2"
+
+
+def test_an_unreachable_provider_after_the_hour_keeps_the_last_checked_endpoints(monkeypatch):
+    """After the hour a failed re-read gave "misconfigured" on every sign-in
+    until the provider's discovery address answered again. The endpoints read
+    last were checked, so they stay in use; a document that does arrive and
+    names another issuer is still refused."""
+    doc = {"issuer": "https://idp.example.com",
+           "authorization_endpoint": "https://idp.example.com/auth",
+           "token_endpoint": "https://idp.example.com/tok"}
+    state = {"down": False, "calls": 0}
+
+    class _Resp:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return dict(doc)
+
+    def _get(url, **kwargs):
+        state["calls"] += 1
+        if state["down"]:
+            raise RuntimeError("connection refused")
+        return _Resp()
+
+    import httpx
+
+    monkeypatch.setattr(httpx, "get", _get)
+    clock = [1000.0]
+    monkeypatch.setattr(oidc.time, "monotonic", lambda: clock[0])
+    first = resolve_endpoints(_full())
+
+    clock[0] += oidc._DISCOVERY_TTL_SECONDS + 1
+    state["down"] = True
+    assert resolve_endpoints(_full()) == first
+    asked = state["calls"]
+    assert resolve_endpoints(_full()) == first and state["calls"] == asked  # not on every sign-in
+    clock[0] += oidc._DISCOVERY_RETRY_SECONDS + 1
+    assert resolve_endpoints(_full()) == first and state["calls"] == asked + 1
+
+    state["down"] = False
+    doc["issuer"] = "https://other.example.com"
+    clock[0] += oidc._DISCOVERY_RETRY_SECONDS + 1
+    with pytest.raises(OIDCError, match="issuer"):
+        resolve_endpoints(_full())
+
+
+def test_discovery_rejects_non_https_issuer():
+    cfg = _full(issuer="http://idp.example.com")
+    with pytest.raises(OIDCError):
+        resolve_endpoints(cfg)
+
+
+def test_discovery_rejects_non_https_discovered_endpoint(monkeypatch):
+    class _Resp:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "authorization_endpoint": "http://idp.example.com/auth",  # not https
+                "token_endpoint": "https://idp.example.com/tok",
+            }
+
+    import httpx
+
+    monkeypatch.setattr(httpx, "get", lambda url, **k: _Resp())
+    with pytest.raises(OIDCError):
+        resolve_endpoints(_full())
+
+
+def test_discovery_network_failure_is_oidcerror(monkeypatch):
+    def _boom(url, **kwargs):
+        raise RuntimeError("connection refused")
+
+    import httpx
+
+    monkeypatch.setattr(httpx, "get", _boom)
+    with pytest.raises(OIDCError):
+        resolve_endpoints(_full())

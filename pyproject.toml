@@ -14,6 +14,10 @@ dependencies = [
     "idna>=3.15",
     "tzdata>=2026.3",
     "pyjwt[crypto]>=2.13.0",
+    "fastapi>=0.115",
+    "jinja2>=3.1",
+    "python-multipart>=0.0.9",
+    "uvicorn>=0.30",
     "pyobjc-framework-Cocoa>=11,<13; sys_platform=='darwin'",
 ]
 
@@ -23,6 +27,9 @@ dev = ["pytest>=8", "pytest-asyncio", "pytest-xdist", "pytest-timeout", "ruff>=0
 
 [tool.setuptools.packages.find]
 include = ["maverick*", "maverick_dashboard*"]
+
+[tool.setuptools.package-data]
+maverick_dashboard = ["templates/*.html", "static/*", "static/fonts/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

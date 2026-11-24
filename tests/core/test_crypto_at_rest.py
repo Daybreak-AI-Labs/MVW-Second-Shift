@@ -26,6 +26,11 @@ def _isolate(monkeypatch, tmp_path):
     monkeypatch.delenv("MAVERICK_GOVERNED_RECORDS_BACKEND", raising=False)
     monkeypatch.delenv("MAVERICK_WORLD_BACKEND", raising=False)
     monkeypatch.setattr("maverick.config.load_config", lambda *a, **k: {})
+    monkeypatch.setattr("maverick.config.load_governed_records_config", dict)
+    monkeypatch.setattr(
+        "maverick.config.governed_records_config_source_errors",
+        dict,
+    )
     # Keep the generated key out of the real ~/.maverick.
     monkeypatch.setattr(car, "_KEY_PATH", tmp_path / "keys" / "at_rest.key")
 

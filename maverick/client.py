@@ -30,6 +30,8 @@ import logging
 import os
 import re
 
+from ._envparse import coerce_bool, is_truthy
+
 log = logging.getLogger(__name__)
 
 # A client id becomes the tenant path segment, so it must satisfy the tenant
@@ -145,9 +147,40 @@ def strict_client_id() -> str | None:
     return raw
 
 
+def client_binding_enforced() -> bool:
+    """Is a client binding REQUIRED to operate?
+
+    On via ``MAVERICK_CLIENT_ENFORCE``, ``[client] enforce = true``, or
+    enterprise mode (a deployment handling a real client's sensitive data must
+    be provably bound to that client). Off by default. One decision reads the
+    configuration once (``config.single_read``)."""
+    from .config import single_read
+
+    with single_read():
+        return _client_binding_enforced()
+
+
+def _client_binding_enforced() -> bool:
+    env = os.environ.get("MAVERICK_CLIENT_ENFORCE")
+    if env is not None and env.strip() != "":
+        return is_truthy(env)
+    try:
+        from .enterprise import enterprise_enabled
+        if enterprise_enabled():
+            return True
+    except Exception:  # pragma: no cover
+        pass
+    try:
+        from .config import load_config
+        return coerce_bool(((load_config() or {}).get("client") or {}).get("enforce"))
+    except Exception:
+        return False
+
+
 __all__ = [
     "ClientBindingError",
     "client_id",
     "strict_client_id",
+    "client_binding_enforced",
     "reset_client_cache",
 ]

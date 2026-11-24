@@ -997,6 +997,174 @@ def _decision(config):
         return config.load_config()
 
 
+def test_one_request_reads_the_configuration_once_while_nothing_changes(config_home):
+    # A page asked about 29 times; each read the files, resolved the at-rest
+    # key and decrypted the saved secret again.
+    from maverick import config
+
+    _, reads = config_home
+    with config.kept_reads():
+        for _ in range(5):
+            assert _decision(config)["budget"]["max_dollars"] == 5.0
+            assert config.load_config()["providers"]["anthropic"]["api_key"] == "sk-test-not-a-real-key"  # pragma: allowlist secret
+        first = config.load_config()
+        first["budget"]["max_dollars"] = 999  # each caller has its own copy
+        assert _decision(config)["budget"]["max_dollars"] == 5.0
+    assert len(reads) == 1
+    config.load_config()
+    assert len(reads) == 2, "outside a request every read is fresh, as before"
+
+
+def test_a_policy_saved_during_a_request_is_read_by_its_next_decision(config_home):
+    import os
+
+    from maverick import config
+
+    home, reads = config_home
+    with config.kept_reads():
+        assert _decision(config)["budget"]["max_dollars"] == 5.0
+        replacement = home / "config.toml.new"
+        replacement.write_text("[budget]\nmax_dollars = 9.5\n", encoding="utf-8")
+        os.replace(replacement, home / "config.toml")
+        assert _decision(config)["budget"]["max_dollars"] == 9.5
+        assert _decision(config)["budget"]["max_dollars"] == 9.5
+    assert len(reads) == 2
+
+
+def test_an_environment_change_is_read_by_the_next_decision(config_home, monkeypatch):
+    from maverick import config
+
+    home, reads = config_home
+    (home / "config.toml").write_text('[models]\nsummarizer = "${MAVERICK_KEPT_MODEL}"\n', encoding="utf-8")
+    monkeypatch.setenv("MAVERICK_KEPT_MODEL", "first:model")
+    with config.kept_reads():
+        assert _decision(config)["models"]["summarizer"] == "first:model"
+        monkeypatch.setenv("MAVERICK_KEPT_MODEL", "second:model")
+        assert _decision(config)["models"]["summarizer"] == "second:model"
+    assert len(reads) == 2
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+def test_a_loosened_key_file_is_read_by_the_next_decision(config_home):
+    from maverick import config, crypto_at_rest
+
+    _, reads = config_home
+    with config.kept_reads():
+        _decision(config)
+        with crypto_at_rest.deployment_key_scope():
+            key = crypto_at_rest._key_path()
+        key.chmod(0o644)
+        _decision(config)  # reads again, and the read makes the key private again
+        assert len(reads) == 2
+        assert key.stat().st_mode & 0o077 == 0
+        key.parent.chmod(0o755)
+        _decision(config)
+        assert len(reads) == 3
+
+
+def test_a_new_rotation_key_is_read_by_the_next_decision(config_home):
+    from maverick import config, crypto_at_rest
+
+    _, reads = config_home
+    with config.kept_reads():
+        _decision(config)
+        with crypto_at_rest.deployment_key_scope():
+            keyring = crypto_at_rest._keyring_dir()
+        keyring.mkdir(parents=True, exist_ok=True)
+        _decision(config)
+        (keyring / "0011223344556677.key").write_text("00" * 32, encoding="utf-8")
+        _decision(config)
+    assert len(reads) == 3
+
+
+def test_a_kept_read_is_used_for_two_seconds_at_most(config_home, monkeypatch):
+    # A Windows ACL change on the key folder does not show in its file facts.
+    from maverick import config
+
+    _, reads = config_home
+    now = [1000.0]
+    monkeypatch.setattr(config, "_monotonic", lambda: now[0])
+    with config.kept_reads():
+        _decision(config)
+        now[0] += 1.9
+        _decision(config)
+        assert len(reads) == 1
+        now[0] += 0.2
+        _decision(config)
+    assert len(reads) == 2
+
+
+def test_a_read_that_met_an_error_is_not_kept(config_home):
+    from maverick import config
+
+    home, reads = config_home
+    (home / "config.toml").write_text("[budget\n", encoding="utf-8")
+    with config.kept_reads():
+        for _ in range(3):
+            _decision(config)
+            config.load_config()
+            assert str(home / "config.toml") in config.config_source_errors()
+    assert len(reads) == 6
+
+
+def test_a_key_folder_that_cannot_be_named_is_not_kept_and_still_fails_soft(config_home, monkeypatch):
+    from maverick import config, crypto_at_rest
+
+    _, reads = config_home
+    config.dashboard_overrides_path().unlink()  # the read itself needs no key
+
+    def unnamed():
+        raise RuntimeError("the client binding is invalid")
+
+    monkeypatch.setattr(crypto_at_rest, "_key_path", unnamed)
+    with config.kept_reads():
+        for _ in range(2):
+            assert _decision(config)["budget"]["max_dollars"] == 5.0  # no exception
+    assert len(reads) == 2
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX links")
+def test_a_link_put_in_place_of_the_key_is_read_by_the_next_decision(config_home, tmp_path_factory):
+    # A read refuses a hard-linked key file or a key folder replaced by a
+    # link; a kept read must not keep opening the secrets past that.
+    import os
+
+    from maverick import config, crypto_at_rest
+
+    home, reads = config_home
+    with crypto_at_rest.deployment_key_scope():
+        key = crypto_at_rest._key_path()
+    elsewhere = tmp_path_factory.mktemp("elsewhere")
+    with config.kept_reads():
+        _decision(config)
+        os.link(key, elsewhere / "copy.key")
+        assert "providers" not in _decision(config)
+        assert str(config.dashboard_overrides_path()) in config.config_source_errors()
+        (elsewhere / "copy.key").unlink()
+        assert "providers" in _decision(config)
+        os.rename(key.parent, home / "keys-real")
+        os.symlink(home / "keys-real", key.parent)
+        assert "providers" not in _decision(config)
+    assert len(reads) == 4
+
+
+def test_a_key_rewritten_in_place_with_its_time_restored_is_read_again(config_home):
+    import os
+
+    from maverick import config, crypto_at_rest
+
+    _, reads = config_home
+    with crypto_at_rest.deployment_key_scope():
+        key = crypto_at_rest._key_path()
+    with config.kept_reads():
+        assert "providers" in _decision(config)
+        before = key.stat()
+        key.write_text("ab" * 32, encoding="utf-8")  # another key, the same size
+        os.utime(key, ns=(before.st_atime_ns, before.st_mtime_ns))
+        assert "providers" not in _decision(config)  # the saved secret no longer opens
+    assert len(reads) == 2
+
+
 def _windows_stat_without_change_time(monkeypatch, home):
     """Report the stat results under ``home`` as Windows does: st_ctime is the
     creation time, which an in-place rewrite leaves alone, so a rewrite that
@@ -1021,6 +1189,27 @@ def _windows_stat_without_change_time(monkeypatch, home):
     monkeypatch.setattr(os, "stat", without_change_time(os.stat))
     monkeypatch.setattr(os, "lstat", without_change_time(os.lstat))
     monkeypatch.setattr(config, "_CTIME_IS_CHANGE_TIME", False)
+
+
+def test_a_key_rewritten_in_place_on_windows_is_read_again_though_stat_shows_no_change(config_home, monkeypatch):
+    import os
+
+    from maverick import config, crypto_at_rest
+
+    home, reads = config_home
+    _windows_stat_without_change_time(monkeypatch, home)
+    with crypto_at_rest.deployment_key_scope():
+        key = crypto_at_rest._key_path()
+    with config.kept_reads():
+        assert "providers" in _decision(config)
+        before = os.stat(key)  # os.stat, not Path.stat: Python 3.10's pathlib binds it early
+        key.write_text("ab" * 32, encoding="utf-8")  # another key, the same size
+        os.utime(key, ns=(before.st_atime_ns, before.st_mtime_ns))
+        after = os.stat(key)
+        assert (after.st_size, after.st_mtime_ns, after.st_ctime_ns) == (
+            before.st_size, before.st_mtime_ns, before.st_ctime_ns)
+        assert "providers" not in _decision(config)  # the saved secret no longer opens
+    assert len(reads) == 2
 
 
 def test_a_config_rewritten_in_place_on_windows_is_read_again_though_stat_shows_no_change(config_home, monkeypatch):
@@ -1058,6 +1247,34 @@ def test_a_wizard_env_file_rewritten_in_place_on_windows_is_loaded_again(tmp_pat
     os.utime(env, ns=(before.st_atime_ns, before.st_mtime_ns))
     config._load_env_file(env)
     assert os.environ[name] == "other"
+
+
+def test_a_key_whose_content_cannot_be_read_is_read_again_not_kept(config_home, monkeypatch):
+    # A digest read that is denied states no content. Two such statements must
+    # not count as the same file, or a key rewritten in place between the two
+    # decisions keeps opening the saved secret from the kept read.
+    import os
+
+    from maverick import config, crypto_at_rest
+
+    home, _ = config_home
+    _windows_stat_without_change_time(monkeypatch, home)
+    with crypto_at_rest.deployment_key_scope():
+        key = crypto_at_rest._key_path()
+    real_read = config.atomic_read_bytes
+
+    def denied_for_the_key(path, **kwargs):
+        if str(path) == str(key):
+            raise PermissionError(13, "The process cannot access the file", str(path))
+        return real_read(path, **kwargs)
+
+    monkeypatch.setattr(config, "atomic_read_bytes", denied_for_the_key)
+    with config.kept_reads():
+        assert "providers" in _decision(config)
+        before = os.stat(key)
+        key.write_text("ab" * 32, encoding="utf-8")
+        os.utime(key, ns=(before.st_atime_ns, before.st_mtime_ns))
+        assert "providers" not in _decision(config)  # the saved secret no longer opens
 
 
 def test_a_config_whose_content_cannot_be_read_is_parsed_again(config_home, monkeypatch):

@@ -1,0 +1,31 @@
+{#- The sidebar navigation. nav_groups comes from the page registry
+    (maverick_dashboard.ui_visibility.PAGES) filtered to what the caller's role may see. -#}
+{% macro _nav_link(link, active) -%}
+<a href="{{ link.href }}"{% if active %} class="active" aria-current="page"{% endif %}><svg class="nav-ic" aria-hidden="true"><use href="#i-{{ link.icon or 'dot' }}"></use></svg><span class="nav-label">{{ ui(link.label) }}</span></a>
+{%- endmacro %}
+{% set _path = request.url.path if request else '' %}
+{# Prefer the most specific visible route so a nested page marks one current link. #}
+{% set _active_nav = namespace(href='') %}
+{% for _group in nav_groups %}
+  {% for _link in _group.links %}
+    {% if (_path == _link.href or _path.startswith(_link.href ~ '/')) and (_link.href|length > _active_nav.href|length) %}
+      {% set _active_nav.href = _link.href %}
+    {% endif %}
+  {% endfor %}
+{% endfor %}
+{% for _group in nav_groups %}
+  {% if _group.links %}
+  <div class="navgrp">
+    <button type="button" class="navgrp__toggle" data-grp="{{ _group.label }}"
+            aria-expanded="true" aria-controls="navgrp-{{ loop.index0 }}">
+      <span class="navgrp__label">{{ ui(_group.title or _group.label) }}</span>
+      <svg class="navgrp__caret" width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M2 3.5 L5 6.5 L8 3.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </button>
+    <ul class="navgrp__items" id="navgrp-{{ loop.index0 }}">
+      {% for _link in _group.links %}
+        <li>{{ _nav_link(_link, _active_nav.href == _link.href) }}</li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+{% endfor %}

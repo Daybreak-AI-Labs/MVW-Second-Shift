@@ -15,11 +15,12 @@ import contextlib
 import functools
 import logging
 import os
+import secrets
 import sqlite3
 import threading
 import time
 from collections import OrderedDict
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import fields
 from pathlib import Path
 from typing import Any
@@ -1744,6 +1745,14 @@ class WorldModel:
         del system
         return self._read_all(sql, tuple(params))
 
+    def ping(self) -> bool:
+        """Cheap liveness probe for ``/healthz`` -- confirms the world store
+        answers a trivial read. Backend-agnostic (mirrored on Postgres) so the
+        deep health check probes the SAME store the app actually uses, not a
+        hard-coded local ``world.db``. Raises on failure (the caller reports it)."""
+        self._read_one("SELECT 1 AS one", ())
+        return True
+
     # ---- share links: revocable, expiring read-only access to a goal --------
 
     def set_goal_status(self, goal_id: int, status: str, result: str | None = None) -> None:
@@ -2140,6 +2149,113 @@ class WorldModel:
     def _chunks(values: list[int], size: int = 500) -> Iterator[list[int]]:
         for index in range(0, len(values), size):
             yield values[index:index + size]
+
+    # ----- channel dedup -----
+    def mark_message_processed(
+        self,
+        channel: str,
+        external_id: str,
+        goal_id: int | None = None,
+    ) -> bool:
+        """Record an inbound message as processed; idempotent.
+
+        Returns True on first-write (the caller should run the goal),
+        False on duplicate (the caller should return 200 without
+        re-running). Twilio retries within 15s if the webhook is slow
+        or non-2xx; the same MessageSid arriving twice was producing
+        N goals and N spends before this.
+        """
+        try:
+            with self._writing() as conn:
+                conn.execute(
+                    "INSERT INTO processed_messages(channel, external_id, goal_id, seen_at) "
+                    "VALUES(?, ?, ?, ?)",
+                    (channel, external_id, goal_id, time.time()),
+                )
+            return True
+        except sqlite3.IntegrityError:
+            if self._read_one(
+                "SELECT 1 FROM processed_messages WHERE channel = ? AND external_id = ?",
+                (channel, external_id),
+            ) is not None:
+                return False
+            raise
+
+    def release_processed_message(self, channel: str, external_id: str) -> None:
+        """Undo a claim made by ``mark_message_processed`` so a retry can
+        re-process the message.
+
+        Channels claim the dedup row BEFORE running the goal (atomic, so a
+        Twilio retry that races a slow handler is a no-op instead of a
+        double-spend). If that run then fails, the claim must be released or
+        the message is stuck marked-as-done and never retried.
+        """
+        with self._writing() as conn:
+            conn.execute(
+                "DELETE FROM processed_messages "
+                "WHERE channel = ? AND external_id = ?",
+                (channel, external_id),
+            )
+
+    # ----- cluster-wide killswitch (v22) -----
+    # Untenanted, single-row global emergency stop. On a shared backend
+    # (Postgres) every replica's killswitch.check() consults this, so a halt
+    # armed via the dashboard stops the whole fleet rather than just the replica
+    # that served the request.
+    def arm_halt(self, reason: str = "", source: str = "manual",
+                 armed_by: str = "") -> str:
+        generation = secrets.token_urlsafe(24)
+        with self._writing() as conn:
+            conn.execute(
+                "INSERT INTO halt(scope, reason, source, armed_by, armed_at, generation) "
+                "VALUES('', ?, ?, ?, ?, ?) "
+                "ON CONFLICT(scope) DO UPDATE SET reason=excluded.reason, "
+                "source=excluded.source, armed_by=excluded.armed_by, "
+                "armed_at=excluded.armed_at, generation=excluded.generation",
+                (
+                    reason or "",
+                    source or "manual",
+                    armed_by or "",
+                    time.time(),
+                    generation,
+                ),
+            )
+        return generation
+
+    def disarm_halt(
+        self,
+        *,
+        expected_generation: str,
+        durable_clear: Callable[[], None] | None = None,
+    ) -> bool:
+        """Atomically bind a durable local clear to the observed shared HALT.
+
+        The write transaction is acquired before ``durable_clear`` runs.  A
+        callback failure rolls the shared mutation back; a concurrent arm must
+        wait and therefore lands after this generation-bound delete instead of
+        being erased by it.
+        """
+        if not isinstance(expected_generation, str):
+            raise TypeError("expected_generation must be a string")
+        with self._writing() as conn:
+            # ``_writing`` serializes this object; BEGIN IMMEDIATE also claims
+            # the SQLite database writer slot before the filesystem callback,
+            # covering other WorldModel connections/processes.
+            if not conn.in_transaction:
+                conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT generation FROM halt WHERE scope = ''",
+            ).fetchone()
+            if row is None or (row[0] or "") != expected_generation:
+                return False
+            if durable_clear is not None:
+                durable_clear()
+            cursor = conn.execute(
+                "DELETE FROM halt WHERE scope = '' AND generation = ?",
+                (expected_generation,),
+            )
+            deleted = cursor.rowcount
+        return bool(deleted and deleted > 0)
 
     def active_halt(self) -> dict | None:
         """The shared global halt state, or ``None`` when not armed."""

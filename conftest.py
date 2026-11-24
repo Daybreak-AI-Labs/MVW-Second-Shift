@@ -105,30 +105,6 @@ def pytest_collection_modifyitems(config, items):
 
 
 @pytest.fixture(autouse=True)
-def _reopen_learning_job_admission():
-    """Undo a previous test's dashboard shutdown for learning-task admission.
-
-    Leaving a ``with TestClient(app)`` block runs the dashboard's coordinated
-    shutdown, which closes learning-task admission for the whole process. A
-    real server exits at that point; the test process does not, so every later
-    test on that worker was refused ("This server is stopping"). Reopen it
-    before each test once the prior workers have finished, exactly as a
-    restarted dashboard does.
-    """
-    import time
-
-    module = sys.modules.get("maverick_dashboard.learning_jobs")
-    if module is not None:
-        for _attempt in range(50):
-            try:
-                module.open_admission()
-                break
-            except RuntimeError:  # a prior test's worker is still writing its outcome
-                time.sleep(0.1)
-    yield
-
-
-@pytest.fixture(autouse=True)
 def _isolate_dynamic_maverick_home(tmp_path, monkeypatch):
     """Give every package a fresh dynamic home, including on Windows.
 
@@ -141,34 +117,6 @@ def _isolate_dynamic_maverick_home(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
     monkeypatch.setenv("MAVERICK_HOME", str(tmp_path / ".maverick"))
-
-
-@pytest.fixture(autouse=True)
-def _reset_public_form_lookup_limit():
-    """Each test starts with a fresh per-address public form lookup window."""
-    module = sys.modules.get("maverick_dashboard.app")
-    if module is not None:
-        module._FORM_LOOKUP_LIMIT = None
-    yield
-
-
-@pytest.fixture(autouse=True)
-def _reset_workspace_invite_limit():
-    """Each test starts with a fresh per-administrator invitation window."""
-    module = sys.modules.get("maverick_dashboard.invites")
-    if module is not None:
-        module.reset_issue_limit()
-    yield
-
-
-@pytest.fixture(autouse=True)
-def _isolate_runner_shutdown_admission(monkeypatch):
-    """A prior TestClient shutdown must not close admission in another test."""
-    import sys
-
-    runner = sys.modules.get("maverick.runner")
-    if runner is not None:
-        monkeypatch.setattr(runner, "_accepting_goals", True)
 
 
 @pytest.fixture(autouse=True)
@@ -311,6 +259,21 @@ def _rebind_path_helpers_imported_under_a_test_replacement():
 
 
 @pytest.fixture(autouse=True)
+def _reset_governed_process_authority_pin():
+    """Keep process-lifetime production admission state isolated per test."""
+    try:
+        from maverick import governed_records
+    except ImportError:
+        yield
+        return
+    governed_records._reset_process_authority_pin_for_testing()
+    try:
+        yield
+    finally:
+        governed_records._reset_process_authority_pin_for_testing()
+
+
+@pytest.fixture(autouse=True)
 def _isolate_default_audit_writers():
     """Do not let a cached deployment-global writer cross test data roots.
 
@@ -381,19 +344,3 @@ def _reset_cluster_halt_cache():
             world.close()
     except Exception:
         pass
-
-
-@pytest.fixture(autouse=True)
-def _isolate_channel_execution_authority(request, monkeypatch, tmp_path):
-    """Channels import the default world path once; each test owns a new DB.
-
-    Keep this in the root conftest: both core and channels have a ``tests``
-    package, which otherwise collides during combined importlib collection.
-    """
-    if "maverick-channels" not in request.node.path.parts:
-        return
-    try:
-        from maverick import world_model
-    except ImportError:
-        return  # Channels-only environments may intentionally omit the core.
-    monkeypatch.setattr(world_model, "DEFAULT_DB", tmp_path / "channel-world.db")

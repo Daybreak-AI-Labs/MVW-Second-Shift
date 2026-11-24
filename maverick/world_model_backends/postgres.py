@@ -25,9 +25,10 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import secrets
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager, nullcontext, suppress
 from dataclasses import dataclass
 
@@ -2131,6 +2132,16 @@ class PostgresWorldModel:
             rows = cur.fetchall()
         return [_dec_approval_row(r) for r in rows]
 
+    def release_processed_message(self, channel: str, external_id: str) -> None:
+        """Undo a ``mark_message_processed`` claim so a failed run can retry."""
+        with self._tx() as cur:
+            cur.execute(
+                "DELETE FROM processed_messages "
+                "WHERE COALESCE(tenant_id, '') = COALESCE(%s, '') "
+                "AND channel = %s AND external_id = %s",
+                (_active_tenant(), channel, external_id),
+            )
+
     # ---- Projects (migration v15) -------------------------------------------
 
     _PROJECT_COLS = "id, name, description, owner, domain, status, created_at, tenant_id IS NULL"
@@ -2170,6 +2181,14 @@ class PostgresWorldModel:
             columns = {d.name: i for i, d in enumerate(cur.description or ())}
             rows = cur.fetchall()
         return [_PgRow.wrap(r, columns) for r in rows]
+
+    def ping(self) -> bool:
+        """Cheap liveness probe for ``/healthz`` -- confirms Postgres answers a
+        trivial read so the deep health check probes the SAME store the app uses."""
+        with self._tx() as cur:
+            cur.execute("SELECT 1")
+            cur.fetchone()
+        return True
 
     # ---- Artifacts (migration v16) ------------------------------------------
 
@@ -2525,6 +2544,71 @@ class PostgresWorldModel:
     # ----- attachments -----
 
     # ----- channel dedup (inbound-message idempotency) -----
+
+    def mark_message_processed(
+        self, channel: str, external_id: str, goal_id: int | None = None,
+    ) -> bool:
+        """Record an inbound message as processed; idempotent. Returns True on
+        first-write (caller should run the goal), False on duplicate (caller
+        returns 200 without re-running). Mirrors SQLite — protects against
+        Twilio/iMessage webhook retries producing N goals + N spends."""
+        with self._tx() as cur:
+            cur.execute(
+                "INSERT INTO processed_messages(channel, external_id, goal_id, seen_at, tenant_id) "
+                "VALUES(%s, %s, %s, %s, %s) "
+                "ON CONFLICT ((COALESCE(tenant_id, '')), channel, external_id) DO NOTHING",
+                (channel, external_id, goal_id, time.time(), _active_tenant()),
+            )
+            # rowcount is 1 on insert, 0 when the conflict skipped it.
+            return cur.rowcount == 1
+
+    # ----- cluster-wide killswitch (v22) -----
+    # Untenanted single-row global emergency stop; on shared Postgres every
+    # replica's killswitch.check() consults this so a halt stops the whole fleet.
+    def arm_halt(self, reason: str = "", source: str = "manual",
+                 armed_by: str = "") -> str:
+        generation = secrets.token_urlsafe(24)
+        with self._tx() as cur:
+            cur.execute(
+                "INSERT INTO halt(scope, reason, source, armed_by, armed_at, generation) "
+                "VALUES('', %s, %s, %s, %s, %s) "
+                "ON CONFLICT(scope) DO UPDATE SET reason=EXCLUDED.reason, "
+                "source=EXCLUDED.source, armed_by=EXCLUDED.armed_by, "
+                "armed_at=EXCLUDED.armed_at, generation=EXCLUDED.generation",
+                (
+                    reason or "",
+                    source or "manual",
+                    armed_by or "",
+                    time.time(),
+                    generation,
+                ),
+            )
+        return generation
+
+    def disarm_halt(
+        self,
+        *,
+        expected_generation: str,
+        durable_clear: Callable[[], None] | None = None,
+    ) -> bool:
+        """Bind a durable local clear to the exact locked shared generation."""
+        if not isinstance(expected_generation, str):
+            raise TypeError("expected_generation must be a string")
+        with self._tx() as cur:
+            cur.execute(
+                "SELECT generation FROM halt WHERE scope = '' FOR UPDATE"
+            )
+            row = cur.fetchone()
+            if row is None or (row[0] or "") != expected_generation:
+                return False
+            if durable_clear is not None:
+                durable_clear()
+            cur.execute(
+                "DELETE FROM halt WHERE scope = '' AND generation = %s",
+                (expected_generation,),
+            )
+            deleted = cur.rowcount
+        return bool(deleted and deleted > 0)
 
     def active_halt(self) -> dict | None:
         with self._tx() as cur:

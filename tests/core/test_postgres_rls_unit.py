@@ -678,6 +678,92 @@ class TestDatabaseLoginBypassingRls:
         assert "Could not check" in warnings[0]
 
 
+def test_create_approval_notifies_with_the_committing_world(monkeypatch):
+    # The kernel notifier takes the world that committed the row first
+    # (``_notify_approval_created(world, approval_id, provenance)``); the
+    # Postgres backend must call it with the same shape, or every live
+    # create_approval dies with a TypeError after the row is durable.
+    monkeypatch.setattr(postgres, "_active_tenant", lambda: "acme")
+    monkeypatch.setattr(postgres, "_strict_tenant_isolation", lambda: False)
+    world = PostgresWorldModel.__new__(PostgresWorldModel)
+    rows = iter([None, (42,)])  # no context goal, then RETURNING id
+
+    class _Cur(RecordingCursor):
+        def fetchone(self):
+            return next(rows)
+
+    cur = _Cur()
+
+    @contextmanager
+    def tx():
+        yield cur
+
+    monkeypatch.setattr(world, "_tx", tx)
+    seen: list[tuple[int, str | None, object]] = []
+
+    def fake_created(approval_id, *, provenance=None, world=None):
+        seen.append((approval_id, provenance, world))
+
+    import maverick.approval_notify as approval_notify
+
+    monkeypatch.setattr(approval_notify, "approval_created", fake_created)
+
+    assert world.create_approval("payment", detail="support", provenance="slack") == 42
+    assert seen == [(42, "slack", world)]
+    insert_sql, insert_params = cur.calls[-1]
+    assert insert_sql.startswith("INSERT INTO approvals(")
+    assert insert_params[4] == "slack"
+
+
+class _ScriptedCursor(RecordingCursor):
+    """Answers fetchone() from a script and reports one affected row."""
+
+    rowcount = 1
+
+    def __init__(self, answers) -> None:
+        super().__init__()
+        self.answers = list(answers)
+
+    def fetchone(self):
+        return self.answers.pop(0) if self.answers else None
+
+
+def _approval_world(monkeypatch, cur):
+    """A world whose transactions record whether one is open, and an event spy."""
+    monkeypatch.setattr(postgres, "_active_tenant", lambda: None)
+    monkeypatch.setattr(postgres, "_strict_tenant_isolation", lambda: False)
+    world = PostgresWorldModel.__new__(PostgresWorldModel)
+    state = {"open": False}
+    told: list[tuple[str, int, dict, bool]] = []
+
+    @contextmanager
+    def tx():
+        state["open"] = True
+        try:
+            yield cur
+        finally:
+            state["open"] = False
+
+    def emit(event, **kwargs):
+        told.append((event, int(kwargs["record_id"]), kwargs["payload"], state["open"]))
+        return 0
+
+    import maverick.webhook_events as webhook_events
+
+    monkeypatch.setattr(world, "_tx", tx)
+    monkeypatch.setattr(webhook_events, "emit", emit)
+    return world, told
+
+
+def test_create_approval_announces_it_to_webhook_subscribers_after_commit(monkeypatch):
+    import maverick.approval_notify as approval_notify
+
+    monkeypatch.setattr(approval_notify, "approval_created", lambda *args, **kwargs: None)
+    world, told = _approval_world(monkeypatch, _ScriptedCursor([None, (42,)]))
+    assert world.create_approval("payment", risk="high", detail="support") == 42
+    assert told == [("approval.created", 42, {"risk": "high", "action": "payment"}, False)]
+
+
 def test_stamped_fill_batch_waits_briefly_for_goals_and_retries_then_stops(monkeypatch):
     """A fill batch lifts FORCE on goals, which queues an exclusive lock.
     It waits at most a fifth of a second, retries a busy batch a few times,

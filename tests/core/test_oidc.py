@@ -32,6 +32,7 @@ from maverick.oidc import (
     OIDCError,
     VerifiedPrincipal,
     load_oidc_config,
+    oidc_enabled,
     verify_oidc_token,
 )
 
@@ -361,6 +362,18 @@ def test_pyjwt_missing_gives_actionable_error(monkeypatch):
     assert "maverick-agent[oidc]" in str(ei.value) or "pyjwt" in str(ei.value).lower()
 
 
+def test_oidc_disabled_by_default(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path))  # no config.toml -> empty config
+    monkeypatch.delenv("MAVERICK_OIDC_ENABLED", raising=False)
+    assert oidc_enabled() is False
+
+
+def test_oidc_enabled_via_env(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("MAVERICK_OIDC_ENABLED", "1")
+    assert oidc_enabled() is True
+
+
 def test_oidc_env_overrides_fields(monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("MAVERICK_OIDC_ENABLED", "true")
@@ -375,6 +388,30 @@ def test_oidc_env_overrides_fields(monkeypatch, tmp_path):
     assert cfg.jwks_uri == "https://env/jwks"
     # HS256/none are stripped by normalization; only the asymmetric one remains.
     assert cfg.algorithms == ["RS256"]
+
+
+def test_oidc_enabled_via_config(monkeypatch, tmp_path):
+    cfg_dir = tmp_path / ".maverick"
+    cfg_dir.mkdir(parents=True)
+    (cfg_dir / "config.toml").write_text(
+        "[auth.oidc]\n"
+        "enabled = true\n"
+        'issuer = "https://cfg-issuer"\n'
+        'audience = "cfg-aud"\n'
+        'jwks_uri = "https://cfg/jwks"\n'
+        'algorithms = ["ES256"]\n'
+    )
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("MAVERICK_OIDC_ENABLED", raising=False)
+    monkeypatch.delenv("MAVERICK_OIDC_ISSUER", raising=False)
+    monkeypatch.delenv("MAVERICK_OIDC_AUDIENCE", raising=False)
+    monkeypatch.delenv("MAVERICK_OIDC_JWKS_URI", raising=False)
+    monkeypatch.delenv("MAVERICK_OIDC_ALGORITHMS", raising=False)
+    assert oidc_enabled() is True
+    cfg = load_oidc_config()
+    assert cfg.issuer == "https://cfg-issuer"
+    assert cfg.audience == "cfg-aud"
+    assert cfg.algorithms == ["ES256"]
 
 
 def test_config_algorithms_default_to_asymmetric(monkeypatch, tmp_path):

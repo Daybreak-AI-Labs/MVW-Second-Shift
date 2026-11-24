@@ -8,18 +8,34 @@ import time
 from types import SimpleNamespace
 
 import pytest
+from maverick import postgres_transactions as pt
 
 psycopg = pytest.importorskip("psycopg")
 pg_io = importlib.import_module("maverick.postgres_io")
 BoundedConnection = pg_io.BoundedConnection
 PostgresIOTimeout = pg_io.PostgresIOTimeout
 _deadline_generator = pg_io._deadline_generator
+postgres_io_timeout_seconds = pg_io.postgres_io_timeout_seconds
 Wait = psycopg.waiting.Wait
 
 
 @pytest.fixture
 def pools(monkeypatch):
+    for name, value in (("_POOLS", {}), ("_CLOSED", False), ("_CLOSER", None), ("_CLOSE_FAILED", False)):
+        monkeypatch.setattr(pt, name, value)
     yield
+    pt.close_postgres_pools(timeout=5)
+    assert not pt.postgres_pools_pending(), "owned test pool cleanup remains pending"
+
+
+@pytest.mark.parametrize("value", ["", "bad", "nan", "inf", "0", "-1", "0.09", "3601", True])
+def test_invalid_io_budget_fails_before_connection_admission(monkeypatch, value):
+    with pytest.raises(ValueError, match="MAVERICK_PG_IO_TIMEOUT_SECONDS"):
+        postgres_io_timeout_seconds(value)
+    monkeypatch.setenv("MAVERICK_PG_IO_TIMEOUT_SECONDS", str(value))
+    facility = pt.PostgresTransactions("must-not-be-parsed-or-connected")
+    with pytest.raises(ValueError, match="MAVERICK_PG_IO_TIMEOUT_SECONDS"):
+        facility.connect()
 
 
 def test_deadline_generator_preserves_readiness_and_return_and_closes():
@@ -150,3 +166,17 @@ def test_final_wrapper_cleanup_cannot_replace_primary(monkeypatch, kind, connect
     assert error.value is authoritative
     assert error.value.cleanup_incomplete and error.value.outcome_unknown
     assert closes == [threading.get_ident()]
+
+
+def test_io_policy_is_immutable_per_facility_and_part_of_pool_identity(postgres_test_dsn, monkeypatch, pools):
+    monkeypatch.setenv("MAVERICK_PG_IO_TIMEOUT_SECONDS", ".2")
+    first = pt.PostgresTransactions(postgres_test_dsn, pool_size=1)
+    with first._connection() as connection:
+        assert connection._io_timeout_seconds == .2
+    monkeypatch.setenv("MAVERICK_PG_IO_TIMEOUT_SECONDS", ".4")
+    with first._connection() as connection:
+        assert connection._io_timeout_seconds == .2
+    second = pt.PostgresTransactions(postgres_test_dsn, pool_size=1)
+    with second._connection() as connection:
+        assert connection._io_timeout_seconds == .4
+    assert len(pt._POOLS) == 2

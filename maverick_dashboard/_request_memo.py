@@ -1,0 +1,103 @@
+"""Per-request memo for configuration-derived answers.
+
+Several authorization predicates (``auth_genuinely_off``,
+``non_static_auth_configured``) take no request argument and re-derive their
+answer from the configuration files each time. One page render asked them a
+dozen times (the shell's nav context and bearer middleware ask again), each
+costing ~1 ms of config reads. A pure-ASGI middleware opens a memo scope per
+request and :func:`memoized` serves repeat display/configuration questions.
+An authorization boundary uses :func:`fresh_configuration` because policy may
+change while a request waits; it still shares the request's last clean
+configuration read while every input of it is unchanged (``config.kept_reads``).
+Retained background workers explicitly discard their copied HTTP memo and that
+read. Outside a request scope nothing is cached.
+"""
+from __future__ import annotations
+
+import contextvars
+from collections.abc import Callable
+from contextlib import contextmanager
+from typing import Any, TypeVar
+
+T = TypeVar("T")
+
+_SCOPE: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar(
+    "maverick_dashboard_request_memo", default=None,
+)
+
+
+def memoized(key: str, compute: Callable[[], T]) -> T:
+    """``compute()`` once per request scope for ``key``; uncached outside one."""
+    memo = _SCOPE.get()
+    if memo is None:
+        return compute()
+    try:
+        return memo[key]
+    except KeyError:
+        value = memo[key] = compute()
+        return value
+
+
+@contextmanager
+def fresh_configuration():
+    """Recheck live policy at an authorization boundary without clearing a page."""
+    token = _SCOPE.set(None)
+    try:
+        yield
+    finally:
+        _SCOPE.reset(token)
+
+
+class RequestMemoMiddleware:
+    """Pure ASGI: one fresh memo per HTTP request or WebSocket connection.
+
+    The scope is a context variable, so it follows the request into FastAPI's
+    thread pool (``def`` handlers, ``run_in_threadpool``) and is dropped with
+    the request. Retained workers must discard the scope in their copied context.
+    """
+
+    def __init__(self, app) -> None:
+        self.app = app
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] not in ("http", "websocket"):
+            await self.app(scope, receive, send)
+            return
+        from maverick.config import kept_reads
+
+        token = _SCOPE.set({})
+        try:
+            with kept_reads():
+                from .auth import probe_path
+
+                if scope["type"] == "http" and not probe_path(scope):
+                    # A probe answers without configuration or a worker thread.
+                    from starlette.concurrency import run_in_threadpool
+
+                    await run_in_threadpool(_prime_request_configuration)
+                await self.app(scope, receive, send)
+        finally:
+            _SCOPE.reset(token)
+
+
+def _prime_request_configuration() -> None:
+    """Answer the questions every request's middlewares ask, in the thread pool.
+
+    The middlewares are ``async def`` and run on the event loop. Their first
+    configuration read (the files, the at-rest key, the saved secrets) blocked
+    every other request while it waited on the disk, which on a network file
+    system is many round trips. The thread shares this request's memo and kept
+    read (both are objects the copied context refers to), so the middlewares
+    then find the answers from one read of the files (``single_read``). A gate
+    under :func:`fresh_configuration` still reads the current files itself."""
+    try:
+        from maverick.config import single_read
+
+        from ._shared import dashboard_token
+        from .request_size import max_request_bytes
+
+        with single_read():
+            dashboard_token()
+            max_request_bytes()
+    except Exception:  # noqa: BLE001 -- the middleware asks again and reports it
+        pass

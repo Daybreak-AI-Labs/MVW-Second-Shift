@@ -65,6 +65,11 @@ def test_client_id_is_cached(monkeypatch):
     assert client.client_id() == "other"
 
 
+def test_enforced_via_env(monkeypatch):
+    monkeypatch.setenv("MAVERICK_CLIENT_ENFORCE", "1")
+    assert client.client_binding_enforced() is True
+
+
 def test_uppercase_client_id_resolves_to_none(monkeypatch):
     # Hot path stays resilient: an invalid (uppercase) id doesn't crash callers.
     monkeypatch.setenv("MAVERICK_CLIENT_ID", "Acme")

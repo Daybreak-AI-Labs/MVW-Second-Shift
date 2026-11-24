@@ -130,8 +130,10 @@ def is_valid_day(day: Any) -> bool:
 
 class EventKind:
     """Stringly-typed event kinds. Use these constants, not bare strings."""
+    CAPABILITY_DENIED = "capability_denied"
     EGRESS_BLOCKED  = "egress_blocked"
     HALT            = "halt"
+    TENANT_DEFAULT_REGISTERED = "tenant_default_registered"
     # A user's dashboard access changed: privilege role (global or per-tenant),
     # department (suite) grant, or one atomic SCIM group-authority mutation.
     # One row per change makes who-granted-whom-what-when provable instead of a
@@ -158,6 +160,7 @@ class EventKind:
     # rows additionally carry operation:str, scope:str (local|cluster),
     # result:str (succeeded|failed|partial), and a bounded reason:str.
     CONTROL_PLANE_ACTION = "control_plane_action"
+    BREAK_GLASS_TOKEN_USED = "break_glass_token_used"  # pragma: allowlist secret - an event name
     EXTERNAL_AGENT_ENROLLED = "external_agent_enrolled"
     EXTERNAL_CREDENTIAL_MINTED = "external_credential_minted"
     EXTERNAL_RUN_INGESTED = "external_run_ingested"
