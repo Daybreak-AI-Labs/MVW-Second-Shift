@@ -4,7 +4,6 @@
 {% block content %}
 {% from "_back_link.html" import back_link with context %}
   {% set _LIFECYCLE = {'active': 'Active', 'suspended': 'Paused', 'revoked': 'Access blocked', 'contained': 'Blocked for rule breaks', 'expired': 'Access expired'} %}
-  {% set _MEMORY = {'lesson': 'lessons', 'semantic': 'facts', 'procedural': 'how-to notes', 'episodic': 'task summaries'} %}
   <h1 class="page-title">{{ _name }}</h1>
   <p class="page-subtitle">{{ a.platform_label }}{% if a.description %} · {{ a.id }}{% endif %} · {{ back_link('/external-agents', 'Outside agents') }}</p>
 
@@ -15,6 +14,7 @@
       {% else %}<span class="badge failure">{{ _LIFECYCLE.get(a.lifecycle, a.lifecycle | humanize) }}</span>{% endif %}
       {% if a.owner %}<span class="badge">Owner: {{ (a.owner | identity).name }}</span>{% endif %}
       {% if a.department %}<span class="badge">{{ a.department | humanize }}</span>{% endif %}
+      {% if a.external_ref %}<span class="badge" title="Its record on its platform">{{ a.external_ref }}</span>{% endif %}
       {% if a.max_risk %}<span class="badge">Riskiest action allowed: {{ a.max_risk | humanize }}</span>{% endif %}
       {% if a.credentials %}<span class="badge">Access key active</span>{% else %}<span class="badge">No access key yet</span>{% endif %}
     </p>

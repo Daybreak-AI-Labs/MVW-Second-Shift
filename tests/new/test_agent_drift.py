@@ -402,7 +402,11 @@ def test_agent_supplied_names_are_bounded_and_never_stored_raw():
     text = drift.store_path().read_text(encoding="utf-8")
     assert secret not in text and "pwned" not in text and "ignore previous" not in text
     record = _stored()["agents"][AGENT]
-    assert record["days"][drift._day_key(20_000)]["tools"] == {"(other)": len(hostile)}
+    tools = record["days"][drift._day_key(20_000)]["tools"]
+    # A name that cannot be shown is counted under a digest, so it keeps its
+    # own identity; only a missing name is "(other)".
+    assert tools["(other)"] == 3 and sum(tools.values()) == len(hostile)
+    assert all(name == "(other)" or name.startswith("unnamed:") for name in tools)
     # A value that cannot be shown is kept as a digest, so a change still shows.
     assert record["config"]["declared"]["version"].startswith("sha256:")
     assert record["config"]["declared"]["model"].startswith("sha256:")
@@ -493,7 +497,7 @@ def test_the_record_is_private_and_holds_only_totals():
         assert path.stat().st_mode & 0o777 == 0o600
     record = _stored()["agents"][AGENT]
     assert set(record) == {"days", "config", "baseline", "reported", "acknowledged",
-                           "last_observed_at"}
+                           "last_observed_at", "enrolled_at"}
     assert set(record["days"][drift._day_key(20_000)]) == {
         "runs", "failures", "tool_calls", "input_tokens", "output_tokens", "screens",
         "denials", "approvals_required", "cost_dollars", "tools"}
@@ -811,7 +815,7 @@ def test_tools_beyond_the_cap_are_reported_as_one_finding():
     with drift._editing() as agents:
         drift._day_bucket(agents[AGENT], _at(15))["tools"]["(other)"] = 4
     finding = _finding(drift.evaluate(AGENT, now=_at(15, 13)), "new_tool:(other)")
-    assert finding["severity"] == "high" and "too many to list" in finding["summary"]
+    assert finding["severity"] == "high" and "not tracked by name" in finding["summary"]
 
 
 @pytest.mark.parametrize("tools, severity", [
@@ -859,7 +863,7 @@ def test_volume_change(runs, key, severity):
 def test_an_agent_that_goes_quiet_is_a_low_volume_finding():
     _baselined()
     result = drift.evaluate(AGENT, now=_at(20, 23))
-    assert result["state"] == "drifted" and _kinds(result) == {"volume"}
+    assert result["state"] == "drifted" and _kinds(result) == {"volume", "silent"}
     finding = _finding(result, "volume:down")
     assert finding["severity"] == "low" and finding["current"] == 0.0
     assert "far less often" in finding["summary"]
@@ -908,8 +912,8 @@ def test_a_baseline_approved_minutes_after_first_activity_has_a_sane_rate():
         record = drift._record_for(agents, AGENT, drift._enrolled_ids())
         drift._day_bucket(record, _at(0, 0.05))["runs"] = 6
     approved = drift.approve_baseline(AGENT, actor="dana@corp.test", now=_at(0, 0.1))
-    # Worked out over a quarter of a day at least, not over six minutes.
-    assert approved["runs_per_day"] == pytest.approx(24.0)
+    # Worked out over one whole day at least, not over six minutes.
+    assert approved["runs_per_day"] == pytest.approx(6.0)
 
 
 @pytest.mark.parametrize("cost_per_run, key, severity", [
@@ -1090,7 +1094,8 @@ def test_check_without_findings_does_nothing(audit_rows, alerts):
     assert result["state"] == "within_baseline" and result["new_findings"] == []
     assert audit_rows == [] and alerts == []
     assert drift.store_path().read_bytes() == before
-    assert drift.check("ghost")["state"] == "no_baseline"
+    with pytest.raises(drift.AgentDriftError):
+        drift.check("ghost")
 
 
 def test_a_finding_that_gets_worse_is_reported_again(audit_rows, alerts):
@@ -1137,7 +1142,7 @@ def test_a_brief_gap_does_not_cause_a_second_report(tmp_path, alerts):
 def test_what_was_reported_is_bounded():
     entries = {f"new_tool:t{n}": {"at": n, "seen": n, "severity": "high"}
                for n in range(drift._MAX_REPORTED + 40)}
-    kept = drift._remember(entries, [], 50.0, skip="")
+    kept = drift._remember(entries, [], 50.0, hold=set(), pending=False)
     assert len(kept) == drift._MAX_REPORTED
     assert f"new_tool:t{drift._MAX_REPORTED + 39}" in kept and "new_tool:t0" not in kept
 
@@ -1220,9 +1225,10 @@ def test_a_failed_containment_is_reported_and_tried_again(tmp_path, monkeypatch,
 
     monkeypatch.setattr(xa, "contain", real_contain)
     retried = drift.check(AGENT, now=_JUDGED + 60)
-    # Only the finding that still needs containing is raised again.
-    assert retried["new_findings"] == ["new_tool:wire_transfer"]
+    # Containment is tried again without reporting the finding a second time.
+    assert retried["new_findings"] == []
     assert retried["contained"] is True and xa.containment_state(AGENT) is True
+    assert "has been contained" in alerts[1]["detail"]
     assert drift.check(AGENT, now=_JUDGED + 120)["new_findings"] == []
     assert len(alerts) == 2
 
@@ -1559,3 +1565,181 @@ def test_gateway_activity_end_to_end_reaches_a_finding(tmp_path, alerts):
     assert result["state"] == "drifted"
     assert result["new_findings"] == ["new_tool:delete_records"]
     assert alerts and "delete_records" in alerts[0]["detail"]
+
+
+# ------------------------------------------------- defects found in review
+
+def test_a_run_closed_while_the_agent_is_contained_is_not_counted():
+    _enroll()
+    started = xa.start_run(AGENT, {"title": "quote"})
+    assert xa.contain(AGENT, contained_by="operator") is True
+    xa.finish_run(AGENT, started["goal_id"], {"outcome": "success", "tools": ["wire_transfer"]})
+    days = _stored()["agents"].get(AGENT, {}).get("days", {}) if drift.store_path().exists() else {}
+    assert all(day.get("runs", 0) == 0 and day.get("failures", 0) == 0 for day in days.values())
+    assert all("wire_transfer" not in day.get("tools", {}) for day in days.values())
+
+
+def test_a_new_tool_is_still_new_when_the_baseline_held_uncounted_tools():
+    _enroll()
+    _seed(range(14))
+    with drift._editing() as agents:
+        drift._day_bucket(agents[AGENT], _at(3))["tools"]["(other)"] = 1
+    drift.approve_baseline(AGENT, actor="dana@corp.test", now=_at(13, 23))
+    _seed(_AFTER)
+    for _ in range(3):
+        drift.observe_screen(AGENT, "db.exec(drop)", allowed=True, now=_at(16))
+    result = drift.evaluate(AGENT, now=_JUDGED)
+    unnamed = [f for f in result["findings"] if f["key"].startswith("new_tool:unnamed:")]
+    assert len(unnamed) == 1 and unnamed[0]["severity"] == "high"
+    assert "db.exec" not in json.dumps(result)  # the name itself is never shown or stored
+
+
+def test_uncounted_tools_are_flagged_only_when_their_share_rises():
+    _enroll()
+    _seed(range(14))
+    with drift._editing() as agents:
+        drift._day_bucket(agents[AGENT], _at(3))["tools"]["(other)"] = 10
+    drift.approve_baseline(AGENT, actor="dana@corp.test", now=_at(13, 23))
+    _seed(_AFTER)
+    with drift._editing() as agents:
+        drift._day_bucket(agents[AGENT], _at(16))["tools"]["(other)"] = 2
+    assert "new_tool:(other)" not in {f["key"] for f in drift.evaluate(AGENT, now=_JUDGED)["findings"]}
+    with drift._editing() as agents:
+        drift._day_bucket(agents[AGENT], _at(16))["tools"]["(other)"] = 40
+    assert "new_tool:(other)" in {f["key"] for f in drift.evaluate(AGENT, now=_JUDGED)["findings"]}
+
+
+def test_a_declared_version_sent_as_a_number_is_still_compared():
+    _enroll()
+    _seed(range(14))
+    drift.observe_run(AGENT, declared={"version": 1.4}, now=_at(13))
+    drift.approve_baseline(AGENT, actor="dana@corp.test", now=_at(13, 23))
+    drift.observe_run(AGENT, declared={"version": 2.0}, now=_at(16))
+    assert "version_changed" in _kinds(drift.evaluate(AGENT, now=_JUDGED))
+    assert drift._fingerprint(float("nan")) == "" and drift._fingerprint(True) == ""
+
+
+def test_an_agent_enrolled_again_under_the_same_id_starts_clean(audit_rows):
+    _baselined()
+    _seed(_AFTER, tools={"crm_update": 14, "research": 5, "wire_transfer": 1})
+    drift.check(AGENT, now=_JUDGED)
+    drift.acknowledge(AGENT, "new_tool:wire_transfer", actor="omar@corp.test", now=_JUDGED)
+    assert xa.unenroll(AGENT, actor="admin@corp.test") is True
+    assert AGENT not in _stored()["agents"]  # removal drops the record
+    _enroll()
+    assert drift.baseline(AGENT) is None
+    assert drift.evaluate(AGENT, now=_JUDGED)["state"] == "no_baseline"
+
+
+def test_a_leftover_record_from_an_earlier_enrollment_is_not_trusted():
+    _baselined()
+    # the record survives a removal that could not clear it (drift was off at the time)
+    with xa._sidecar_locked():
+        sidecar = xa._load_sidecar()
+        sidecar[AGENT]["enrolled_at"] = sidecar[AGENT]["enrolled_at"] + 5000
+        xa._save_sidecar(sidecar)
+    assert drift.baseline(AGENT) is None
+    assert drift.evaluate(AGENT, now=_JUDGED)["state"] == "no_baseline"
+    assert drift.roster_view(now=_JUDGED)[0]["state"] == "no_baseline"
+    drift.observe_screen(AGENT, "crm_update", allowed=True, now=_JUDGED)
+    assert _stored()["agents"][AGENT]["baseline"] is None  # replaced, not inherited
+
+
+def test_a_finding_that_appears_between_evaluation_and_reporting_waits_for_the_next_check(
+        tmp_path, monkeypatch, audit_rows, alerts):
+    _configure(tmp_path, "[agent_drift]\non_drift = \"contain\"\n")
+    _baselined()
+    _seed(_AFTER, cost_per_run=0.05)  # one low finding, so the check has something to report
+    real = drift._report_new
+
+    def late_arrival(agent_id, cfg, moment, **kw):
+        # a new tool is screened after the check looked, before it reports
+        with drift._editing() as agents:
+            drift._day_bucket(agents[AGENT], _at(17))["tools"]["wire_transfer"] = 2
+        return real(agent_id, cfg, moment, **kw)
+
+    monkeypatch.setattr(drift, "_report_new", late_arrival)
+    first = drift.check(AGENT, now=_JUDGED)
+    assert first["new_findings"] == ["cost:down"] and first["contained"] is False
+    assert "new_tool:wire_transfer" not in _stored()["agents"][AGENT]["reported"]
+    monkeypatch.setattr(drift, "_report_new", real)
+    second = drift.check(AGENT, now=_JUDGED + 60)
+    assert second["new_findings"] == ["new_tool:wire_transfer"] and second["contained"] is True
+
+
+def test_a_finding_whose_audit_row_was_not_written_is_reported_again(monkeypatch, alerts):
+    _baselined()
+    _seed(_AFTER, tools={"crm_update": 14, "research": 5, "wire_transfer": 1})
+    monkeypatch.setattr(drift, "_audit", lambda *a, **kw: False)
+    assert drift.check(AGENT, now=_JUDGED)["new_findings"] == []
+    assert alerts == [] and _stored()["agents"][AGENT]["reported"] == {}
+    monkeypatch.undo()
+
+
+def test_nothing_is_approved_or_acknowledged_without_its_audit_row(monkeypatch):
+    _enroll()
+    _seed(range(14))
+    monkeypatch.setattr(drift, "_audit", lambda *a, **kw: False)
+    with pytest.raises(drift.AgentDriftError, match="audit log"):
+        drift.approve_baseline(AGENT, actor="dana@corp.test", now=_at(13, 23))
+    assert _stored()["agents"][AGENT]["baseline"] is None
+
+
+def test_an_acknowledgement_lapses_once_the_finding_has_been_gone_for_a_day(alerts):
+    _baselined()
+    _seed(range(15, 18), runs=40)
+    drift.check(AGENT, now=_JUDGED)
+    drift.acknowledge(AGENT, "volume:up", actor="omar@corp.test", now=_JUDGED)
+    assert drift.evaluate(AGENT, now=_JUDGED)["findings_count"] == 0
+    # the spike ends; three quiet days later the acknowledgement is dropped
+    _seed(range(18, 24))
+    drift.check(AGENT, now=_at(23, 23))
+    assert "volume:up" not in _stored()["agents"][AGENT]["acknowledged"]
+    # the same kind of spike later is a fresh finding, not a silenced one
+    _seed(range(24, 27), runs=40)
+    again = drift.check(AGENT, now=_at(26, 23))
+    assert "volume:up" in again["new_findings"]
+
+
+def test_a_baseline_with_no_whole_day_behind_it_does_not_judge_volume():
+    _enroll()
+    with drift._editing() as agents:
+        record = drift._record_for(agents, AGENT, drift._enrolled_ids())
+        drift._day_bucket(record, _at(0, 1))["runs"] = 12
+        drift._day_bucket(record, _at(0, 1))["screens"] = 12
+    drift.approve_baseline(AGENT, actor="dana@corp.test", now=_at(0, 6))
+    with drift._editing() as agents:
+        drift._day_bucket(agents[AGENT], _at(1))["runs"] = 12
+    result = drift.evaluate(AGENT, now=_at(2, 1))
+    assert "volume" in result["skipped"] and "volume" not in _kinds(result)
+
+
+def test_checking_or_acknowledging_an_agent_that_is_not_enrolled_is_refused():
+    with pytest.raises(drift.AgentDriftError):
+        drift.check("ghost")
+    with pytest.raises(drift.AgentDriftError):
+        drift.acknowledge("ghost", "new_tool:x", actor="omar@corp.test")
+
+
+def test_an_agent_that_stops_reporting_is_flagged_as_silent(tmp_path):
+    _baselined()
+    drift.observe_screen(AGENT, "crm_update", allowed=True, now=_at(14))
+    quiet = drift.evaluate(AGENT, now=_at(14) + 47 * 3600)
+    assert "silent" not in _kinds(quiet)
+    result = drift.evaluate(AGENT, now=_at(14) + 49 * 3600)
+    finding = _finding(result, "silent")
+    assert finding["severity"] == "medium" and "reported nothing" in finding["summary"]
+    _configure(tmp_path, "[agent_drift]\nsilent_hours = 200\n")
+    assert "silent" not in _kinds(drift.evaluate(AGENT, now=_at(14) + 49 * 3600))
+
+
+def test_an_agent_that_only_works_now_and_then_is_not_called_silent():
+    _enroll()
+    with drift._editing() as agents:
+        record = drift._record_for(agents, AGENT, drift._enrolled_ids())
+        for day in (0, 7):
+            drift._day_bucket(record, _at(day))["runs"] = 3
+    drift.observe_run(AGENT, now=_at(13))
+    drift.approve_baseline(AGENT, actor="dana@corp.test", now=_at(13, 23))
+    # about half a run a day: three days of quiet is usual for it
+    assert "silent" not in _kinds(drift.evaluate(AGENT, now=_at(16, 23)))

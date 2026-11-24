@@ -74,10 +74,6 @@ _MAX_WINDOW_DAYS = 7
 _SERIES_DAYS = 30
 
 _DAY_SECONDS = 86400
-#: The shortest stretch a baseline's per-day rate is worked out over, so a
-#: baseline approved minutes after the first activity is not read as a huge
-#: daily rate.
-_MIN_DAY_FRACTION = 0.25
 #: Per-run costs below this are treated as equal (rounding dust is not drift).
 _COST_FLOOR = 0.01
 #: A reported finding that has not been seen for this long is forgotten, so
@@ -87,6 +83,11 @@ _QUIET_SECONDS = 24 * 3600
 _SEEN_REFRESH_SECONDS = 3600
 
 _OTHER_TOOL = "(other)"
+#: Prefix of the digest a tool is counted under when its name cannot be shown.
+_UNNAMED = "unnamed:"
+#: How far the share of uncounted "(other)" tool use may rise above the
+#: baseline's before it is treated as new tools.
+_OTHER_RISE = 0.05
 _LABEL = re.compile(r"\w[\w .:/@+\-]*")
 _COUNTERS = ("runs", "failures", "tool_calls", "input_tokens", "output_tokens",
              "screens", "denials", "approvals_required")
@@ -114,8 +115,12 @@ _NUMBER_SETTINGS: dict[str, tuple[type, float, float, float]] = {
     "failure_rate_rise": (float, 0.20, 0.01, 1.0),
     # how often the web app compares every agent with its baseline
     "check_minutes": (int, 15, 1, 1440),
+    # how long an agent that used to report may stay quiet before it is flagged
+    "silent_hours": (int, 48, 1, 720),
 }
 
+_NOT_RECORDED = ("This could not be written to the audit log, so nothing was changed. "
+                 "Try again; if it keeps failing, check where the audit log is stored.")
 _OFF_REASON = ("Drift detection is turned off, so this agent is not being "
                "compared with its baseline.")
 
@@ -181,7 +186,8 @@ def settings() -> dict:
     """The validated ``[agent_drift]`` section.
 
     ``enable`` (default on), ``baseline_days``, ``window_days``, ``min_runs``,
-    ``min_screens``, ``tool_mix_min_samples``, ``check_minutes``, one threshold per finding, and
+    ``min_screens``, ``tool_mix_min_samples``, ``check_minutes``, ``silent_hours``, one threshold per
+    finding, and
     ``on_drift`` ("alert", the default, or "contain"). Numbers outside their
     range are clamped; anything malformed, or a section that cannot be read,
     falls back to the default. ``MAVERICK_AGENT_DRIFT=0/1`` overrides
@@ -301,26 +307,63 @@ def _editing() -> Iterator[dict[str, dict]]:
             atomic_write_text(path, after, mode=0o600)
 
 
-def _enrolled_ids() -> set[str]:
-    """Ids of the agents enrolled right now. A strict read: an unreadable
-    enrollment sidecar raises instead of looking like an empty roster."""
+def _enrolled_ids() -> dict[str, float]:
+    """The agents enrolled right now, each with the time it was enrolled. A
+    strict read: an unreadable enrollment sidecar raises instead of looking
+    like an empty roster."""
     from . import external_agents
-    return set(external_agents._load_sidecar(strict=True))
+    return {agent_id: _amount(_dict(entry).get("enrolled_at"))
+            for agent_id, entry in external_agents._load_sidecar(strict=True).items()}
 
 
-def _record_for(agents: dict[str, dict], agent_id: str, enrolled: set[str]) -> dict | None:
+def _same_enrollment(record: dict, enrolled_at: float) -> bool:
+    """Whether the record was started under the enrollment that exists now. An
+    id that was removed and enrolled again is a different agent: it must not
+    inherit the old one's baseline, findings or acknowledgements."""
+    stamp = record.get("enrolled_at")
+    return stamp is None or abs(_amount(stamp) - enrolled_at) < 1.0
+
+
+def _fresh_record(enrolled_at: float) -> dict:
+    return {"days": {}, "config": {}, "baseline": None, "reported": {},
+            "acknowledged": {}, "enrolled_at": enrolled_at}
+
+
+def _current_record(agents: dict[str, dict], agent_id: str, enrolled: dict[str, float]) -> dict | None:
+    """The stored record, read-only, or ``None`` when there is none for the
+    enrollment that exists now."""
+    record = agents.get(agent_id)
+    if record is None or agent_id not in enrolled:
+        return None
+    return record if _same_enrollment(record, enrolled[agent_id]) else None
+
+
+def forget(agent_id: str) -> bool:
+    """Drop everything recorded about an agent. Called when it is removed, so
+    a later agent enrolled under the same id starts clean. Never raises."""
+    try:
+        with _editing() as agents:
+            return agents.pop(agent_id, None) is not None
+    except Exception:
+        _hook_failed()
+        return False
+
+
+def _record_for(agents: dict[str, dict], agent_id: str, enrolled: dict[str, float]) -> dict | None:
     """The agent's record, created on first sight. ``None`` when the agent is
     not enrolled or the store is full. Making room for a new agent drops the
     records of agents that are no longer enrolled."""
     if agent_id not in enrolled:
         return None
+    if agent_id in agents and not _same_enrollment(agents[agent_id], enrolled[agent_id]):
+        del agents[agent_id]
     if agent_id not in agents:
         for gone in [known for known in agents if known not in enrolled]:
             del agents[gone]
         if len(agents) >= _MAX_AGENTS:
             return None
-        agents[agent_id] = {"days": {}, "config": {}, "baseline": None,
-                            "reported": {}, "acknowledged": {}}
+        agents[agent_id] = _fresh_record(enrolled[agent_id])
+    agents[agent_id].setdefault("enrolled_at", enrolled[agent_id])
     return agents[agent_id]
 
 
@@ -375,9 +418,11 @@ def _fingerprint(value: Any) -> str:
     """A configuration value as stored: the value itself when it is a short
     plain label, otherwise a digest of it. Either way a change shows, and
     arbitrary text from the agent's platform is never kept. "" for nothing."""
-    if isinstance(value, bool) or not isinstance(value, (str, int)):
+    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
         return ""
-    text = str(value).strip()
+    if isinstance(value, float) and not math.isfinite(value):
+        return ""
+    text = (repr(value) if isinstance(value, float) else str(value)).strip()
     if not text:
         return ""
     return _label(text, limit=128) or "sha256:" + hashlib.sha256(
@@ -400,8 +445,9 @@ def _day_key(epoch_day: int) -> str:
 
 
 def _elapsed_days(first_day: int, moment: float) -> float:
-    """Days from the start of ``first_day`` (UTC) to ``moment``."""
-    return max(moment / _DAY_SECONDS - first_day, _MIN_DAY_FRACTION)
+    """Days from the start of ``first_day`` (UTC) to ``moment``, never less
+    than one: a few hours of activity are not stretched into a daily rate."""
+    return max(moment / _DAY_SECONDS - first_day, 1.0)
 
 
 def _empty_totals() -> dict[str, Any]:
@@ -572,8 +618,20 @@ def _known_tools(record: dict) -> set[str]:
     return known
 
 
+def _tool_name(tool: Any) -> str:
+    """The name a tool is counted under: its own when it is short and plain,
+    otherwise a digest, so two unshowable names stay two tools and a new one
+    still reads as new. Only a missing name falls back to "(other)"."""
+    name = _label(tool)
+    if name:
+        return name
+    if not isinstance(tool, str) or not tool.strip():
+        return _OTHER_TOOL
+    return _UNNAMED + hashlib.sha256(tool.strip().encode("utf-8", "replace")).hexdigest()[:12]
+
+
 def _count_tool(known: set[str], day: dict, tool: Any) -> None:
-    name = _label(tool) or _OTHER_TOOL
+    name = _tool_name(tool)
     if name != _OTHER_TOOL and name not in known:
         if len(known) >= _MAX_TOOLS:
             name = _OTHER_TOOL
@@ -629,17 +687,19 @@ def approve_baseline(agent_id: str, *, actor: str, window_days: int | None = Non
         if not enough and not force:
             raise AgentDriftError(_too_little(agent_id, snapshot["totals"], span, cfg))
         snapshot.update(approved_by=who, approved_at=moment, forced=not enough)
-        _audit("agent_baseline_approved", agent_id, approved_by=who, window_days=span,
-               runs=snapshot["totals"]["runs"], screens=snapshot["totals"]["screens"],
-               tools=len(snapshot["totals"]["tools"]), forced=not enough,
-               replaced=isinstance(record.get("baseline"), dict))
+        if not _audit("agent_baseline_approved", agent_id, approved_by=who, window_days=span,
+                      runs=snapshot["totals"]["runs"], screens=snapshot["totals"]["screens"],
+                      tools=len(snapshot["totals"]["tools"]), forced=not enough,
+                      replaced=isinstance(record.get("baseline"), dict)):
+            raise AgentDriftError(_NOT_RECORDED)
         record.update(baseline=snapshot, reported={}, acknowledged={})
     return _baseline_view(snapshot)
 
 
 def baseline(agent_id: str) -> dict | None:
     """The agent's approved baseline, or ``None`` when it has none."""
-    approved = _dict(_load_store().get(agent_id)).get("baseline")
+    record = _current_record(_load_store(), agent_id, _enrolled_ids())
+    approved = _dict(record).get("baseline")
     return _baseline_view(approved) if isinstance(approved, dict) else None
 
 
@@ -667,6 +727,8 @@ def _snapshot(record: dict, span: int, moment: float) -> dict:
     started = next((day for day in range(first, last + 1) if _day_key(day) in days), first)
     return {"window_days": span, "from_day": _day_key(first), "to_day": _day_key(last),
             "days": round(_elapsed_days(started, moment), 4),
+            # whole days of activity behind the rate; none means the rate is a guess
+            "whole_days": last - started,
             "totals": _window(days, first, last),
             "config": copy.deepcopy(_dict(record.get("config")))}
 
@@ -724,8 +786,8 @@ def evaluate(agent_id: str, *, now: float | None = None) -> dict:
     do not count. Reads only; raises :class:`AgentDriftStoreError` when the
     record cannot be read."""
     cfg = settings()
-    return _evaluate_record(agent_id, _load_store().get(agent_id), cfg, _now(now),
-                            active=_active(cfg))
+    record = _current_record(_load_store(), agent_id, _enrolled_ids())
+    return _evaluate_record(agent_id, record, cfg, _now(now), active=_active(cfg))
 
 
 def _evaluate_record(agent_id: str, record: dict | None, cfg: dict, moment: float,
@@ -755,7 +817,9 @@ def _evaluate_record(agent_id: str, record: dict | None, cfg: dict, moment: floa
         out.update(state="learning", reason=_OFF_REASON)
         return out
     base = _measures(_stored_totals(approved), _amount(approved.get("days")) or 1.0)
+    base["whole_days"] = _count(approved.get("whole_days", 1))
     findings = _new_tool_findings(base, current)
+    findings.extend(_silence(base, record, cfg, moment))
     for name, compare in _RATE_CHECKS:
         found = compare(base, current, cfg)
         (out["skipped"] if found is None else out["compared"]).append(name)
@@ -819,16 +883,51 @@ def _new_tool_findings(base: dict, current: dict) -> list[dict]:
     attempts count too: asking for an unknown tool is the signal."""
     found = []
     for tool, times in sorted(current["tools"].items()):
-        if base["tools"].get(tool, 0) > 0:
+        was = base["tools"].get(tool, 0)
+        if tool == _OTHER_TOOL:
+            # "(other)" is tools that are not tracked by name, so having some
+            # in the baseline says nothing about which ones: a rise in their
+            # share is the only sign that a new one arrived.
+            before = share(was, sum(base["tools"].values()))
+            if was and share(times, sum(current["tools"].values())) <= before + _OTHER_RISE:
+                continue
+            what = "tools that are not tracked by name, more than in its approved baseline"
+        elif was > 0:
             continue
-        what = ("tools that were not in its approved baseline (too many to list by name)"
-                if tool == _OTHER_TOOL
-                else f"a tool that was not in its approved baseline: {tool}")
+        elif tool.startswith(_UNNAMED):
+            what = ("a tool that was not in its approved baseline and whose name cannot "
+                    f"be shown (reference {tool})")
+        else:
+            what = f"a tool that was not in its approved baseline: {tool}"
         found.append(_finding(
             "new_tool", HIGH,
             f"This agent used or asked to use {what} ({_plural(times, 'time')} recently).",
-            0, times, key=f"new_tool:{tool}", tool=tool))
+            was, times, key=f"new_tool:{tool}", tool=tool))
     return found
+
+
+def _silence(base: dict, record: dict, cfg: dict, moment: float) -> list[dict]:
+    """An agent whose baseline shows steady activity and that has reported
+    nothing for a long time. Quiet is not the same as safe: it may have
+    stopped, or it may be working without reporting. The wait is at least
+    ``silent_hours`` and at least three of its usual gaps, so an agent that
+    only works weekly is not flagged after two days."""
+    last = _amount(record.get("last_observed_at"))
+    per_day = (base["runs"] + base["screens"]) / (base["days"] or 1.0)
+    enough = base["runs"] >= cfg["min_runs"] or base["screens"] >= cfg["min_screens"]
+    if not last or not enough or per_day <= 0:
+        return []
+    quiet = moment - last
+    wait = max(cfg["silent_hours"] * 3600.0, 3 * _DAY_SECONDS / per_day)
+    if quiet < wait:
+        return []
+    days = quiet / _DAY_SECONDS
+    return [_finding(
+        "silent", MEDIUM,
+        f"This agent has reported nothing for {days:.1f} days, though its approved baseline "
+        f"shows about {per_day:.1f} runs and checks a day. It may have stopped, or it may be "
+        "working without reporting.",
+        round(per_day, 2), 0, quiet_days=round(days, 2))]
 
 
 def _tool_mix(base: dict, current: dict, cfg: dict) -> list[dict] | None:
@@ -858,6 +957,8 @@ def _volume(base: dict, current: dict, cfg: dict) -> list[dict] | None:
     whole days in the window, or on the window with today counted as a whole
     day if that is higher (a morning batch is not a spike); a fall is judged
     on whole days only (a quiet morning is not a drop)."""
+    if base.get("whole_days", 1) < 1:
+        return None  # the baseline has no completed day to take a daily rate from
     need, limit, was = cfg["min_runs"], cfg["volume_ratio"], base["runs_per_day"]
     whole = current["whole_days"]
     can_rise = current["runs"] >= need
@@ -997,27 +1098,43 @@ def check(agent_id: str, *, now: float | None = None) -> dict:
     and one alert goes out for the batch. With ``[agent_drift] on_drift =
     "contain"`` a new high-severity finding also contains the agent at the
     gateway; the default is to alert only. A finding already reported is not
-    reported again while it lasts, unless it gets more severe. Returns the
-    evaluation plus ``new_findings`` (keys), ``reaction`` and ``contained``."""
+    reported again while it lasts, unless it gets more severe. A finding whose
+    audit row could not be written is not counted as reported, so the next
+    check reports it. Returns the evaluation plus ``new_findings`` (keys),
+    ``reaction`` and ``contained``. Raises :class:`AgentDriftError` for an
+    agent that is not enrolled."""
     cfg = settings()
     moment = _now(now)
-    record = _load_store().get(agent_id)
+    enrolled = _enrolled_ids()
+    if agent_id not in enrolled:
+        raise AgentDriftError(f"{agent_id!r} is not an enrolled agent.")
+    record = _current_record(_load_store(), agent_id, enrolled)
     result = _evaluate_record(agent_id, record, cfg, moment, active=_active(cfg))
     result.update(new_findings=[], reaction=cfg["on_drift"], contained=False)
     if not result["enabled"] or record is None:
         return result
-    if not result["findings"] and not record.get("reported"):
+    if not (result["findings"] or record.get("reported") or record.get("acknowledged")):
         return result  # nothing to report and nothing to forget
-    fresh = _new_findings(result["findings"], _dict(record.get("reported")))
+    reported = _dict(record.get("reported"))
+    fresh = _new_findings(result["findings"], reported)
+    # A high finding that could not be contained last time is tried again,
+    # without being reported a second time.
+    waiting = [f for f in result["findings"] if not f["acknowledged"]
+               and _dict(reported.get(f["key"])).get("containment_pending")]
     contained = failed = False
     # Containment comes first and outside the store lock: if this process
     # stops before the finding is remembered, the next check contains again
     # instead of believing it was already handled.
-    if cfg["on_drift"] == "contain" and any(f["severity"] == HIGH for f in fresh):
+    if cfg["on_drift"] == "contain" and (waiting or any(f["severity"] == HIGH for f in fresh)):
         contained, failed = _contain(agent_id)
-    new = _report_new(agent_id, cfg, moment, contained=contained, retry_high=failed)
+    new = _report_new(agent_id, cfg, moment, contained=contained, failed=failed,
+                      seen={f["key"] for f in fresh})
     if new:
         _alert(agent_id, new, contained=contained, failed=failed)
+    elif contained and waiting:
+        # the earlier report said it could not be contained; say that it now is
+        _audit("agent_drift_contained", agent_id, findings=[f["key"] for f in waiting])
+        _alert(agent_id, waiting, contained=True, failed=False)
     result.update(new_findings=[f["key"] for f in new], contained=contained)
     if failed:
         result["containment_failed"] = True
@@ -1048,25 +1165,29 @@ def check_all(*, now: float | None = None) -> list[dict]:
 def acknowledge(agent_id: str, finding_key: str, *, actor: str,
                 now: float | None = None) -> dict:
     """Dismiss one open finding. It stays listed, marked acknowledged, and no
-    longer counts toward the agent's state until a new baseline is approved or
-    the finding gets more severe. Audited (``agent_drift_acknowledged``).
-    Raises :class:`AgentDriftError` when there is no such open finding."""
+    longer counts toward the agent's state until a new baseline is approved,
+    the finding gets more severe, or it goes away for a day and comes back.
+    Audited (``agent_drift_acknowledged``). Raises :class:`AgentDriftError`
+    when the agent is not enrolled, there is no such open finding, or the
+    acknowledgement could not be written to the audit log."""
     who = _actor(actor)
     cfg = settings()
     moment = _now(now)
     with _editing() as agents:
-        record = agents.get(agent_id)
+        record = _current_record(agents, agent_id, _enrolled_ids())
         result = _evaluate_record(agent_id, record, cfg, moment, active=_active(cfg))
         finding = next((f for f in result["findings"]
                         if f["key"] == finding_key and not f["acknowledged"]), None)
         if record is None or finding is None:
             raise AgentDriftError(
                 f"{agent_id!r} has no open finding {finding_key!r} to acknowledge.")
-        _audit("agent_drift_acknowledged", agent_id, finding=finding["key"],
-               finding_kind=finding["kind"], severity=finding["severity"],
-               acknowledged_by=who)
+        if not _audit("agent_drift_acknowledged", agent_id, finding=finding["key"],
+                      finding_kind=finding["kind"], severity=finding["severity"],
+                      acknowledged_by=who):
+            raise AgentDriftError(_NOT_RECORDED)
         acks = _dict(record.get("acknowledged"))
-        acks[finding["key"]] = {"by": who, "at": moment, "severity": finding["severity"]}
+        acks[finding["key"]] = {"by": who, "at": moment, "seen": moment,
+                                "severity": finding["severity"]}
         record["acknowledged"] = _newest(acks, "at", _MAX_ACKNOWLEDGED)
     return {"agent_id": agent_id, "finding": finding["key"],
             "acknowledged_by": who, "acknowledged_at": moment}
@@ -1104,44 +1225,80 @@ def _contain(agent_id: str) -> tuple[bool, bool]:
 
 
 def _report_new(agent_id: str, cfg: dict, moment: float, *, contained: bool,
-                retry_high: bool) -> list[dict]:
+                failed: bool, seen: set[str]) -> list[dict]:
     """Under the store lock: audit the findings not reported before and
-    remember them, so two checks at once report a finding only once. With
-    ``retry_high`` (containment failed) high findings are not remembered, so
-    the next check tries again."""
+    remember them, so two checks at once report a finding only once.
+
+    Only findings the caller already evaluated (``seen``) are reported now. One
+    that appeared since then waits for the next check, so a high finding is
+    never remembered without the containment decision having seen it. A
+    finding whose audit row could not be written is not remembered either, so
+    it is reported again. With ``failed`` (containment failed) high findings
+    are remembered as still waiting for containment."""
     with _editing() as agents:
-        record = agents.get(agent_id)
+        record = _current_record(agents, agent_id, _enrolled_ids())
         if record is None:
             return []
         result = _evaluate_record(agent_id, record, cfg, moment, active=True)
         reported = _dict(record.get("reported"))
-        new = _new_findings(result["findings"], reported)
-        for finding in new:
-            _audit("agent_drift_detected", agent_id, finding=finding["key"],
-                   finding_kind=finding["kind"], severity=finding["severity"],
-                   baseline=finding["baseline"], current=finding["current"],
-                   reaction=cfg["on_drift"], contained=contained)
+        unreported = _new_findings(result["findings"], reported)
+        recorded = []
+        for finding in unreported:
+            if finding["key"] in seen and _audit(
+                    "agent_drift_detected", agent_id, finding=finding["key"],
+                    finding_kind=finding["kind"], severity=finding["severity"],
+                    baseline=finding["baseline"], current=finding["current"],
+                    reaction=cfg["on_drift"], contained=contained):
+                recorded.append(finding)
+        hold = {f["key"] for f in unreported} - {f["key"] for f in recorded}
         record["reported"] = _remember(reported, result["findings"], moment,
-                                       skip=HIGH if retry_high else "")
-    return new
+                                       hold=hold, pending=failed)
+        record["acknowledged"] = _live_acknowledgements(
+            _dict(record.get("acknowledged")), result["findings"], moment)
+    return recorded
 
 
-def _remember(reported: dict, findings: list[dict], moment: float, *, skip: str) -> dict:
-    """The bounded record of what has been reported, brought up to date."""
+def _remember(reported: dict, findings: list[dict], moment: float, *, hold: set[str],
+              pending: bool) -> dict:
+    """The bounded record of what has been reported, brought up to date.
+    Findings in ``hold`` are left out so the next check reports them. With
+    ``pending`` a high finding is marked as still waiting for containment."""
     present = {f["key"] for f in findings}
     for finding in findings:
-        if finding["acknowledged"] or finding["severity"] == skip:
+        key = finding["key"]
+        if finding["acknowledged"] or key in hold:
             continue
-        entry = _dict(reported.get(finding["key"]))
+        entry = _dict(reported.get(key))
         if _RANK[finding["severity"]] > _rank(entry.get("severity")):
-            reported[finding["key"]] = {"at": moment, "seen": moment,
-                                        "severity": finding["severity"]}
+            entry = {"at": moment, "seen": moment, "severity": finding["severity"]}
+            reported[key] = entry
         elif moment - _amount(entry.get("seen")) >= _SEEN_REFRESH_SECONDS:
             entry["seen"] = moment
+        if finding["severity"] == HIGH and pending:
+            entry["containment_pending"] = True
+        else:
+            entry.pop("containment_pending", None)
     for key in [key for key, entry in reported.items() if key not in present
                 and moment - _amount(_dict(entry).get("seen")) > _QUIET_SECONDS]:
         del reported[key]
     return _newest(reported, "seen", _MAX_REPORTED)
+
+
+def _live_acknowledgements(acknowledged: dict, findings: list[dict], moment: float) -> dict:
+    """Acknowledgements that still apply. One covers a finding while it lasts;
+    once the finding has been gone for a day the acknowledgement is dropped,
+    so the same kind of change coming back later is reported afresh."""
+    present = {f["key"] for f in findings}
+    for key, ack in list(acknowledged.items()):
+        ack = _dict(ack)
+        last = _amount(ack.get("seen")) or _amount(ack.get("at"))
+        if key in present:
+            if moment - last >= _SEEN_REFRESH_SECONDS:
+                ack["seen"] = moment
+                acknowledged[key] = ack
+        elif moment - last > _QUIET_SECONDS:
+            del acknowledged[key]
+    return acknowledged
 
 
 def _newest(entries: dict, stamp: str, keep: int) -> dict:
@@ -1181,8 +1338,9 @@ def roster_view(*, now: float | None = None) -> list[dict]:
     active = _active(cfg)
     agents = _load_store()
     rows = []
-    for agent_id in sorted(_enrolled_ids()):
-        record = agents.get(agent_id)
+    enrolled = _enrolled_ids()
+    for agent_id in sorted(enrolled):
+        record = _current_record(agents, agent_id, enrolled)
         result = _evaluate_record(agent_id, record, cfg, moment, active=active)
         approved = result["baseline"] or {}
         rows.append({
@@ -1201,11 +1359,12 @@ def detail(agent_id: str, *, now: float | None = None) -> dict:
     """One enrolled agent's evaluation (state, findings, baseline, current
     window) plus the configuration last seen and a daily series for charts,
     oldest day first, at most ``_SERIES_DAYS`` long. Reads only."""
-    if agent_id not in _enrolled_ids():
+    enrolled = _enrolled_ids()
+    if agent_id not in enrolled:
         raise AgentDriftError(f"agent {agent_id!r} is not enrolled")
     cfg = settings()
     moment = _now(now)
-    record = _dict(_load_store().get(agent_id))
+    record = _dict(_current_record(_load_store(), agent_id, enrolled))
     out = _evaluate_record(agent_id, record, cfg, moment, active=_active(cfg))
     out["config"] = _config_view(_dict(record.get("config")))
     out["last_observed_at"] = record.get("last_observed_at")

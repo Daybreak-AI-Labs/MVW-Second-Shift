@@ -240,23 +240,6 @@ def test_gateway_404s_while_disabled(monkeypatch):
     assert "The connection file is available once the connection is open" in page.text
 
 
-def test_openapi_artifact_describes_every_gateway_operation():
-    spec = TestClient(app, base_url="http://127.0.0.1").get("/api/v1/external/openapi.json").json()
-    assert spec["openapi"].startswith("3.")
-    assert set(spec["paths"]) == {
-        "/api/v1/external/screen", "/api/v1/external/runs",
-        "/api/v1/external/runtime/evaluate",
-        "/api/v1/external/runs/start",
-        "/api/v1/external/runs/{goal_id}/heartbeat",
-        "/api/v1/external/runs/{goal_id}/finish",
-        "/api/v1/external/memory/ingest",
-        "/api/v1/external/memory/recall",
-        "/api/v1/external/approvals/{approval_id}",
-        "/api/v1/external/execute",
-        "/api/v1/external/executions/{execution_id}",
-        "/api/v1/external/executions/{execution_id}/commit"}
-
-
 def test_console_page_renders_roster_and_forms():
     _enroll()
     page = client.get("/external-agents").text

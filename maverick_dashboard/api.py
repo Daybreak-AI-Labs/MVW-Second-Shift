@@ -949,6 +949,7 @@ async def external_agent_enroll(request: Request, payload: ExternalAgentIn) -> d
             expires_days=payload.expires_days,
             budget_period=payload.budget_period,
             enrolled_by=caller_principal(request) or "admin",
+            external_ref=payload.external_ref,
         )
     except xa.ExternalAgentsError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e

@@ -37,6 +37,7 @@ import logging
 import threading
 import time
 from collections import deque
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
@@ -86,6 +87,15 @@ def _rate_limit(key: str, action: str) -> None:
         window.append(now)
 
 
+class ExternalDeclaredIn(BaseModel):
+    """What the agent says about its own build. Each value is kept as a short
+    label or a digest and compared with the approved baseline; it is the
+    agent's word, never proof."""
+    version: str = Field(default="", max_length=200)
+    config_digest: str = Field(default="", max_length=200)
+    model: str = Field(default="", max_length=200)
+
+
 class ExternalRunIn(BaseModel):
     title: str = Field(min_length=1, max_length=500)
     outcome: str = Field(max_length=20)
@@ -95,6 +105,11 @@ class ExternalRunIn(BaseModel):
     input_tokens: int = Field(default=0, ge=0)
     output_tokens: int = Field(default=0, ge=0)
     tool_calls: int = Field(default=0, ge=0)
+    # The name of each tool the run used, one entry per call (names only,
+    # never arguments), and the agent's own statement of its build. Both
+    # feed drift detection; neither is stored with the run.
+    tools: list[Annotated[str, Field(max_length=256)]] = Field(default_factory=list, max_length=1000)
+    declared: ExternalDeclaredIn | None = None
     duration_seconds: float = Field(default=0.0, ge=0)
     department: str = Field(default="", max_length=100)
     # Send a stable key per logical run and retries become exactly-once:
@@ -122,6 +137,11 @@ class ExternalRunFinishIn(BaseModel):
     input_tokens: int = Field(default=0, ge=0)
     output_tokens: int = Field(default=0, ge=0)
     tool_calls: int = Field(default=0, ge=0)
+    # The name of each tool the run used, one entry per call (names only,
+    # never arguments), and the agent's own statement of its build. Both
+    # feed drift detection; neither is stored with the run.
+    tools: list[Annotated[str, Field(max_length=256)]] = Field(default_factory=list, max_length=1000)
+    declared: ExternalDeclaredIn | None = None
     duration_seconds: float = Field(default=0.0, ge=0)
     idempotency_key: str = Field(default="", max_length=128)
 
@@ -381,7 +401,7 @@ _OPENAPI: dict = {
         "/api/v1/external/runs": {
             "post": {
                 "operationId": "reportRun",
-                "summary": "Report a completed run for the Operating Record",
+                "summary": "Report a completed run",
                 "requestBody": {"required": True, "content": {
                     "application/json": {"schema": {
                         "type": "object", "required": ["title", "outcome"],
@@ -396,6 +416,18 @@ _OPENAPI: dict = {
                             "input_tokens": {"type": "integer"},
                             "output_tokens": {"type": "integer"},
                             "tool_calls": {"type": "integer"},
+                            "tools": {
+                                "type": "array", "items": {"type": "string"},
+                                "description": "The name of each tool the run used, one "
+                                               "entry per call. Names only, never arguments."},
+                            "declared": {
+                                "type": "object",
+                                "description": "What the agent says about its own build. "
+                                               "A change from the approved baseline is "
+                                               "reported as drift.",
+                                "properties": {"version": {"type": "string"},
+                                               "config_digest": {"type": "string"},
+                                               "model": {"type": "string"}}},
                             "duration_seconds": {"type": "number"},
                             "department": {"type": "string"},
                             "idempotency_key": {
@@ -478,6 +510,18 @@ _OPENAPI: dict = {
                             "input_tokens": {"type": "integer"},
                             "output_tokens": {"type": "integer"},
                             "tool_calls": {"type": "integer"},
+                            "tools": {
+                                "type": "array", "items": {"type": "string"},
+                                "description": "The name of each tool the run used, one "
+                                               "entry per call. Names only, never arguments."},
+                            "declared": {
+                                "type": "object",
+                                "description": "What the agent says about its own build. "
+                                               "A change from the approved baseline is "
+                                               "reported as drift.",
+                                "properties": {"version": {"type": "string"},
+                                               "config_digest": {"type": "string"},
+                                               "model": {"type": "string"}}},
                             "duration_seconds": {"type": "number"},
                             "idempotency_key": {"type": "string"},
                         }}}}},
@@ -489,52 +533,6 @@ _OPENAPI: dict = {
                             "goal_id": {"type": "integer"},
                             "over_budget": {"type": "boolean"},
                             "over_wall": {"type": "boolean"},
-                        }}}}}},
-            },
-        },
-        "/api/v1/external/memory/ingest": {
-            "post": {
-                "operationId": "memoryIngest",
-                "summary": "Deposit an experience record into the governed "
-                           "learning plane (fleet memory)",
-                "requestBody": {"required": True, "content": {
-                    "application/json": {"schema": {
-                        "type": "object",
-                        "required": ["kind", "goal_text"],
-                        "properties": {
-                            "kind": {"type": "string",
-                                     "enum": ["success", "failure",
-                                              "lesson"]},
-                            "goal_text": {"type": "string"},
-                            "reflection": {"type": "string"},
-                            "tools_used": {"type": "array",
-                                           "items": {"type": "string"}},
-                            "domain": {"type": "string"},
-                        }}}}},
-                "responses": {"201": {"description": "Deposited", "content": {
-                    "application/json": {"schema": {
-                        "type": "object",
-                        "properties": {"ok": {"type": "boolean"}}}}}}},
-            },
-        },
-        "/api/v1/external/memory/recall": {
-            "post": {
-                "operationId": "memoryRecall",
-                "summary": "Read governed memory scoped to this agent's "
-                           "permitted departments",
-                "requestBody": {"required": True, "content": {
-                    "application/json": {"schema": {
-                        "type": "object", "required": ["query"],
-                        "properties": {
-                            "query": {"type": "string"},
-                            "domain": {"type": "string"},
-                        }}}}},
-                "responses": {"200": {"description": "Context", "content": {
-                    "application/json": {"schema": {
-                        "type": "object",
-                        "properties": {
-                            "context": {"type": "string"},
-                            "reason": {"type": "string"},
                         }}}}}},
             },
         },
@@ -568,257 +566,6 @@ _OPENAPI: dict = {
                         }}}}}},
             },
         },
-        "/api/v1/external/execute": {
-            "post": {
-                "operationId": "executeAction",
-                "summary": "Perform one action through a governed connector "
-                           "(reads run now; writes park a digest-bound "
-                           "approval)",
-                "requestBody": {"required": True, "content": {
-                    "application/json": {"schema": {
-                        "type": "object",
-                        "required": ["connector", "op", "path"],
-                        "properties": {
-                            "connector": {"type": "string",
-                                          "description": "Enabled governed "
-                                                         "connector name"},
-                            "op": {"type": "string",
-                                   "enum": ["get", "post", "put", "patch",
-                                            "delete"]},
-                            "path": {"type": "string"},
-                            "body": {"type": "object"},
-                            "preview": {
-                                "type": "boolean",
-                                "description": "Describe the write without "
-                                               "performing it (no side "
-                                               "effect)."},
-                            "detail": {"type": "string",
-                                       "description": "What will be done"},
-                            "goal_id": {
-                                "type": "integer",
-                                "description": "Bind the effect to one of "
-                                               "this agent's live runs."},
-                            "idempotency_key": {
-                                "type": "string",
-                                "maxLength": 128,
-                                "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,127}$",
-                                "description": "Stable logical-operation key; "
-                                               "an exact write-park replay "
-                                               "returns the original execution."},
-                            "runtime_asset_id": {
-                                "type": "string",
-                                "pattern": "^MAA-[0-9a-f]{32}$",
-                                "description": "Required when the runtime "
-                                               "guardrail plane is enabled."},
-                            "runtime_asset_revision": {
-                                "type": "integer", "minimum": 1},
-                            "runtime_asset_version_digest": {
-                                "type": "string",
-                                "pattern": "^(?:sha256:)?[0-9a-f]{64}$"},
-                        }}}}},
-                "responses": {"200": {"description": "Verdict", "content": {
-                    "application/json": {"schema": {
-                        "type": "object",
-                        "properties": {
-                            "allowed": {"type": "boolean"},
-                            "rule": {"type": "string"},
-                            "reason": {"type": "string"},
-                            "status": {"type": "string"},
-                            "result": {"type": "string"},
-                            "requires_approval": {"type": "boolean"},
-                            "approval_id": {"type": "integer"},
-                            "execution_id": {"type": "string"},
-                            "duplicate": {"type": "boolean"},
-                            "expires_at": {"type": "number"},
-                            "preview": {"type": "string"},
-                            "request_sha256": {"type": "string"},
-                        }}}}}},
-            },
-        },
-        "/api/v1/external/executions/{execution_id}": {
-            "get": {
-                "operationId": "executionStatus",
-                "summary": "Poll a parked execution; commit once its "
-                           "approval is granted",
-                "parameters": [{"name": "execution_id", "in": "path",
-                                "required": True,
-                                "schema": {"type": "string"}}],
-                "responses": {"200": {"description": "Status", "content": {
-                    "application/json": {"schema": {
-                        "type": "object",
-                        "properties": {
-                            "execution_id": {"type": "string"},
-                            "status": {"type": "string"},
-                            "approval_id": {"type": "integer"},
-                            "connector": {"type": "string"},
-                            "op": {"type": "string"},
-                            "expires_at": {"type": "number"},
-                            "approval_status": {"type": "string"},
-                        }}}}}},
-            },
-        },
-        "/api/v1/external/executions/{execution_id}/commit": {
-            "post": {
-                "operationId": "commitExecution",
-                "summary": "Commit an approved execution by re-sending the "
-                           "byte-identical request",
-                "parameters": [{"name": "execution_id", "in": "path",
-                                "required": True,
-                                "schema": {"type": "string"}}],
-                "requestBody": {"required": True, "content": {
-                    "application/json": {"schema": {
-                        "type": "object",
-                        "required": ["connector", "op", "path"],
-                        "properties": {
-                            "connector": {"type": "string"},
-                            "op": {"type": "string",
-                                   "enum": ["get", "post", "put", "patch",
-                                            "delete"]},
-                            "path": {"type": "string"},
-                            "body": {"type": "object"},
-                            "detail": {
-                                "type": "string",
-                                "description": "Exact transient action detail "
-                                               "used when the write was parked."},
-                            "goal_id": {
-                                "type": "integer",
-                                "description": "Exact live-run binding used "
-                                               "when the write was parked."},
-                            "runtime_asset_id": {
-                                "type": "string",
-                                "pattern": "^MAA-[0-9a-f]{32}$",
-                                "description": "Required when runtime "
-                                               "guardrails are enabled."},
-                            "runtime_asset_revision": {
-                                "type": "integer", "minimum": 1},
-                            "runtime_asset_version_digest": {
-                                "type": "string",
-                                "pattern": "^(?:sha256:)?[0-9a-f]{64}$"},
-                        }}}}},
-                "responses": {"200": {"description": "Verdict", "content": {
-                    "application/json": {"schema": {
-                        "type": "object",
-                        "properties": {
-                            "allowed": {"type": "boolean"},
-                            "rule": {"type": "string"},
-                            "reason": {"type": "string"},
-                            "status": {"type": "string"},
-                            "result": {"type": "string"},
-                            "execution_id": {"type": "string"},
-                        }}}}}},
-            },
-        },
-        "/api/v1/external/runtime/evaluate": {
-            "post": {
-                "operationId": "evaluateRuntimeContent",
-                "summary": "Evaluate transient prompt, output, or action content "
-                           "against current governed policy and local guardrails",
-                "requestBody": {"required": True, "content": {
-                    "application/json": {"schema": {
-                        "type": "object",
-                        "required": [
-                            "stage", "asset_id", "asset_revision",
-                            "asset_version_digest",
-                        ],
-                        "properties": {
-                            "stage": {"type": "string",
-                                      "enum": ["prompt", "output", "action"]},
-                            "content": {"type": "string", "maxLength": 65536},
-                            "asset_id": {"type": "string",
-                                         "pattern": "^MAA-[0-9a-f]{32}$"},
-                            "asset_revision": {"type": "integer", "minimum": 1},
-                            "asset_version_digest": {
-                                "type": "string",
-                                "pattern": "^(?:sha256:)?[0-9a-f]{64}$",
-                            },
-                            "action_name": {"type": "string"},
-                            "action_arguments": {"type": "object"},
-                            "known_prompt": {"type": "string"},
-                        }}}}},
-                "responses": {"200": {"description": "Guardrail decision and "
-                                                     "digest-only receipts",
-                                        "content": {"application/json": {
-                                            "schema": {"type": "object"}}}}},
-            },
-        },
-        "/api/v1/external/red-team/{campaign_id}/cases": {
-            "get": {
-                "operationId": "pullRedTeamCases",
-                "summary": "Atomically lease synthetic assurance probes to "
-                           "one enrolled-agent runner",
-                "parameters": [
-                    {"name": "campaign_id", "in": "path", "required": True,
-                     "schema": {"type": "string"}},
-                    {"name": "runner_instance_id", "in": "query",
-                     "required": True, "schema": {
-                         "type": "string", "minLength": 1, "maxLength": 128,
-                         "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,127}$",
-                     }},
-                    {"name": "limit", "in": "query", "required": False,
-                     "schema": {"type": "integer", "minimum": 1,
-                                "maximum": 12, "default": 1}},
-                    {"name": "lease_seconds", "in": "query",
-                     "required": False, "schema": {
-                         "type": "integer", "minimum": 30, "maximum": 900,
-                         "default": 120,
-                     }},
-                ],
-                "responses": {"200": {"description": "Pending probes",
-                                        "content": {"application/json": {
-                                            "schema": {"type": "object"}}}}},
-            },
-        },
-        "/api/v1/external/red-team/{campaign_id}/results": {
-            "post": {
-                "operationId": "submitRedTeamResult",
-                "summary": "Submit transient target output; Second Shift keeps "
-                           "only a keyed commitment and bounded detector metrics",
-                "parameters": [{"name": "campaign_id", "in": "path",
-                                "required": True,
-                                "schema": {"type": "string"}}],
-                "requestBody": {"required": True, "content": {
-                    "application/json": {"schema": {
-                        "type": "object", "required": [
-                            "case_id", "target_artifact_sha256",
-                            "runner_instance_id", "lease_token",
-                        ],
-                        "properties": {
-                            "case_id": {"type": "string"},
-                            "target_artifact_sha256": {
-                                "type": "string",
-                                "pattern": "^(?:sha256:)?[0-9a-f]{64}$",
-                            },
-                            "runner_instance_id": {
-                                "type": "string",
-                                "pattern": "^[A-Za-z0-9]"
-                                           "[A-Za-z0-9_.:@/-]{0,127}$",
-                            },
-                            "lease_token": {
-                                "type": "string",
-                                "pattern": "^rtl1\\.[0-9a-f]{64}$",
-                            },
-                            "response": {"type": "string"},
-                            "tool_calls": {"type": "array",
-                                           "items": {"oneOf": [
-                                               {"type": "string"},
-                                               {"type": "object"},
-                                           ]}},
-                            "tool_trace_status": {
-                                "type": "string",
-                                "enum": ["complete", "unavailable"],
-                                "default": "unavailable",
-                            },
-                            "transport_status": {
-                                "type": "string",
-                                "enum": ["completed", "timeout", "error",
-                                         "cancelled"],
-                            },
-                        }}}}},
-                "responses": {"201": {"description": "Committed result",
-                                        "content": {"application/json": {
-                                            "schema": {"type": "object"}}}}},
-            },
-        },
     },
 }
 
@@ -834,20 +581,4 @@ async def external_openapi(request: Request) -> dict:
         raise HTTPException(status_code=404, detail="not found")
     client = request.client.host if request.client else "unknown"
     _rate_limit(client, "openapi")
-    document = {**_OPENAPI, "paths": dict(_OPENAPI["paths"])}
-    try:
-        from maverick import red_team_assurance as rta
-
-        red_team_enabled = rta.enabled()
-    except Exception:
-        red_team_enabled = False
-    if not red_team_enabled:
-        document["paths"].pop(
-            "/api/v1/external/red-team/{campaign_id}/cases",
-            None,
-        )
-        document["paths"].pop(
-            "/api/v1/external/red-team/{campaign_id}/results",
-            None,
-        )
-    return document
+    return {**_OPENAPI, "paths": dict(_OPENAPI["paths"])}

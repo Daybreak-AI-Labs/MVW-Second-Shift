@@ -33,6 +33,9 @@ class ExternalAgentIn(BaseModel):
     # rating as "name:risk", which floors whatever the agent declares.
     # None keeps the agent's current period on re-enrollment ("monthly" for a new one).
     budget_period: str | None = Field(default=None, pattern="^(monthly|total)$")
+    # The agent's record on its home platform, "<platform check>:<id>". None keeps
+    # the stored link on re-enrollment and "" removes it.
+    external_ref: str | None = Field(default=None, max_length=300)
 
 
 class ExternalCredentialIn(BaseModel):

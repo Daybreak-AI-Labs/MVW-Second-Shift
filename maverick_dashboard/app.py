@@ -1575,7 +1575,8 @@ async def external_agents_page(request: Request) -> HTMLResponse:
         {
             "enabled": enabled,
             "external_agents_can_manage": enabled and has_permission(request, "admin"),
-            "external_agents_can_activate": has_global_permission(request, "admin"),
+            # turned on in the deployment settings, never from this page
+            "external_agents_can_activate": False,
             "status": xa.status(),
             "agents": xa.roster(),
             "platforms": xa.PLATFORMS,

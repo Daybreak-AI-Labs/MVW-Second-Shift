@@ -54,6 +54,10 @@ PLATFORMS: dict[str, str] = {
     "agentforce": "Salesforce Agentforce",
     "bedrock": "AWS Bedrock Agents",
     "copilot": "Microsoft Copilot Studio",
+    "m365_copilot": "Microsoft 365 Copilot",
+    "foundry": "Microsoft Foundry",
+    "servicenow": "ServiceNow",
+    "workday": "Workday",
     "openai": "OpenAI Agents",
     "langchain": "LangChain / LangGraph",
     "custom": "Custom / other runtime",
@@ -315,6 +319,32 @@ def _clean_text(text: Any, *, shield: Any | None = None) -> str | None:
     return safe
 
 
+#: An enrolled agent's record on its home platform, "<platform check>:<id>",
+#: for example "foundry:quote-agent". Platform checks match on it exactly.
+_EXTERNAL_REF = re.compile(r"[a-z][a-z0-9_]{0,39}:[^\s\x00-\x1f\x7f]{1,250}")
+
+
+def _clean_external_ref(value: str | None) -> str | None:
+    """``None`` (keep the stored link), "" (no link) or a well-formed reference."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    if text and not _EXTERNAL_REF.fullmatch(text):
+        raise ExternalAgentsError(
+            "external_ref must look like <platform>:<id>, for example foundry:quote-agent")
+    return text
+
+
+def _require_external_ref_free(sidecar: dict, agent_id: str, external_ref: str | None) -> None:
+    """Two enrolled agents cannot claim one record on a platform."""
+    if not external_ref:
+        return
+    for other, meta in sidecar.items():
+        if other != agent_id and isinstance(meta, dict) and meta.get("external_ref") == external_ref:
+            raise ExternalAgentsError(
+                f"external_ref {external_ref!r} is already linked to agent {other!r}")
+
+
 def enroll(
     agent_id: str,
     platform: str,
@@ -331,6 +361,7 @@ def enroll(
     expires_days: float | None = None,
     budget_period: str | None = None,
     enrolled_by: str = "",
+    external_ref: str | None = None,
 ) -> dict:
     """Enroll one external agent across every plane in a single call.
 
@@ -339,7 +370,9 @@ def enroll(
     the agent on the fleet-memory roster when that plane is enabled, and
     stamps the enrollment metadata sidecar. Re-enrolling keeps every ceiling
     (tools, risk, dollar and wall caps, data scopes) and the budget period it
-    does not set (``budget_period=None``; a new agent gets "monthly"). Returns
+    does not set (``budget_period=None``; a new agent gets "monthly").
+    ``external_ref`` links the agent to its record on its home platform
+    (``None`` keeps the stored link, "" removes it). Returns
     a summary; raises :class:`ExternalAgentsError` on bad input."""
     from .agent_trust import AgentTrustError, put_agent
     platform = str(platform or "").strip().lower()
@@ -361,8 +394,10 @@ def enroll(
             tool_names.append(name)
             if tool_risk:
                 tool_risks[name] = tool_risk
+    external_ref = _clean_external_ref(external_ref)
     sidecar = _load_sidecar()
     _require_period_change_allowed(sidecar.get(agent_id), budget_period)
+    _require_external_ref_free(sidecar, agent_id, external_ref)
     if agent_id not in sidecar and len(sidecar) >= _seat_limit():
         raise ExternalAgentsError(
             f"enrollment limit reached ({_seat_limit()} seats); raise "
@@ -391,6 +426,7 @@ def enroll(
         sidecar = _load_sidecar()
         prior = sidecar.get(agent.id, {})
         _require_period_change_allowed(sidecar.get(agent.id), budget_period)
+        _require_external_ref_free(sidecar, agent.id, external_ref)
         # Re-enrollment updates the enrollment fields and keeps everything
         # else the entry carries (execution and mint ledgers, last contact).
         sidecar[agent.id] = {
@@ -401,6 +437,8 @@ def enroll(
             "department": str(department or "")[:100],
             "enrolled_by": str(enrolled_by or "")[:200],
             "enrolled_at": prior.get("enrolled_at") or time.time(),
+            "external_ref": (str(prior.get("external_ref") or "")
+                             if external_ref is None else external_ref),
             "spent_dollars": float(prior.get("spent_dollars") or 0.0),
             "runs": int(prior.get("runs") or 0),
             "last_run_at": prior.get("last_run_at"),
@@ -453,6 +491,12 @@ def unenroll(agent_id: str, *, actor: str | None = None) -> bool:
         if sidecar.pop(agent_id, None) is not None:
             _save_sidecar(sidecar)
             removed = True
+    if removed:
+        try:
+            from . import agent_drift
+            agent_drift.forget(agent_id)
+        except Exception:
+            log.debug("external_agents: drift record not cleared", exc_info=True)
     return removed
 
 
@@ -1212,7 +1256,8 @@ def finish_run(agent_id: str, goal_id: int, run: dict,
                 goal_id=int(goal_id), external_agent=agent_id,
                 outcome=outcome, cost_dollars=cost, steps=len(steps),
                 over_budget=over_budget, over_wall=over_wall, live=True)
-    _observe_drift_run(agent_id, run, outcome=outcome, cost=cost)
+    if not contained:  # a run closed under containment says nothing about the agent
+        _observe_drift_run(agent_id, run, outcome=outcome, cost=cost)
     out = {"goal_id": int(goal_id), "over_budget": over_budget,
            "over_wall": over_wall}
     if contained:
@@ -3289,6 +3334,7 @@ def roster(*, registry: dict[str, Any] | None = None,
             "owner": meta.get("owner", ""),
             "department": meta.get("department", ""),
             "enrolled_at": meta.get("enrolled_at"),
+            "external_ref": str(meta.get("external_ref") or ""),
             "active": active,
             "lifecycle": rule,
             "max_risk": agent.max_risk if agent else None,
