@@ -676,6 +676,9 @@ app.include_router(oidc_login_router)
 from .external_gateway import router as external_gateway_router  # noqa: E402
 
 app.include_router(external_gateway_router)
+from .copilot_studio_gate_api import router as copilot_studio_gate_router  # noqa: E402
+
+app.include_router(copilot_studio_gate_router)
 
 _DOCS_CSP = (
     "default-src 'self'; "
@@ -1017,6 +1020,8 @@ async def bearer_auth(request: Request, call_next):
         # using agent, signed-sensor, or vendor-invitation credentials. The
         # trailing slash keeps /api/v1/external-agents under dashboard auth.
         or path.startswith("/api/v1/external/")
+        # Copilot Studio's threat-detection calls carry a Microsoft Entra token.
+        or path.startswith("/copilot-studio/")
         # Public consent uses its own client and profile capabilities. Keep
         # the exact administration prefix under dashboard authentication.
         or path.startswith("/api/v1/public/consent/")
