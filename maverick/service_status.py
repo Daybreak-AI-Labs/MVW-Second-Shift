@@ -30,7 +30,7 @@ def database_refusal(exc: BaseException | None) -> str:
 
     Every page opens the world model, so one setup problem (a login that does
     not own the tables) failed every page with no reason; the error page and
-    readiness detail show the same text ``maverick doctor`` prints.
+    readiness detail show the same text.
     """
     seen: set[int] = set()
     while exc is not None and id(exc) not in seen:

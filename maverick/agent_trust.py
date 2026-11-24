@@ -1333,7 +1333,7 @@ def record_denied(
 
 
 def status() -> dict[str, Any]:
-    """A summary for ``maverick doctor`` / dashboards: engaged flag + roster."""
+    """A summary for dashboards and the readiness check: engaged flag + roster."""
     enforced, reg = load_trust_state()
     return {
         "enforced": enforced,

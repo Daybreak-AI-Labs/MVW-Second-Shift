@@ -459,7 +459,7 @@ def _unseal_config_tree(value: object) -> object:
         _UNSEALING.reset(token)
 
 # Ends the error recorded for a dashboard overlay that was only partly opened.
-# ``operator_preflight`` (``maverick doctor``, Installation health) repeats it.
+# ``operator_preflight`` (the readiness check) repeats it.
 DASHBOARD_ON_HOLD = ("Settings made in the dashboard are on hold until this file can be opened, "
                      "except stricter safety choices, which stay in force. "
                      "A sandbox that was set up there may not start until then.")
@@ -1005,7 +1005,7 @@ def _merge_tenant(cfg: dict, tenant: dict, path: Path) -> dict:
     """A tenant overlay may only tighten the policy sections
     (:data:`policy_tighten.TENANT_RULES`), and only keys with a rule; a looser
     value or a key only the organisation sets is ignored, logged once and
-    listed by ``maverick doctor`` (:func:`tenant_policy_loosenings`)."""
+    listed by the readiness check (:func:`tenant_policy_loosenings`)."""
     merged, ignored, fixed = _tighten_tenant(cfg, tenant)
     marker = (str(path), tuple(ignored), tuple(fixed))
     if (ignored or fixed) and marker not in _LOOSENING_LOGGED:

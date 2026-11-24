@@ -5,10 +5,10 @@
 
      {% from "_hero.html" import hero, state %}
      {% set hero_actions %}
-       <a class="btn btn--primary" href="/chat">New task</a>
-       <a class="btn" href="/goal-builder">Step-by-step form</a>
+       <a class="btn btn--primary" href="/external-agents">Outside agents</a>
+       <a class="btn" href="/approvals">Approvals</a>
      {% endset %}
-     {% call hero('Your AI workforce', 'Tasks',
+     {% call hero('Your AI workforce', 'Overview',
                   subtitle='Every task on record', lede='…',
                   actions=hero_actions) %}
        {{ state('Current state', '12 recent tasks',

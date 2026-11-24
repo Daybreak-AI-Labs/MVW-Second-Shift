@@ -100,7 +100,7 @@
       <tbody>
         {% for e in a.episodes %}
         <tr>
-          <td><a href="/chat/goal/{{ e.goal_id }}">Open the task</a></td>
+          <td>Task {{ e.goal_id }}</td>
           <td>{% if e.outcome == 'success' %}<span class="badge active">Succeeded</span>
               {% elif e.outcome %}<span class="badge failure">{{ e.outcome | humanize }}</span>
               {% else %}<span class="badge">Running</span>{% endif %}</td>

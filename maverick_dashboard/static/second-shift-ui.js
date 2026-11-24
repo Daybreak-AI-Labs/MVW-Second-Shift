@@ -536,7 +536,7 @@
           var off = failure.featureOff === true ||
             /\b(turned off|is disabled|not enabled)\b/i.test(typeof failure.detail === 'string' ? failure.detail : '');
           return what + (off
-            ? 'This feature is turned off. An administrator can turn it on in Settings.'
+            ? 'This feature is turned off. Ask an administrator to turn it on.'
             : 'This is temporarily unavailable. Try again in a few minutes.');
         }
         if (status >= 500) return what + 'Something went wrong on our side. Try again in a minute.';
@@ -1085,18 +1085,6 @@
       // is easy to miss; the banner names the state and offers the resume
       // action to people allowed to take it.
       const banner = document.getElementById('halt-banner');
-      const chatControls = typeof document.querySelector === 'function'
-        ? document.querySelector('form.composer[action="/chat/send"] fieldset.composer__controls')
-        : null;
-      const chatControlsInitiallyDisabled = !!(chatControls && chatControls.disabled);
-      const chatStopNote = document.getElementById('chat-stop-note');
-      let chatStopped = false;
-      function renderChatStop(state) {
-        if (state === 'armed' || state === 'partial') chatStopped = true;
-        else if (state === 'clear') chatStopped = false;
-        if (chatControls) chatControls.disabled = chatControlsInitiallyDisabled || chatStopped;
-        if (chatStopNote) chatStopNote.hidden = !chatStopped;
-      }
       function renderBanner(show) {
         if (!banner) return;
         banner.hidden = !show;
@@ -1129,7 +1117,6 @@
           else { label.textContent = copy; label.lang = 'en'; label.dir = 'ltr'; }
         }
         renderBanner(armed && !pending);
-        renderChatStop(state);
         if (canHalt) {
           pill.setAttribute('aria-pressed', known ? (armed ? 'true' : 'false') : 'mixed');
         } else {
@@ -1291,169 +1278,6 @@
         : new Promise(function (resolve) { window.addEventListener('load', resolve, {once: true}); });
       Promise.all([refresh(), loaded]).then(function () { label.setAttribute('aria-live', 'polite'); });
       setInterval(refresh, 15000);
-    })();
-
-    // Shared goal-create form handler. The form appears on both the
-    // overview (first run) and chat pages; submit via fetch so a
-    // 400/403/429 shows the server message inline instead of a raw JSON
-    // page. No-ops on pages without the form + its error region.
-    (function() {
-      const form = document.querySelector('form[action="/chat/send"]');
-      const errBox = document.getElementById('goal-error');
-      if (!form || !errBox) return;
-      const btn = form.querySelector('button[type="submit"]');
-      let authoringPending = false, startPending = false, unlockStart = null;
-      // Back from the task page (a restored page): the form works again.
-      window.addEventListener('pageshow', function (event) {
-        if (event.persisted && unlockStart) unlockStart();
-      });
-      form.addEventListener('submit', async function(ev) {
-        ev.preventDefault();
-        // One submit makes one task: a second click or Enter while the first
-        // is on its way is ignored, not sent again.
-        if (authoringPending || startPending) return;
-        errBox.style.display = 'none';
-        const kindEl = form.querySelector('[name="authoring_kind"]');
-        const kind = kindEl ? kindEl.value : 'goal';
-        const accountSelection=(form.querySelector('[name="connection_references"]')||{}).value||'[]';
-        if(kind!=='goal'&&accountSelection!=='[]'){
-          var accountNotice='This draft has selected accounts. Run it as a task, or return to Templates to prepare a new reusable draft without private account selections.';
-          if(window.SecondShiftI18n)window.SecondShiftI18n.set(errBox,accountNotice);else errBox.textContent=accountNotice;
-          errBox.style.display='block';return;
-        }
-
-        const files = form.querySelector('input[type="file"]');
-        // Stage an unsaved brief in the selected editor; never silently execute
-        // a goal when the selected authoring action cannot accept attachments.
-        if ((kind === 'flow' || kind === 'agent') && files && files.files.length) {
-          errBox.textContent = 'Workflow and agent drafts do not accept attachments yet. Remove the files to open the editor, or choose Start a task to use them. Your text and files are still here.';
-          errBox.style.display = 'block';
-          return;
-        }
-        if ((kind === 'flow' || kind === 'agent') && !(files && files.files.length)) {
-          const title = (form.querySelector('[name="title"]') || {}).value || '';
-          const details = (form.querySelector('[name="description"]') || {}).value || '';
-          const brief = title.trim() + (details.trim() ? '\n\n' + details : '');
-          if (!brief) {
-            errBox.textContent = 'Describe what you want Second Shift to draft.';
-            errBox.style.display = 'block';
-            return;
-          }
-          if (Array.from(brief).length > 8000) {
-            errBox.textContent = 'Workflow briefs can contain up to 8,000 characters. Shorten the brief and try again; your text is still here.';
-            errBox.style.display = 'block';
-            return;
-          }
-          authoringPending = true;
-          if (btn) { btn.disabled = true; btn.setAttribute('aria-busy', 'true'); }
-          try {
-            const contextResponse = await fetch('/api/v1/templates/draft-context', {credentials: 'same-origin', cache: 'no-store'});
-            if (!contextResponse.ok) throw new Error('Could not verify your workspace. Your brief is still here; try again.');
-            const contextData = await contextResponse.json();
-            if (!contextData || typeof contextData.context !== 'string' || !contextData.context) {
-              throw new Error('Could not verify your workspace. Your brief is still here; try again.');
-            }
-            if (title !== ((form.querySelector('[name="title"]') || {}).value || '') ||
-                details !== ((form.querySelector('[name="description"]') || {}).value || '') ||
-                kind !== (kindEl ? kindEl.value : 'goal') || (files && files.files.length)) {
-              throw new Error('Your brief changed while the editor was opening. Review it and continue again.');
-            }
-            sessionStorage.setItem('second-shift.authoring-handoff', JSON.stringify({
-              kind: kind, brief: brief, context: contextData.context, created_at: Date.now()
-            }));
-            window.location.href = kind === 'flow' ? '/flows/designer' : '/workflow-builder';
-          } catch (e) {
-            errBox.textContent = e.message || 'Could not open the editor. Your brief is still here; try again.';
-            errBox.style.display = 'block';
-          } finally {
-            authoringPending = false;
-            if (btn) { btn.disabled = false; btn.removeAttribute('aria-busy'); }
-          }
-          return;
-        }
-        if ((form.querySelector('[name="composer_mode"]') || {}).value === 'message') {
-          const message = (form.querySelector('[name="title"]') || {}).value || '';
-          const details = (form.querySelector('[name="description"]') || {}).value || '';
-          const brief = message + (details.trim() ? '\n\n' + details : '');
-          if (Array.from(brief).length > 16000) {
-            errBox.textContent = 'Shorten your message and details to 16,000 characters or fewer. Your text is still here.';
-            errBox.style.display = 'block';
-            return;
-          }
-        }
-        // Disabling the form below moves focus to the page body. A refused
-        // send puts it back where the person was typing (WCAG 2.4.3).
-        const typing = form.contains(document.activeElement) ? document.activeElement : form.querySelector('[name="title"]');
-        if (btn) { btn.disabled = true; btn.setAttribute('aria-busy', 'true'); }
-        startPending = true;
-        const submittedForm = new FormData(form);
-        const submittedControls = Array.from(form.querySelectorAll('input,textarea,select')).map(function (control) {
-          const wasDisabled = control.disabled; control.disabled = true; return [control,wasDisabled];
-        });
-        unlockStart = function () {
-          unlockStart = null; startPending = false;
-          submittedControls.forEach(function (item) { item[0].disabled = item[1]; });
-          if (btn) { btn.disabled = false; btn.removeAttribute('aria-busy'); }
-        };
-        try {
-          const resp = await fetch(form.action, { method: 'POST', body: submittedForm });
-          // The server answers a started task with a redirect to its page. If
-          // that page was still being set up (a retryable 409 or 503), the
-          // task did start: open it, never "Could not start" and a second try.
-          if (resp.redirected && new URL(resp.url).pathname.startsWith('/chat/goal/') &&
-              (resp.ok || resp.status === 409 || resp.status === 503)) {
-            if (form.mvRecovery) await form.mvRecovery.clear();
-            window.dispatchEvent(new CustomEvent('second-shift:composer-sent', {detail: {form: form, recoveryCleared: true}}));
-            startPending = 'opening'; window.location.href = resp.url; return;
-          }
-          if (resp.ok && !resp.redirected) {
-            if (form.mvRecovery) await form.mvRecovery.clear();
-            window.dispatchEvent(new CustomEvent('second-shift:composer-sent', {detail: {form: form, recoveryCleared: true}}));
-            window.location.reload(); return;
-          }
-          let serverDetail = '', payload = null;
-          try { payload = await resp.json(); if (payload && typeof payload.detail === 'string') serverDetail = payload.detail; } catch (e) {}
-          if (payload && window.mvBusinessError(payload)) {
-            // A reviewed refusal names what happened and the next step (for
-            // example, files that were not saved and the draft to open).
-            window.mvRenderError(errBox, resp, 'start the task', payload);
-            errBox.style.display = 'block';
-            return;
-          }
-          let detail = window.mvErrorText(resp, 'start the task');
-          if (resp.status === 429) {
-            const ra = parseInt(resp.headers.get('Retry-After') || '', 10);
-            detail = 'Too many requests right now. ' + (ra > 0
-              ? 'Try again in ' + ra + (ra === 1 ? ' second.' : ' seconds.')
-              : 'Wait a moment and try again.');
-          } else if (resp.status === 400 && /model route/i.test(serverDetail)) {
-            detail = 'Could not start the task. An AI model needs to be set up first. Ask an administrator to finish setup in Settings.';
-          } else if ((resp.status === 400 || resp.status === 422) && window.mvPlainDetail(serverDetail)) {
-            // Messages such as length limits are written for people.
-            detail = window.mvPlainDetail(serverDetail);
-          }
-          errBox.textContent = detail;
-          if (resp.status === 400 && resp.headers.get('X-Second-Shift-Task-Settings') === 'agent.max_steps') {
-            const settingsLink = document.createElement('a');
-            settingsLink.href = '/settings/all?id=agent.max_steps';
-            settingsLink.className = 'btn btn--ghost';
-            if (window.SecondShiftI18n) window.SecondShiftI18n.set(settingsLink, 'Review task settings');
-            else settingsLink.textContent = 'Review task settings';
-            errBox.append(document.createTextNode(' '), settingsLink);
-          }
-          errBox.style.display = 'block';
-        } catch (e) {
-          errBox.textContent = 'Second Shift is not responding. Check your connection and try again.';
-          errBox.style.display = 'block';
-        } finally {
-          // While the task page opens, the form stays locked.
-          if (startPending !== 'opening' && unlockStart) {
-            unlockStart();
-            const lost = !document.activeElement || document.activeElement === document.body;
-            if (lost && typing && typing.isConnected && !typing.disabled && typeof typing.focus === 'function') typing.focus();
-          }
-        }
-      });
     })();
 
     // A form that posts and reloads the page (<form data-mv-save>) says
@@ -2229,72 +2053,11 @@
       if (system.addEventListener) system.addEventListener('change', sync); else system.addListener(sync);
     })();
 
-    // Preferences popover: close on outside-click and Escape (it is a native
-    // <details>; choosing an option keeps both the page and popover open).
-    (function () {
-      var prefs = document.getElementById('prefs-menu');
-      if (!prefs) return;
-      var status = document.getElementById('prefs-status'), undo = document.getElementById('prefs-undo');
-      var saving = false, previous = null;
-      async function savePreference(key, value, select, isUndo) {
-        if (saving) return;
-        saving = true;
-        var old = key === 'interface_language' ? (select.dataset.savedValue || '') : key === 'text_size' ? (document.documentElement.dataset.textSize || 'standard') :
-          key === 'theme' ? (document.body.dataset.themePreference || 'dark') :
-          Array.from(document.body.classList).find(function (name) { return name.startsWith(key + '-'); });
-        if (old && old.startsWith(key + '-')) old = old.slice(key.length + 1);
-        prefs.querySelectorAll('select, button, input').forEach(function (control) { control.disabled = true; });
-        window.mvApplyDisplayPreference(key, value);
-        if (status) window.SecondShiftI18n ? window.SecondShiftI18n.set(status, 'Saving…') : status.textContent = 'Saving…';
-        try {
-          var context = document.querySelector('meta[name="second-shift-preference-context"]');
-          var revision = document.querySelector('meta[name="second-shift-preference-revision"]');
-          var device = document.getElementById('prefs-device-only');
-          var response = await fetch('/api/v1/preferences/display', {method: 'POST', credentials: 'same-origin',
-            headers: {'Content-Type': 'application/json'}, body: JSON.stringify({key:key, value:value,
-              context:context ? context.content : '', expected_revision:revision ? revision.content : null,
-              device_only:!!(device && device.checked)})});
-          var data = await response.json();
-          if (!response.ok) throw response;
-          if (revision && data.revision) revision.content = data.revision;
-          previous = isUndo ? null : {key:key, value:old, select:select};
-          if (undo) undo.hidden = !previous;
-          if (key === 'interface_language') select.dataset.savedValue = value;
-          var savedMessage = key === 'interface_language' ? 'Language saved. Open another page or reload after saving your draft.' : 'Saved. Your editor and unsaved work remain open.';
-          if (status) window.SecondShiftI18n ? window.SecondShiftI18n.set(status, savedMessage) : status.textContent = savedMessage;
-        } catch (failure) {
-          window.mvApplyDisplayPreference(key, old);
-          if (select) select.value = old;
-          if (status) { var failureMessage = 'Appearance was not saved. The earlier appearance is restored; retry or refresh preferences after saving your work.'; if (window.SecondShiftI18n) window.SecondShiftI18n.set(status, failureMessage); else status.textContent = failureMessage; }
-        } finally {
-          saving = false; prefs.querySelectorAll('select, button, input').forEach(function (control) { control.disabled = false; });
-        }
-      }
-      prefs.querySelectorAll('[data-ui-preference]').forEach(function (select) {
-        select.addEventListener('change', function () {
-          var key = select.getAttribute('data-ui-preference');
-          if (key && (select.value || key === 'interface_language')) savePreference(key, select.value, select, false);
-        });
-      });
-      if (undo) undo.addEventListener('click', function () {
-        if (previous) { previous.select.value = previous.value; savePreference(previous.key, previous.value, previous.select, true); }
-      });
-      document.addEventListener('click', function (ev) {
-        if (prefs.open && !prefs.contains(ev.target)) prefs.open = false;
-      });
-      document.addEventListener('keydown', function (ev) {
-        if (ev.key === 'Escape' && prefs.open) {
-          prefs.open = false;
-          var s = prefs.querySelector('summary'); if (s) s.focus();
-        }
-      });
-    })();
-
     // "Turned off" versus "not allowed": the server marks a refusal because a
     // feature is off with X-Second-Shift-Reason: feature-off (feature_gate.py).
     // mvFeatureOff(failure) reads it from a fetch Response, a Headers-carrying
-    // error or a page-supplied {feature: {...}}; mvShowFeatureOff renders the
-    // module-gate notice in place, with Turn on for whoever may turn it on.
+    // error or a page-supplied {feature: {...}}; mvShowFeatureOff writes the
+    // notice in place.
     (function () {
       function lowerFirst(text) {
         return /^[A-Z][a-z]/.test(text) ? text.charAt(0).toLowerCase() + text.slice(1) : text;
@@ -2314,86 +2077,17 @@
       };
       window.mvFeatureOffText = function (off) {
         var name = off && off.label ? off.label : '';
-        var admin = document.body && document.body.getAttribute('data-global-admin') === '1';
         // "Name: turned off." reads right for any name ("Policy packs is turned off" did not).
         return (name ? name + ': turned off.' : 'This feature is turned off.') + ' ' +
-          (admin ? 'You can turn it on in Settings.'
-            : 'Ask an administrator to turn ' + (name ? 'on ' + lowerFirst(name) : 'it on') + '.');
+          'Ask an administrator to turn ' + (name ? 'on ' + lowerFirst(name) : 'it on') + '.';
       };
       window.mvShowFeatureOff = function (element, failure, action) {
         var off = window.mvFeatureOff(failure);
         if (!element || !off) return false;
         var prefix = action ? 'Could not ' + action + '. ' : '';
-        if (!off.section || !off.switchable || !off.label) {
-          element.textContent = prefix + window.mvFeatureOffText(off);
-          return true;
-        }
-        // A span: the notice lands inside the page's own status line.
-        var gate = document.createElement('span');
-        gate.className = 'mg-banner';
-        gate.setAttribute('data-module-gate', off.section);
-        gate.setAttribute('data-module-label', off.label);
-        gate.setAttribute('data-mg-inline', '1');
-        var head = document.createElement('strong');
-        head.textContent = prefix + off.label + ': turned off.';
-        var actions = document.createElement('span');
-        actions.className = 'mg-actions mg-admin-only';
-        var button = document.createElement('button');
-        button.type = 'button'; button.className = 'btn btn--primary mg-on';
-        button.textContent = 'Turn on ' + lowerFirst(off.label);
-        actions.appendChild(button);
-        var note = document.createElement('span');
-        note.className = 'mg-actions muted mg-nonadmin-note';
-        note.setAttribute('role', 'note');
-        note.textContent = 'Ask an administrator to turn on ' + lowerFirst(off.label) + '.';
-        var err = document.createElement('span');
-        err.className = 'mg-err'; err.setAttribute('role', 'alert'); err.setAttribute('aria-live', 'assertive');
-        gate.append(head, actions, note, err);
-        element.replaceChildren(gate);
+        element.textContent = prefix + window.mvFeatureOffText(off);
         return true;
       };
-    })();
-
-    // Module-gate banners (_module_gate.html): one delegated handler turns a
-    // disabled governance module on in-app via /api/v1/features/modules.
-    // Failures are LOUD -- the exact server reason lands in the banner's
-    // role="alert" line (a quiet failure here reads as "I clicked Turn on
-    // and nothing happened", a real field complaint).
-    (function () {
-      document.addEventListener('click', function (ev) {
-        var btn = ev.target.closest && ev.target.closest('.mg-on');
-        if (!btn) return;
-        var gate = btn.closest('[data-module-gate]');
-        if (!gate) return;
-        var err = gate.querySelector('.mg-err');
-        var section = gate.getAttribute('data-module-gate');
-        btn.disabled = true;
-        if (err) err.textContent = '';
-        fetch('/api/v1/features/modules', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ section: section, enabled: true }),
-        }).then(function (r) {
-          if (r.status === 403) {
-            var denied = new Error('Only an administrator can turn this on. Ask yours.');
-            denied.plain = true; throw denied;
-          }
-          if (!r.ok) throw r;
-          if (gate.hasAttribute('data-mg-inline')) {
-            // An in-place notice (mvShowFeatureOff) keeps what the person typed:
-            // no reload. Other notices for the same module are now stale.
-            document.querySelectorAll('[data-module-gate]').forEach(function (other) {
-              if (other !== gate && other.getAttribute('data-module-gate') === section) other.hidden = true;
-            });
-            gate.replaceChildren(document.createTextNode(
-              (gate.getAttribute('data-module-label') || 'It') + ' is on now. Try again.'));
-            return;
-          }
-          location.reload();   // re-render with the module live
-        }).catch(function (e) {
-          if (err) err.textContent = (e && e.plain) ? e.message : window.mvErrorText(e, 'turn this on');
-          btn.disabled = false;
-        });
-      });
     })();
 
 // Bulk work on an admin list: filter the list, select every matching

@@ -261,7 +261,7 @@ def get_kms(tenant_id: str | None = None) -> KMS:
         # rather than silently falling back to in-process LocalKMS -- a configured
         # HSM-backed provider must never be downgraded to in-process key material
         # (fail-closed, consistent with crypto_at_rest). Callers surface this
-        # (doctor's at-rest check, the audit-seal CLI) rather than writing plaintext.
+        # (the at-rest check, the audit-seal CLI) rather than writing plaintext.
         # The resolved cfg is passed so the backend uses THIS tenant's region/
         # address, and the tenant's OWN key_id is pinned so a server-wide
         # MAVERICK_KMS_KEY_ID can't wrap its DEK under the operator's key (BYOK).

@@ -8,8 +8,7 @@
   {% if outside_agent_tabs %}{% from "_tabs.html" import tab_bar, panel_attrs %}{{ tab_bar('Outside agents views', outside_agent_tabs, '') }}<div {{ panel_attrs('') }}>{% endif %}
   {% if not enabled %}
   {{ module_gate('external_agents', 'Outside agents',
-                 detail='Lets AI agents from other products work under your rules and budgets.',
-                 can_activate=external_agents_can_activate) }}
+                 detail='Lets AI agents from other products work under your rules and budgets.') }}
   {% endif %}
 
   <div class="panel">
