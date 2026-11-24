@@ -114,7 +114,14 @@ PAGES: tuple[dict, ...] = ({'path': '/',
   'group': 'Agents',
   'icon': 'agents',
   'floor': 'view',
-  'default': 'view'})
+  'default': 'view'},
+ {'path': '/settings',
+  'label': 'Settings',
+  'aliases': 'Configuration Options',
+  'group': 'Admin',
+  'icon': 'settings',
+  'floor': 'admin',
+  'default': 'admin'})
 
 # Moderate sidebar declutter: keep a focused set of everyday destinations in the
 # rail; fold the rest OUT of the sidebar (in_nav=False) while leaving them fully

@@ -78,6 +78,9 @@ CONFIG_OVERLAY_ENV = "MAVERICK_CONFIG_OVERLAY"
 # dashboard owns this file (maverick_dashboard.settings_store). Distinct from
 # runtime-overrides.toml (denied_tools / models / budget, read via own hooks).
 DASHBOARD_OVERRIDES_BASENAME = "dashboard-config.toml"
+# The settings page's layer (maverick.editable_settings): in the data folder, not beside the
+# deployment's file, so a read-only settings file can still be changed from the page.
+SETTINGS_LAYER_BASENAME = "settings-layer.toml"
 
 # Accept lower/mixed-case names too, so a hand-edited config referencing a
 # lowercase env var (`${my_token}`) is substituted rather than left as the
@@ -569,6 +572,16 @@ def dashboard_overrides_path() -> Path:
     return config_path().parent / DASHBOARD_OVERRIDES_BASENAME
 
 
+def settings_layer_path() -> Path:
+    """The settings the app owns and the settings page writes (``settings-layer.toml`` in the data folder).
+
+    Applied on top of the deployment's file and below the operator overlay. Only the settings
+    ``editable_settings`` lists are taken from it, and never one the deployment locks."""
+    from .paths import maverick_home
+
+    return maverick_home() / SETTINGS_LAYER_BASENAME
+
+
 def load_governed_records_config() -> dict:
     """Load only sources allowed to select the governed-record backend.
 
@@ -632,7 +645,7 @@ def config_source_errors(*, include_tenant: bool = True) -> dict[str, str]:
     callers inspect this seam immediately after loading and deny remote control
     if policy may have been lost.
     """
-    paths = [config_path(), dashboard_overrides_path()]
+    paths = [config_path(), dashboard_overrides_path(), settings_layer_path()]
     overlay = os.environ.get(CONFIG_OVERLAY_ENV)
     if overlay:
         paths.append(Path(overlay).expanduser())
@@ -905,6 +918,7 @@ def _read_witness() -> tuple | None:
     overlay = os.environ.get(CONFIG_OVERLAY_ENV)
     if overlay:
         paths.append(Path(overlay).expanduser())
+    paths.append(settings_layer_path())
     files = tuple(_file_state(path) for path in paths)
     keys = [key]
     if isinstance(files[3], tuple):  # the keyring folder's own state: absent needs no listing
@@ -963,6 +977,7 @@ def _read_global_config() -> dict:
     # pip/CLI install. setdefault semantics: a real export always wins.
     _load_wizard_env()
     cfg = _load_config_file(config_path())
+    deployment = [cfg]
     # Dashboard Settings overlay (always-on, fixed path): UI-edited provider
     # keys / capability+feature toggles merge over config.toml without touching it.
     dash = dashboard_overrides_path()
@@ -970,8 +985,16 @@ def _read_global_config() -> dict:
         from .config_resets import merge_dashboard
         cfg = merge_dashboard(cfg, _load_config_file(dash), _deep_merge_config)
     overlay = os.environ.get(CONFIG_OVERLAY_ENV)
-    if overlay:
-        cfg = _deep_merge_config(cfg, _load_config_file(Path(overlay).expanduser()))
+    operator = _load_config_file(Path(overlay).expanduser()) if overlay else {}
+    if operator:
+        deployment.append(operator)
+    # The settings page's own layer: only listed, valid, unlocked settings, held whole when unreadable.
+    layer = settings_layer_path()
+    if _present(layer):
+        from .editable_settings import apply_layer, locked_keys
+        cfg = apply_layer(cfg, _read_toml_raw(layer), locked_keys(*deployment))
+    if operator:
+        cfg = _deep_merge_config(cfg, operator)
     from .runtime_configuration import remember
     remember(cfg, valid=not bool(config_source_errors(include_tenant=False)))
     return cfg
