@@ -27,6 +27,7 @@ Store: ``~/.maverick/dashboard-user-suites.json`` (0600),
 "no departments at all"; remove the entry to lift scoping.
 """
 from __future__ import annotations
+
 import os
 
 

@@ -1,6 +1,7 @@
 """Semantic alerts survive missed polls, old task age and transaction rollback."""
 
 import pytest
+
 from maverick.world_model import WorldModel
 
 

@@ -10,6 +10,7 @@ The on-disk format and chain semantics are unchanged -- only *where* the
 directory is resolved. These tests reuse the existing ``verify_chain`` API.
 """
 from __future__ import annotations
+
 from maverick.audit.writer import AuditLog, default_audit_log
 from maverick.paths import reset_tenant, set_tenant
 

@@ -1,8 +1,10 @@
 """SSRF-safe fetch: resolve-once + connection pinning (DNS-rebind defense)."""
 from __future__ import annotations
+
 import socket
 
 import pytest
+
 from maverick.tools import _ssrf
 
 

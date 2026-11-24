@@ -40,6 +40,7 @@ def _template_bytecode_cache():
     """
     try:
         from jinja2 import FileSystemBytecodeCache
+
         from maverick.paths import maverick_home
 
         cache_dir = maverick_home() / "cache" / "templates"

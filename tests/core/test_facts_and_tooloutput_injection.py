@@ -14,6 +14,7 @@ fragments rather than written as literals, so GitHub Push Protection's
 secret scanner doesn't (correctly) flag the test file itself.
 """
 from __future__ import annotations
+
 from maverick.safety.secret_detector import redact, scan
 
 # Fake credentials built from fragments -- never a literal secret in source.

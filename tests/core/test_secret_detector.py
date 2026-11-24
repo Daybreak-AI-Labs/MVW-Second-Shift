@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import pytest
+
 from maverick.safety.secret_detector import redact as sd_redact
 from maverick.secrets import scrub
 

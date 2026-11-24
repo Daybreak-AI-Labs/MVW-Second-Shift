@@ -33,8 +33,9 @@ def _clean_profiles(monkeypatch, tmp_path):
 
 def _scrape() -> str:
     """Render the computed collector exactly as a Prometheus scrape would."""
-    from maverick import observability
     from prometheus_client import CollectorRegistry, generate_latest
+
+    from maverick import observability
 
     reg = CollectorRegistry()
     # Build the collector through the production path, then register it on an

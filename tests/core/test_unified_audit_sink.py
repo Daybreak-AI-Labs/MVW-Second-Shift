@@ -1,10 +1,12 @@
 """Signed central-sink invariants for cross-suite audit projections."""
 from __future__ import annotations
+
 import json
+
+import pytest
 
 import maverick.audit.signing as signing
 import maverick.compliance_profiles as compliance_profiles
-import pytest
 from maverick.audit.events import AuditEvent, EventKind
 from maverick.audit.signing import verify_chain
 from maverick.audit.writer import (

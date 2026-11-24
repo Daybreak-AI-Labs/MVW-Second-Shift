@@ -8,6 +8,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
+
 from maverick import external_agents as xa
 from maverick.agent_trust import agent_for_token, lookup
 

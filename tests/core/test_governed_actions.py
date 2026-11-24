@@ -1,8 +1,10 @@
 """Governed Actions: typed ops + simulate-before-commit + tamper-evident lineage."""
 from __future__ import annotations
+
 import json
 
 import pytest
+
 from maverick import governed_actions as ga_mod
 
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+
 from maverick_dashboard import subject_directory as sd
 
 

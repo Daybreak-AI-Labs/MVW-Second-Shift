@@ -1,5 +1,6 @@
 """Interface text. The interface is English; these helpers keep the template contract."""
 from __future__ import annotations
+
 DEFAULT_LANG = "en"
 
 MESSAGES: dict[str, dict[str, str]] = {

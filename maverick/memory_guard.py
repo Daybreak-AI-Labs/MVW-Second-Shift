@@ -29,8 +29,8 @@ columns are still recorded, so turning the guard on later governs existing
 memory immediately.
 """
 from __future__ import annotations
-import re
 
+import re
 
 # Injection / poisoning tripwire. These are the OWASP-ASI06 staples: smuggled
 # role tags, "ignore previous instructions", instruction-override, secret

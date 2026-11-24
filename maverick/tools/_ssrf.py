@@ -24,6 +24,7 @@ pinned, so callers must keep ``follow_redirects=False`` and re-validate
 each hop themselves.
 """
 from __future__ import annotations
+
 import contextvars
 import ipaddress
 import os

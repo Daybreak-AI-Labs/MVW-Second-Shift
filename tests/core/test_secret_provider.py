@@ -3,6 +3,7 @@ file backend reads mounted vault/Docker/k8s secret files with env fallback."""
 from __future__ import annotations
 
 import pytest
+
 from maverick import secret_provider as sp
 
 

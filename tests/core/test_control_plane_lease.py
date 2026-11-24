@@ -25,6 +25,7 @@ import textwrap
 from pathlib import Path
 
 import pytest
+
 from maverick import control_plane_lease as lease
 
 

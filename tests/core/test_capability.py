@@ -7,6 +7,7 @@ unchanged. Opt in via [capabilities] enforce or MAVERICK_ENFORCE_CAPABILITIES.
 """
 
 import pytest
+
 from maverick.capability import Capability, capability_enforced
 from maverick.safety.tool_risk import tool_risk
 

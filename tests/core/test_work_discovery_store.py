@@ -5,6 +5,7 @@ import sqlite3
 import threading
 
 import pytest
+
 from maverick.work_discovery import CapturePolicy, SessionState, WorkEvent
 from maverick.work_discovery_store import (
     CollectorLeaseError,

@@ -23,6 +23,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from ..connector_attempts import CONTROL_ERRORS
+
 _ENV_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,127}\Z")
 _RESPONSE_LIMIT = 4000
 

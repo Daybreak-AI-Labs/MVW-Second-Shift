@@ -1,6 +1,7 @@
 """Reviewed overlay reset contracts. Authored for the deferred test run."""
 
 import pytest
+
 from maverick.config import _deep_merge_config
 from maverick.config_resets import METADATA, merge_dashboard
 

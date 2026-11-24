@@ -49,6 +49,7 @@ from urllib.parse import urlencode, urlparse
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
+
 from maverick.oidc import (
     OIDCError,
     VerifiedPrincipal,
@@ -263,6 +264,7 @@ async def _exchange_code_for_tokens(
     # OIDC login is optional, and importing the route must remain side-effect
     # free when the feature is disabled.
     import httpx
+
     from maverick.governed_http import admit_client_request
 
     async with httpx.AsyncClient(timeout=10.0) as client:

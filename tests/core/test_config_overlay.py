@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 from maverick.config import load_config
 
 

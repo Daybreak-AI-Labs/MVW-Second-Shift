@@ -9,9 +9,10 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import maverick_dashboard.auth as auth
 import pytest
 from starlette.datastructures import Headers
+
+import maverick_dashboard.auth as auth
 
 
 def _req(headers=None, host="127.0.0.1", path="/metrics"):

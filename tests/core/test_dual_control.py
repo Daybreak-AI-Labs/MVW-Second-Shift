@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import pytest
+
 from maverick.safety import dual_control
 from maverick.world_model import WorldModel
 

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import pytest
+
 from maverick.enterprise import enterprise_enabled
 from maverick.profile import (
     ENTERPRISE,

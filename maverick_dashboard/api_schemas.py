@@ -4,6 +4,7 @@ Extracted verbatim from api.py to keep that module focused on routing.
 Importing here changes no behavior: these are pure data schemas.
 """
 from __future__ import annotations
+
 from pydantic import BaseModel, Field
 
 

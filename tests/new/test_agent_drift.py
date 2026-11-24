@@ -7,6 +7,7 @@ import math
 import os
 
 import pytest
+
 from maverick import agent_drift as drift
 from maverick import external_agents as xa
 

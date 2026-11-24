@@ -4,6 +4,7 @@ tenants/<client>/ and a client-bound surface refuses to serve unbound."""
 from __future__ import annotations
 
 import pytest
+
 from maverick import client
 
 

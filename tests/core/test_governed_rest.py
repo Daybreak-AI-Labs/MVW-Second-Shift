@@ -12,6 +12,7 @@ without touching the network. The key behaviors under test:
   * the request rides the same egress-guarded path the Tool form uses.
 """
 from __future__ import annotations
+
 from maverick.governed_rest import salesforce_connector
 
 

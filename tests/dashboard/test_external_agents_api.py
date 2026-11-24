@@ -11,6 +11,7 @@ import time
 
 import pytest
 from fastapi.testclient import TestClient
+
 from maverick_dashboard.app import app
 
 # Crypto availability gate for the signed-identity tests (same probe as
@@ -93,6 +94,7 @@ def test_signed_get_body_is_limited_before_authentication(monkeypatch):
 
 def test_slow_external_body_times_out_and_releases_capacity(monkeypatch):
     import httpx
+
     from maverick_dashboard import app as dash_app
 
     monkeypatch.setenv("MAVERICK_EXTERNAL_AGENTS", "0")

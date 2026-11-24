@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import pytest
+
 from maverick import config, world_model_backends
 from maverick_dashboard.halt_policy import shared_halt_backend
 

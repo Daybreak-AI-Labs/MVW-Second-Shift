@@ -11,6 +11,7 @@ import json
 import os
 import threading
 import time
+
 _CAPTURE = None
 _CAPTURE_LOCK = threading.RLock()
 

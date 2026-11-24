@@ -6,6 +6,7 @@ import threading
 from pathlib import Path
 
 import pytest
+
 from maverick import config, file_lock
 
 

@@ -1,6 +1,7 @@
 import hmac
 
 import pytest
+
 from maverick.constant_time import text_equals
 
 

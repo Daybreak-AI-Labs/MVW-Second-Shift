@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest import mock
 
 import pytest
+
 from maverick import killswitch, world_model
 
 

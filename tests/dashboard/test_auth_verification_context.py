@@ -4,8 +4,10 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
+
 import pytest
 from fastapi import HTTPException, Request, WebSocket
+
 from maverick import paths
 from maverick.oidc import VerifiedPrincipal
 from maverick_dashboard import auth

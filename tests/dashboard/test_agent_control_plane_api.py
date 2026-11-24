@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+
 from maverick_dashboard.app import app
 
 client = TestClient(app, base_url="http://127.0.0.1", headers={"Origin": "http://127.0.0.1"})
@@ -450,6 +451,7 @@ def test_bulk_action_refuses_a_stale_snapshot_before_any_action(monkeypatch):
 
 def test_bulk_containment_requires_administrator_before_core_execution(monkeypatch):
     from fastapi import HTTPException
+
     from maverick_dashboard import agent_control_plane_api as api_mod
 
     def _only_operate(_request, permission):
@@ -610,6 +612,7 @@ def test_shared_halt_status_explicitly_confirms_inactive_cluster(monkeypatch):
 
 def test_local_halt_mutation_requires_global_operator(monkeypatch, tmp_path):
     from fastapi import HTTPException
+
     from maverick_dashboard import api
 
     halt_path = tmp_path / "HALT-global-role"

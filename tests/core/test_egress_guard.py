@@ -23,6 +23,7 @@ from __future__ import annotations
 import urllib.request
 
 import pytest
+
 from maverick import egress_guard
 from maverick.enterprise import EgressBlocked
 

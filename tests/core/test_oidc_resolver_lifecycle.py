@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
+
 from maverick import _oidc_jwks as resolvers
 from maverick.oidc import OIDCConfig, OIDCError, verify_oidc_token
 

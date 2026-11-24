@@ -8,6 +8,7 @@ import time
 from types import SimpleNamespace
 
 import pytest
+
 from maverick import postgres_transactions as pt
 
 psycopg = pytest.importorskip("psycopg")

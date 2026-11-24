@@ -16,6 +16,7 @@ import hashlib
 import json
 
 import pytest
+
 from maverick.audit import signing
 
 pytestmark = pytest.mark.usefixtures("local_audit_key_custody")

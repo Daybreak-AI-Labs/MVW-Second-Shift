@@ -615,8 +615,10 @@ app.add_middleware(RequestSizeLimitMiddleware)
 from .agent_control_plane_page import (  # noqa: E402
     create_agent_control_plane_page_router,
 )
+
 app.include_router(create_agent_control_plane_page_router(templates))
 from .agent_control_plane_api import router as agent_control_plane_router  # noqa: E402
+
 app.include_router(agent_control_plane_router, prefix="/api/v1")
 # Built-in OIDC browser-login routes (/auth/login, /auth/callback, /auth/logout).
 # Each route self-gates on maverick.oidc.login_enabled() and 404s when the login

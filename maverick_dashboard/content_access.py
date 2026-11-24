@@ -11,6 +11,7 @@ import json
 import time
 
 from fastapi import HTTPException
+
 from maverick.governed_records import GovernedRecordStore
 
 STORE = GovernedRecordStore("employee_content_access", "ECA", "employee_content_access",

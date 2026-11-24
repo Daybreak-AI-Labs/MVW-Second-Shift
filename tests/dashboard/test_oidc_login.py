@@ -13,11 +13,13 @@ happy path sets the session + redirects to a safe ``return_to``; state-mismatch
 404 when login is disabled.
 """
 from __future__ import annotations
+
 from urllib.parse import parse_qs, urlparse
 
-import maverick_dashboard.oidc_login as ol
 import pytest
 from fastapi.testclient import TestClient
+
+import maverick_dashboard.oidc_login as ol
 from maverick.oidc import VerifiedPrincipal
 from maverick.web_session import verify_session
 from maverick_dashboard.app import app

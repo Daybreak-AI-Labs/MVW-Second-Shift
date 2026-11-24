@@ -4,6 +4,7 @@ from __future__ import annotations
 import threading
 
 import pytest
+
 from maverick.file_lock import private_path_is_restricted
 from maverick.revocation import (
     ProtectedRevocationError,

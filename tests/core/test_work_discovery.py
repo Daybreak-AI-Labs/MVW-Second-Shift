@@ -5,6 +5,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 
 import pytest
+
 from maverick.work_discovery import CapturePolicy, ObservedActivity, WorkEvent, discover_candidates
 
 

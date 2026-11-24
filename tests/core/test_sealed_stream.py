@@ -5,6 +5,7 @@ import io
 import struct
 
 import pytest
+
 from maverick import crypto_at_rest as crypto
 from maverick.sealed_stream import STREAM_MAGIC, FramedReader, SealedStreamError
 

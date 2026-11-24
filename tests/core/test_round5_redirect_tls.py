@@ -11,6 +11,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import httpx
 import pytest
+
 from maverick.governed_http import _send_pinned_redirect, guarded_redirect_get
 
 
@@ -293,6 +294,7 @@ def test_direct_redirect_honors_private_network_setting(monkeypatch):
 def test_isolated_redirect_supports_httpcore_without_pool_proxy(monkeypatch):
     """httpcore 1.0.0-1.0.6 (allowed by httpx 0.27) has no ConnectionPool proxy."""
     import httpcore
+
     from maverick.governed_http import _isolated_redirect_transport
 
     real_init = httpcore.ConnectionPool.__init__

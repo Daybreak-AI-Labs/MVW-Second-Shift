@@ -3,6 +3,7 @@ enabled, and never raises. Wired into the killswitch trip + provider cost cap.""
 from __future__ import annotations
 
 import pytest
+
 from maverick import ops_alert
 
 

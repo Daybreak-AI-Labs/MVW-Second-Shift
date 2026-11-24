@@ -3,6 +3,7 @@ without editing TOML) and the CLI surface that drives it."""
 from __future__ import annotations
 
 import pytest
+
 from maverick import agent_trust, client
 
 

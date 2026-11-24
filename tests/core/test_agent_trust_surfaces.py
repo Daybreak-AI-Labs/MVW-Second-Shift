@@ -4,6 +4,7 @@ Covers A2A per-caller bearer -> agent identity + admission + ceiling, the
 gRPC, MCP and marketplace surfaces, and governance gating on federation
 delegation (DENY + fail-closed REQUIRE_HUMAN)."""
 from __future__ import annotations
+
 from maverick import agent_trust
 from maverick.agent_trust import TrustedAgent
 

@@ -9,8 +9,9 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 
-import maverick.world_model_backends.postgres as pg
 import pytest
+
+import maverick.world_model_backends.postgres as pg
 from maverick import world_model
 from maverick.deadline_alerts import SQLITE_SCHEMA as DEADLINE_SCHEMA
 from maverick.webhook_subscriptions import SQLITE_SCHEMA as WEBHOOK_SCHEMA

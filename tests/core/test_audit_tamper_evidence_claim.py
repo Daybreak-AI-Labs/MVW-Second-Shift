@@ -14,6 +14,7 @@ actor, who can read the key and cleanly re-sign the chain. So:
 See finding on `proof_guarantees.py` / `audit/signing.py`.
 """
 from __future__ import annotations
+
 import logging
 
 import pytest

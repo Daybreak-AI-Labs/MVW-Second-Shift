@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 
 import pytest
+
 from maverick.proxy_auth import (
     principal_from_proxy,
     proxy_auth_enabled,

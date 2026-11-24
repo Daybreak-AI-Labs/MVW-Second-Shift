@@ -5,6 +5,7 @@ identity verification, data-scope gating, and the federation + A2A wiring."""
 from __future__ import annotations
 
 import pytest
+
 from maverick import agent_trust
 from maverick.agent_trust import (
     TrustedAgent,

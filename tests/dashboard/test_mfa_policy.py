@@ -5,6 +5,7 @@ import time
 from types import SimpleNamespace
 
 import pytest
+
 from maverick import config
 from maverick.oidc import VerifiedPrincipal
 from maverick_dashboard import mfa_policy, step_up

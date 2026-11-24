@@ -8,6 +8,7 @@ export and is removed by My data's reviewed deletion and the company
 directory's account deletion.
 """
 from __future__ import annotations
+
 from types import SimpleNamespace
 
 import pytest

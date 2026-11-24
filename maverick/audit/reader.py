@@ -23,10 +23,12 @@ segments. This module defines, once:
 Read-only: nothing here ever mutates the log or touches the signing chain.
 """
 from __future__ import annotations
+
 import json
 import logging
 from pathlib import Path
 from typing import Any
+
 from .segments import ReadReport, SegmentReadError, SegmentSnapshot
 
 log = logging.getLogger(__name__)

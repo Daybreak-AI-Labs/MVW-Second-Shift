@@ -7,6 +7,7 @@ as much. A third module that imports neither removes the copies without
 reintroducing the cycle; both modules ``from ._shared import`` these.
 """
 from __future__ import annotations
+
 import os
 from typing import Any
 

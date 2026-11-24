@@ -1,5 +1,6 @@
 """Tests for metrics and tracing (maverick.observability)."""
 from __future__ import annotations
+
 import sys
 import types
 

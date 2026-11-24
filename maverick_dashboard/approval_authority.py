@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from fastapi import HTTPException, Request
+
 from maverick.approval_cards import ApprovalCardError, digest
 
 _AUTHORITY_ISSUER = object()

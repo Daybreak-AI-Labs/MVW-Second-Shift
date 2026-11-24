@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import pytest
+
 from maverick.enterprise import egress_permitted, enterprise_egress_denial
 
 

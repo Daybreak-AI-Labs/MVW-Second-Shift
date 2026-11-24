@@ -29,6 +29,7 @@ user input -- so the f-string interpolation here is injection-free (same
 discipline as the rest of the backend); the tenant id is always a bound param.
 """
 from __future__ import annotations
+
 from typing import Any
 
 from .postgres import _RLS_CHILD_TABLES, _RLS_STAMPED_TABLES, _RLS_TABLES, _RLS_TENANT_COLUMN

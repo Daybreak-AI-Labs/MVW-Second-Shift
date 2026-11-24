@@ -9,6 +9,7 @@ import json
 from types import SimpleNamespace
 
 import pytest
+
 from maverick import audit, compliance_profiles
 from maverick.audit import signing, writer
 from maverick.audit.errors import AuditRefused

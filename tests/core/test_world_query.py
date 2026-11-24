@@ -8,6 +8,7 @@ paramstyle rewrite and row wrapper are pure functions tested without a server
 from __future__ import annotations
 
 import pytest
+
 from maverick.world_model import WorldModel
 from maverick.world_model_backends.postgres import _PgRow, _to_pg_paramstyle
 

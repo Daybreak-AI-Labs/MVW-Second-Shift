@@ -1,5 +1,6 @@
 """Read-only bounded metadata windows; no private body or persistent search index."""
 from __future__ import annotations
+
 SQLITE_INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_goals_owner_created_history ON goals(owner,created_at,id)",
     "CREATE INDEX IF NOT EXISTS idx_projects_owner_created_history ON projects(owner,created_at,id)",

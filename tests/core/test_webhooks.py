@@ -70,6 +70,7 @@ def test_webhooks_outbound_post_blocks_ssrf(monkeypatch):
     """_post routes through the SSRF guard: a loopback/metadata target makes no
     outbound request."""
     import httpx
+
     from maverick import webhooks
     posted: list[str] = []
 
@@ -90,6 +91,7 @@ def test_webhooks_outbound_post_blocks_ssrf(monkeypatch):
 def test_webhooks_outbound_post_allows_public(monkeypatch):
     """A public outbound target still fires through the guard."""
     import httpx
+
     from maverick import webhooks
     posted: list[str] = []
 
@@ -108,6 +110,7 @@ def test_webhooks_outbound_post_reads_only_the_start_of_the_reply(monkeypatch):
     """The receiver chooses the size of its reply. Only a short start of it is
     kept, so only a short start of it is read."""
     import httpx
+
     from maverick import webhooks
     from maverick.tools import _ssrf
     pulled: list[int] = []
@@ -144,6 +147,7 @@ def test_webhooks_outbound_post_stops_reading_a_slow_reply_at_the_timeout(monkey
     import types
 
     import httpx
+
     from maverick import webhooks
     from maverick.tools import _ssrf
 

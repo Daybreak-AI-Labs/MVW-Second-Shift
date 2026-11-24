@@ -4,6 +4,7 @@ from __future__ import annotations
 import re
 
 from fastapi import HTTPException, Request
+
 from maverick import external_agents
 
 from .auth import require_page_permission

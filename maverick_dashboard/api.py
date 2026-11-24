@@ -4,6 +4,7 @@ Goals run through the shared BackgroundTask runner in ``maverick.runner``.
 """
 
 from __future__ import annotations
+
 import json
 import logging
 import os

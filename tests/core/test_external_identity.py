@@ -18,6 +18,7 @@ import json
 import time
 
 import pytest
+
 from maverick import external_identity
 from maverick.agent_trust import TrustedAgent, load_registry
 from maverick.external_identity import (
@@ -545,6 +546,7 @@ def test_remote_jwks_failure_is_cached_then_recovers(monkeypatch):
     from contextlib import contextmanager
 
     import httpx
+
     from maverick import enterprise
     from maverick.tools import _ssrf
 
@@ -580,6 +582,7 @@ def test_remote_jwks_stops_streaming_at_response_bound(monkeypatch):
     from contextlib import contextmanager
 
     import httpx
+
     from maverick import enterprise
     from maverick.tools import _ssrf
 

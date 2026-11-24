@@ -13,6 +13,7 @@ import sqlite3
 import threading
 
 import pytest
+
 from maverick import world_model as world_model_module
 from maverick.world_model import SCHEMA_VERSION, WorldModel
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 
 import pytest
+
 from maverick_dashboard import session_revocation as sr
 
 

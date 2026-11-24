@@ -15,6 +15,7 @@ run inside the dashboard process by default, so the dashboard sees it;
 separate worker processes keep their own and are not reflected here.
 """
 from __future__ import annotations
+
 READ_ONLY_TITLE = "Second Shift can't save changes right now because its database is read-only."
 READ_ONLY_REFUSAL = (READ_ONLY_TITLE + " Nothing was changed. Everything already saved is safe and can still be "
                      "read; try again once an administrator makes the database writable.")

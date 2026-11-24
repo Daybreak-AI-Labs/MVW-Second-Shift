@@ -26,6 +26,7 @@ registers a connector explicitly (or via ``[governed_connectors] enable``).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+
 from .governed_connectors import Connector
 
 # Mutating HTTP verbs -- the high-risk write surface.

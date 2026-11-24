@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 import pytest
+
 from maverick import webhook_events, webhooks
 from maverick import webhook_subscriptions as subs
 from maverick.tools import _ssrf

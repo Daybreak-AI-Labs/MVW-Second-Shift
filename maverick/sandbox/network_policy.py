@@ -35,6 +35,7 @@ the work area alone (the Kubernetes backend then verifies its deny-all
 NetworkPolicy before every command); a value it does not know does too.
 """
 from __future__ import annotations
+
 from fnmatch import fnmatch
 
 

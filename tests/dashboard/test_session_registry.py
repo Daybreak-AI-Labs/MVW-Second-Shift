@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import pytest
+
 from maverick import config
 from maverick_dashboard import session_registry as sr
 

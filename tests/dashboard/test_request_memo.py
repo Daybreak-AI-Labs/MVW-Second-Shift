@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from fastapi import HTTPException, Request
+
 from maverick_dashboard import auth
 
 
@@ -40,6 +41,7 @@ def test_each_gate_reads_the_configuration_once_and_sees_a_policy_saved_before_i
     import os
 
     import pytest
+
     from maverick import config, crypto_at_rest
 
     monkeypatch.setenv("MAVERICK_HOME", str(tmp_path))
@@ -76,6 +78,7 @@ def test_a_gate_inside_a_page_render_reads_a_policy_saved_during_the_render(tmp_
     import os
 
     import pytest
+
     from maverick import config
 
     monkeypatch.setenv("MAVERICK_HOME", str(tmp_path))

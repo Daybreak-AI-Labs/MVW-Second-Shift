@@ -1,5 +1,6 @@
 """Identity/role display formatting for the dashboard UI."""
 import pytest
+
 from maverick_dashboard.identity_format import (
     humanize,
     humanize_principal,

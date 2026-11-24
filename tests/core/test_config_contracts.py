@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import pytest
+
 from maverick.config_contracts import TEXT_SETTINGS
 from maverick.kms_backends import VaultTransitKMS
 

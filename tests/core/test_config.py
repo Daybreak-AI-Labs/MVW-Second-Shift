@@ -5,8 +5,9 @@ import os
 import tempfile
 from pathlib import Path
 
-import maverick.config as config_module
 import pytest
+
+import maverick.config as config_module
 from maverick.config import _interp, config_path, load_config
 
 

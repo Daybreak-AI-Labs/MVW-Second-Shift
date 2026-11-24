@@ -1,5 +1,6 @@
 """Every dashboard request is size-capped before any parser reads it."""
 from __future__ import annotations
+
 from maverick_dashboard import request_size
 from maverick_dashboard.request_size import RequestSizeLimitMiddleware
 

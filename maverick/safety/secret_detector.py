@@ -11,6 +11,7 @@ shell, env-var prints, secrets in log lines). False positives are
 preferable to false negatives — we err on the side of redaction.
 """
 from __future__ import annotations
+
 import re
 from dataclasses import dataclass
 

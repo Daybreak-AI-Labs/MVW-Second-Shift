@@ -111,6 +111,7 @@ def test_a_non_ascii_ntfy_title_is_sent_as_an_rfc2047_word_not_a_local_encoding_
     from email.header import decode_header, make_header
 
     import httpx
+
     from maverick import notifications as n
 
     sent = []

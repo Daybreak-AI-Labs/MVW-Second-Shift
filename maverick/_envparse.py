@@ -1,7 +1,7 @@
 """Small helpers for environment-driven config without import-time crashes."""
 from __future__ import annotations
-import os
 
+import os
 
 _TRUE = frozenset({"1", "true", "yes", "on"})
 _FALSE = frozenset({"0", "false", "no", "off", ""})

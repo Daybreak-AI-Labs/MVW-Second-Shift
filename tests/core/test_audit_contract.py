@@ -7,6 +7,7 @@ cannot fail proves nothing, so every assertion below has a negative control.
 """
 
 from __future__ import annotations
+
 from maverick.audit import AuditRefused, audit_event
 from maverick.audit.signing import OffHostSigningRequiredError
 

@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 
 import pytest
+
 from maverick.file_lock import private_path_is_restricted
 from maverick.privacy import _hash_id, anonymize_field
 

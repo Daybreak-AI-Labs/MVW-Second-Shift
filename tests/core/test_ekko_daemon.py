@@ -4,6 +4,7 @@ from __future__ import annotations
 from collections import deque
 
 import pytest
+
 from maverick.ekko_daemon import EkkoDaemon, GuidedJsonlObserver, WindowsForegroundObserver
 from maverick.work_discovery import CapturePolicy, ObservedActivity, SessionState
 from maverick.work_discovery_store import CollectorLeaseError, WorkDiscoveryStore

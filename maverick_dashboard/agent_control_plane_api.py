@@ -14,10 +14,11 @@ from typing import Annotated, Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
-from maverick import agent_control_plane as acp
-from maverick.audit import AuditRefused
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 from starlette.concurrency import run_in_threadpool
+
+from maverick import agent_control_plane as acp
+from maverick.audit import AuditRefused
 
 from .auth import caller_principal, has_permission, require_permission
 

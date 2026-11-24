@@ -30,7 +30,6 @@ from fastapi import HTTPException, Request
 from . import auth
 from .auth import require_permission
 
-
 _UNSAVED = "The list of outside agents could not be saved. Nothing was changed."
 
 

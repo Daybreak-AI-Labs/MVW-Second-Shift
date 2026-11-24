@@ -15,6 +15,8 @@ import asyncio
 import os
 
 from fastapi import HTTPException, Request, WebSocket
+from starlette.concurrency import run_in_threadpool
+
 from maverick.config import single_read
 from maverick.oidc import (
     OIDCError,
@@ -28,7 +30,7 @@ from maverick.proxy_auth import (
     proxy_header_name,
     proxy_trusts,
 )
-from starlette.concurrency import run_in_threadpool
+
 from ._request_memo import fresh_configuration, memoized
 
 # Probe/discovery endpoints that must answer without a bearer even when OIDC is
@@ -1121,7 +1123,7 @@ async def _verify_off_loop(request, websocket):
         loop._lightwork_oidc_slots = limiter
     try:
         await asyncio.wait_for(limiter.acquire(), timeout=_OIDC_ADMISSION_SECONDS)
-    except asyncio.TimeoutError as exc:
+    except TimeoutError as exc:
         raise HTTPException(status_code=503, detail="identity verification is busy",
                             headers={"Retry-After": "1"}) from exc
     worker = asyncio.create_task(run_in_threadpool(_resolve_principal, request=request, websocket=websocket))

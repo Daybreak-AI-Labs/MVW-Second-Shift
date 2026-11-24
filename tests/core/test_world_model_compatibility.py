@@ -5,6 +5,7 @@ import sqlite3
 from contextlib import closing
 
 import pytest
+
 from maverick.world_model import SCHEMA_VERSION, WorldModel
 
 

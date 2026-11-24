@@ -7,6 +7,7 @@ everywhere, including CI without a DSN.
 from __future__ import annotations
 
 import pytest
+
 from maverick.world_model_backends import pg_rls
 from maverick.world_model_backends.pg_rls import _PREFLIGHT_TABLES
 

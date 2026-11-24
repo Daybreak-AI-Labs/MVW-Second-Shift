@@ -10,9 +10,10 @@ from dataclasses import replace
 
 import httpx
 import pytest
+
 from maverick import connector_attempts as attempts
-from maverick.tools import _ssrf
 from maverick.tools import _bounded_http as bounded
+from maverick.tools import _ssrf
 
 
 class CountedStream(httpx.SyncByteStream):

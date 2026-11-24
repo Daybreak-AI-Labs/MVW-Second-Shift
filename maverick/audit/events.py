@@ -96,6 +96,7 @@ Payload shapes (kind -> required fields, all events also carry
                      payloads, actors, or resource ids)
 """
 from __future__ import annotations
+
 import re
 from dataclasses import dataclass, field
 from typing import Any

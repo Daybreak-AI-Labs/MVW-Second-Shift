@@ -8,6 +8,7 @@ from contextlib import contextmanager
 from types import SimpleNamespace
 
 import pytest
+
 from maverick import agent_control_plane as acp
 
 

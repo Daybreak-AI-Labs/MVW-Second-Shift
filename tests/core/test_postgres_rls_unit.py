@@ -6,6 +6,7 @@ import threading
 from contextlib import contextmanager
 
 import pytest
+
 from maverick.world_model_backends import postgres
 from maverick.world_model_backends.postgres import PostgresWorldModel
 

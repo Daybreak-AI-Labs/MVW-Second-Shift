@@ -5,8 +5,9 @@ import hashlib
 
 import pytest
 from fastapi import HTTPException
-from maverick_dashboard.request_identity import request_actor, request_identity
 from starlette.requests import Request
+
+from maverick_dashboard.request_identity import request_actor, request_identity
 
 
 def _request(token: str = "") -> Request:

@@ -1,12 +1,14 @@
 """Shared governed-record primitive for product and evidence stores."""
 
 from __future__ import annotations
+
 import copy
 import hashlib
 import json
 import threading
 
 import pytest
+
 from maverick import governed_records
 from maverick.governed_records import (
     GovernedRecordBackendError,

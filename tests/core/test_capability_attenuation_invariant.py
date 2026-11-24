@@ -21,6 +21,7 @@ catch a broken ``attenuate`` rather than passing vacuously.
 from __future__ import annotations
 
 import pytest
+
 from maverick.capability import Capability
 
 # A tightly-scoped supervisor grant: read-only, low ceiling, shell denied,

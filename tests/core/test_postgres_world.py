@@ -6,6 +6,7 @@ It's the first DB-backed test for the Postgres backend and the harness future
 method-parity work can extend (so parity is testable, not shipped blind).
 """
 from __future__ import annotations
+
 import os
 import uuid
 from types import SimpleNamespace
@@ -29,8 +30,9 @@ def world():
 
 
 def test_connection_timeouts_and_operator_options_survive_real_reconnect(monkeypatch):
-    from maverick.world_model_backends.postgres import PostgresWorldModel
     from psycopg.conninfo import make_conninfo
+
+    from maverick.world_model_backends.postgres import PostgresWorldModel
 
     monkeypatch.setenv("MAVERICK_PG_IDLE_TX_TIMEOUT_MS", "60000")
     dsn = make_conninfo(_DSN, options="-c statement_timeout=12345 -c application_name=lightwork-test")
@@ -229,6 +231,7 @@ def _disable_rls(dsn):
     """Tear down RLS so the opt-in test doesn't leak FORCE RLS into other
     tests sharing the database."""
     import psycopg
+
     from maverick.world_model_backends.postgres import _TENANT_TABLES
     with psycopg.connect(dsn, autocommit=True) as c, c.cursor() as cur:
         for t in _TENANT_TABLES:
@@ -248,9 +251,10 @@ def test_rls_enforces_tenant_isolation_at_db_level(monkeypatch):
     (the CI/test DSN role is a superuser). The owner applies the policy; the
     app role only enforces it."""
     import psycopg
+    from psycopg.conninfo import make_conninfo
+
     from maverick.paths import reset_tenant, set_tenant
     from maverick.world_model_backends.postgres import PostgresWorldModel
-    from psycopg.conninfo import make_conninfo
 
     monkeypatch.setenv("MAVERICK_PG_RLS", "1")
     # Install/apply the owner schema before granting rights on existing tables.

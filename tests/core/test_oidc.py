@@ -26,6 +26,7 @@ from __future__ import annotations
 import time
 
 import pytest
+
 from maverick.oidc import (
     DEFAULT_ALGORITHMS,
     OIDCConfig,

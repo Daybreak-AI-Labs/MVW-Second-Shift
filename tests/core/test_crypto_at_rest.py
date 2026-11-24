@@ -5,6 +5,7 @@ import base64
 import importlib.util
 
 import pytest
+
 from maverick import crypto_at_rest as car
 from maverick import file_lock
 

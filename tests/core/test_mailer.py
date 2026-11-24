@@ -3,6 +3,7 @@ switch, and the injectable transport. See maverick/mailer.py."""
 from __future__ import annotations
 
 import pytest
+
 from maverick import mailer
 
 

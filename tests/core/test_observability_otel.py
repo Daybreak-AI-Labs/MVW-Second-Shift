@@ -20,6 +20,7 @@ import sys
 import types
 
 import pytest
+
 from maverick import observability as obs
 
 

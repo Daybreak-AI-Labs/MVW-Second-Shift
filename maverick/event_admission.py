@@ -148,10 +148,9 @@ def _compatible_goal_binding(origin: str, owner: str, trigger_key: str, *,
     if not origin or not trigger_key:
         return False
     try:
+        from maverick.paths import current_tenant_id
         from maverick_dashboard import event_triggers_store, triggers_store
         from maverick_dashboard.event_poll import _trigger_key
-
-        from maverick.paths import current_tenant_id
 
         current = event_triggers_store.get_trigger(
             origin, tenant=current_tenant_id() or "", strict=True,

@@ -10,6 +10,7 @@ from __future__ import annotations
 import sqlite3
 
 import pytest
+
 from maverick import world_model
 
 

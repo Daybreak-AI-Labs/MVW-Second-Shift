@@ -20,6 +20,7 @@ import sqlite3
 import time
 
 import pytest
+
 from maverick.file_lock import private_path_is_restricted
 from maverick.world_model import SCHEMA, SCHEMA_VERSION, WorldModel, _bootstrap_schema
 

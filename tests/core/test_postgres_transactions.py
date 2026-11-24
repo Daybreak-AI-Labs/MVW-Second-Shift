@@ -6,6 +6,7 @@ import threading
 from types import ModuleType, SimpleNamespace
 
 import pytest
+
 from maverick import postgres_transactions as pt
 
 
@@ -109,8 +110,9 @@ def test_caller_owned_connector_cannot_silently_enter_product_pool():
 @pytest.mark.parametrize("requested,expected", [(None, 7), (0, 7), (30, 7), (3, 3)])
 def test_real_libpq_options_preserve_tls_search_path_and_caps(monkeypatch, requested, expected):
     pytest.importorskip("psycopg")
-    from maverick.db_timeouts import postgres_connection_kwargs
     from psycopg.conninfo import make_conninfo
+
+    from maverick.db_timeouts import postgres_connection_kwargs
     monkeypatch.setenv("MAVERICK_PG_CONNECT_TIMEOUT_SECONDS", "7")
     monkeypatch.delenv("PGCONNECT_TIMEOUT", raising=False)
     parameters = {"host": "db.example.invalid", "sslmode": "verify-full",

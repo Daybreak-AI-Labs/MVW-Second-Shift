@@ -1,6 +1,7 @@
 """The explicit transport checks policy before delegating network effects."""
 import httpx
 import pytest
+
 from maverick.enterprise import EgressBlocked
 from maverick.governed_http import (
     admit_client_request,

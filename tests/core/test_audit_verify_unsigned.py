@@ -16,8 +16,10 @@ Contract pinned here:
     evidence as clean).
 """
 from __future__ import annotations
+
 import json
 from pathlib import Path
+
 from maverick.audit.signing import verify_chain
 
 

@@ -7,6 +7,7 @@ prior public key is retained, so the chain stays verifiable across the rotation
 from __future__ import annotations
 
 import pytest
+
 from maverick.audit import signing
 from maverick.file_lock import private_path_is_restricted
 

@@ -16,6 +16,7 @@ import time
 from pathlib import Path
 
 import pytest
+
 from maverick.file_lock import (
     atomic_create_text,
     atomic_read_bytes,

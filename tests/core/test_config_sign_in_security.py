@@ -3,6 +3,7 @@ config values, environment overrides and fail-closed handling of bad values."""
 from __future__ import annotations
 
 import pytest
+
 from maverick import config
 
 

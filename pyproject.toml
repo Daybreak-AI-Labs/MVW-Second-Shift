@@ -41,3 +41,24 @@ asyncio_mode = "strict"
 [tool.ruff]
 line-length = 140
 target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "C90", "B", "G", "RSE"]
+ignore = [
+    "E501",   # line length
+    "UP042",  # str-and-Enum classes stay as they are: StrEnum formats values differently
+    "UP017",  # timezone.utc is kept as written
+]
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI's dependency markers in argument defaults are the framework idiom.
+extend-immutable-calls = [
+    "fastapi.Depends", "fastapi.File", "fastapi.Form", "fastapi.Query", "fastapi.Path",
+    "fastapi.Body", "fastapi.Header", "fastapi.Cookie", "fastapi.Security",
+]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 20
+
+[tool.ruff.lint.isort]
+known-first-party = ["maverick", "maverick_dashboard", "test_support"]

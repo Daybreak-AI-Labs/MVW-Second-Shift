@@ -6,10 +6,11 @@ from __future__ import annotations
 
 import logging
 
+import pytest
+
 import maverick.audit.signing as signing
 import maverick.audit.writer as writer
 import maverick.compliance_profiles as compliance_profiles
-import pytest
 from maverick.audit.events import AuditEvent
 
 

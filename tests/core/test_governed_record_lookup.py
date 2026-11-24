@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import pytest
+
 from maverick.governed_record_lookup import RecordLookupSpec, RecordLookupUnavailable, lookup_digest
 from maverick.governed_records import LocalGovernedRecordBackend, RecordConflict
 

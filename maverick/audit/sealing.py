@@ -17,6 +17,7 @@ only encrypts the bytes, never the signed rows.
 Exposed as ``maverick audit seal``; runs only when at-rest encryption is enabled.
 """
 from __future__ import annotations
+
 from pathlib import Path
 
 from ..file_lock import atomic_read_bytes, ensure_private_directory, ensure_private_file
