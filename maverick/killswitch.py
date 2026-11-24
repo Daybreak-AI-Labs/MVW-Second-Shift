@@ -224,7 +224,9 @@ def halt(reason: str, source: str = "manual") -> None:
         # A halt stops all work, so this is the canonical event an SRE must hear
         # about. No-op unless [alerts] is enabled; paging never blocks the halt.
         try:
-            from .ops_alert import alert
+            from .ops_alert import alert, incident
+
+            incident("emergency")
             alert(
                 "killswitch_tripped",
                 f"{reason} (source={source})",

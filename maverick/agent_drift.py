@@ -1286,6 +1286,9 @@ def acknowledge(agent_id: str, finding_key: str, *, actor: str,
         acks[finding["key"]] = {"by": who, "at": moment, "seen": moment,
                                 "severity": finding["severity"]}
         record["acknowledged"] = _newest(acks, "at", _MAX_ACKNOWLEDGED)
+    from .ops_alert import incident
+
+    incident("drift", agent_id, cause=finding["key"], resolve=True)
     return {"agent_id": agent_id, "finding": finding["key"],
             "acknowledged_by": who, "acknowledged_at": moment}
 
@@ -1429,7 +1432,11 @@ def _alert(agent_id: str, new: list[dict], *, contained: bool, failed: bool) -> 
     elif failed:
         text += " It could not be contained automatically; contain it by hand if needed."
     try:
-        from .ops_alert import alert
+        from .ops_alert import alert, incident
+
+        for finding in new:
+            if finding["severity"] == HIGH:
+                incident("drift", agent_id, cause=finding["key"])
         alert("agent_drift.detected", text, severity=_ALERT_SEVERITY[worst["severity"]])
     except Exception:  # pragma: no cover -- notification never blocks
         log.warning("agent_drift: alert delivery failed", exc_info=True)

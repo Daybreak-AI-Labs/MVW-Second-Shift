@@ -120,6 +120,16 @@ def alert(event: str, detail: str = "", *, severity: str = "high") -> bool:
         return False
 
 
+def incident(event: str, agent_id: str = "", *, cause: str = "", resolve: bool = False) -> None:
+    """Queue a ServiceNow incident independently of alert fan-out."""
+    try:
+        from .servicenow_incidents import enqueue
+
+        enqueue(event, agent_id, cause=cause, resolve=resolve)
+    except Exception as exc:
+        log.warning("ServiceNow incident could not be queued (%s)", type(exc).__name__)
+
+
 def _test_messages(request_id: str) -> dict[str, str]:
     """What the delivery history recorded for one test, by channel. Empty when
     the history is turned off or cannot be read."""
@@ -174,13 +184,16 @@ def delivery_status() -> dict:
     plain reason when it is not), and the configured names that are not
     channels. A webhook address is reported only as set or not set."""
     from .notifications import BACKENDS, backend_status
+    from .servicenow_incidents import status
 
     used, ignored = _channels()
+    incidents = status()
     return {
         "enabled": alerts_enabled(),
         "channels": [backend_status(name) for name in used],
         "ignored": ignored,
         "available": list(BACKENDS),
+        **({"servicenow": incidents} if incidents is not None else {}),
     }
 
 
@@ -206,6 +219,11 @@ def warn_if_alerts_cannot_reach_anyone() -> str:
     except Exception as e:  # noqa: BLE001 -- a warning never blocks start-up
         log.debug("alert check at start-up failed: %s", type(e).__name__)
         return ""
+    if (status.get("servicenow") or {}).get("ready"):
+        message = (f"Second Shift is governing outside agents but {why}. ServiceNow incidents can still be queued. "
+                   "Set up Teams or email to receive other alerts.")
+        log.warning(message)
+        return message
     message = (f"Second Shift is governing outside agents but {why}, so nobody will be told when an agent "
                "is blocked, drifts or a request is about to run out. Turn alerts on and set up Teams "
                "or email (see the Alerts page).")

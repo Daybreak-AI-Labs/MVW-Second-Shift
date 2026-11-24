@@ -827,10 +827,18 @@ def _sync(cfg: dict, moment: float) -> dict:
     runs = {name: _run(name, cap) for name in cfg["platforms"]}
     with _editing() as store:
         _forget(store, cfg, refs)
+        missing_before = {agent_id for agent_id, view in store["agents"].items() if view.get("missing_on_platform")}
         results = {name: _apply(store, name, found, error, refs, cfg, moment)
                    for name, (found, error) in runs.items()}
         summary = _summary(results, moment)
         _audit(summary)
+        missing_after = {agent_id for agent_id, view in store["agents"].items() if view.get("missing_on_platform")}
+    from .ops_alert import incident
+
+    for agent_id in missing_after - missing_before:
+        incident("missing", agent_id)
+    for agent_id in missing_before - missing_after:
+        incident("missing", agent_id, resolve=True)
     _tell_drift(runs, refs, moment)
     log.info("agent_watch: checked %d platform(s): %d ok, %d failed, %d matched, %d not enrolled",
              len(results), summary["succeeded"], summary["failed"], summary["matched"],

@@ -532,6 +532,9 @@ def halt_set(request: Request, payload: HaltIn, response: Response) -> None:
             ),
             cause=exc,
         )
+    from maverick.ops_alert import incident
+
+    incident("emergency")
     # Also arm the cluster-wide halt in the shared store so the stop propagates
     # to every replica (the file only halts this one). Only on a shared backend
     # (Postgres): on single-host SQLite the file halt is the whole mechanism and
@@ -900,6 +903,9 @@ def halt_clear(  # noqa: C901 - explicit fail-safe cross-authority transaction
             cause=_ConcurrentHalt("newer local HALT generation observed"),
             status_code=409,
         )
+    from maverick.ops_alert import incident
+
+    incident("emergency", resolve=True)
     headers = _halt_audit_headers(
         operation="clear-halt",
         actor=actor,
