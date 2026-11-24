@@ -188,6 +188,10 @@ class EventKind:
     # wrote/retired/quarantined) so `maverick audit verify` covers learned
     # state the same way it covers tool calls.
     LEARNING_UPDATE = "learning_update"
+    EKKO_CONSENT_CHANGED = "ekko_consent_changed"
+    EKKO_SESSION = "ekko_session"
+    EKKO_MINING_RUN = "ekko_mining_run"
+    EKKO_ERASE = "ekko_erase"
     # Human-oversight decision on a parked approval (approve/deny). Anchors the
     # who-decided-what in the signed chain so the integrity of the decision does
     # not rest on the mutable world-model `approvals` row alone.

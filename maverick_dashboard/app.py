@@ -601,6 +601,9 @@ app.include_router(alerts_router)
 from .agent_watch_api import router as agent_watch_router  # noqa: E402
 
 app.include_router(agent_watch_router)
+from .ekko_ops_api import router as ekko_ops_router  # noqa: E402
+
+app.include_router(ekko_ops_router)
 
 
 def _compress_enabled() -> bool:
@@ -654,6 +657,12 @@ app.include_router(create_agent_control_plane_page_router(templates))
 from .agent_control_plane_api import router as agent_control_plane_router  # noqa: E402
 
 app.include_router(agent_control_plane_router, prefix="/api/v1")
+# Ekko Work Discovery: a human review/control surface only.  Endpoint
+# collectors do not enter through HTTP; they write through the local core
+# daemon's owner/device/tenant-scoped store.
+from .ekko_routes import router as ekko_router  # noqa: E402
+
+app.include_router(ekko_router)
 # Built-in OIDC browser-login routes (/auth/login, /auth/callback, /auth/logout).
 # Each route self-gates on maverick.oidc.login_enabled() and 404s when the login
 # flow isn't fully configured, so including the router unconditionally is inert
@@ -885,6 +894,18 @@ def _is_same_origin(request: Request) -> bool:
             return True
         return False
     return False
+
+
+def _require_same_origin(request: Request) -> None:
+    """Reject a cross-site mutating form POST (403). Shared CSRF guard inlined by
+    ~20 form handlers."""
+    if not _is_same_origin(request):
+        raise HTTPException(
+            status_code=403,
+            detail="cross-site form post blocked — for your security, changes "
+            "must be made from the Second Shift page itself. Reload the "
+            "dashboard and try again.",
+        )
 
 
 def _is_loopback_client(host: str) -> bool:

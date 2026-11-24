@@ -38,11 +38,15 @@ Early. What works today:
   single break-glass token. With neither configured the app only answers on
   the local machine. A person's role can come from the app roles in their
   sign-in token. See [docs/sign-in-roles.md](docs/sign-in-roles.md).
-- **Ekko work discovery, core only.** The content-free desktop recorder, its
-  local store and repeated-work discovery. Its pages are not here yet.
+- **Ekko work discovery, without its page.** The content-free desktop
+  recorder, its store and repeated-work discovery, and the server API for a
+  person's own consent and enrollment, sessions, importing an activity file,
+  suggestions, private plans and erasure (`/api/v1/ekko/`). Off until
+  `[ekko] enable` is set. The page, and recordings arriving from a person's
+  computer on their own, are not here yet.
 
-Not here yet: the agent factory, the AI asset inventory, the Ekko pages, and
-platform checks for ServiceNow and Workday.
+Not here yet: the agent factory, the AI asset inventory, the Ekko page and
+its recorder hand-over, and platform checks for ServiceNow and Workday.
 
 Proven against a live PostgreSQL 16 server: the Postgres tests, the whole suite
 with the database connected, and the app itself (start, enroll, run report,
