@@ -11,8 +11,9 @@ key (the agent can no longer work). This module sends, through
 * one warning when an agent's access key will end within a set number of days,
   and one note when it has ended.
 
-Each message goes out at most once per request or key. What was sent is kept in
-a small file beside the other records, so a restart never sends it again. A
+Each message goes out at most once per request or key. What was sent is kept as
+a small record with the others (:mod:`maverick.record_documents`), so a restart
+never sends it again. A
 renewed key (a new end date) starts over. A message that no channel accepted is
 not recorded, so the next pass tries again. Nothing here changes a request or a
 key, and a failure is logged and never stops the app.
@@ -78,10 +79,12 @@ def _path():
 
 
 def _load() -> dict[str, dict]:
-    path = _path()
-    if not path.exists():
+    from .record_documents import at
+
+    text = at(_path()).read_text()
+    if text is None:
         return {"approvals": {}, "keys": {}}
-    data = json.loads(path.read_text(encoding="utf-8"))
+    data = json.loads(text)
     if not isinstance(data, dict):
         raise ValueError("the reminder record is not an object")
     return {"approvals": dict(data.get("approvals") or {}), "keys": dict(data.get("keys") or {})}
@@ -93,17 +96,17 @@ def sent_record() -> dict[str, dict]:
 
 
 def _mark(group: str, key: str, what: str, moment: float) -> None:
-    from .file_lock import atomic_write_text, cross_process_lock, ensure_private_directory
-    path = _path()
-    ensure_private_directory(path.parent)
-    with cross_process_lock(path):
+    from .record_documents import at
+
+    record = at(_path())
+    with record.locked():
         data = _load()
         data[group].setdefault(key, {})[what] = moment
         entries = data[group]
         if len(entries) > _KEEP:
             newest = sorted(entries.items(), key=lambda kv: max(kv[1].values(), default=0.0), reverse=True)
             data[group] = dict(newest[:_KEEP])
-        atomic_write_text(path, json.dumps(data, sort_keys=True, separators=(",", ":")))
+        record.write_text(json.dumps(data, sort_keys=True, separators=(",", ":")))
 
 
 def _send(event: str, text: str, severity: str) -> bool:

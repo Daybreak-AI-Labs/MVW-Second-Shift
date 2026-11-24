@@ -280,3 +280,17 @@ def test_a_renewed_key_is_warned_about_again(alerts):
     finally:
         agent_trust.load_registry = real
     assert len(alerts) == 2
+
+
+def test_with_postgres_what_was_sent_is_kept_there_and_still_goes_once(tmp_path, alerts, records_in_postgres):
+    from maverick import expiry_reminders as er
+    from tests.new.conftest import saved_records
+
+    world = _world(tmp_path)
+    _id, _asked, end = _park(world)
+    er.check_approvals(world, now=end - 600)
+    er.check_approvals(_world(tmp_path), now=end - 300)
+    assert [a["event"] for a in alerts] == ["approval.reminder"]
+    assert not (tmp_path / "expiry_reminders.json").exists()
+    assert list(saved_records(records_in_postgres)) == ["expiry_reminders.json"]
+    assert er.sent_record()["approvals"]
