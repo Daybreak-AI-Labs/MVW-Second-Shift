@@ -599,6 +599,7 @@ from .alerts_api import router as alerts_router  # noqa: E402
 
 app.include_router(alerts_router)
 from .agent_watch_api import router as agent_watch_router  # noqa: E402
+from .agent_watch_api import switch_view as _platform_switch_view  # noqa: E402
 
 app.include_router(agent_watch_router)
 from .ekko_ops_api import router as ekko_ops_router  # noqa: E402
@@ -1707,7 +1708,8 @@ async def external_agent_scorecard(request: Request, agent_id: str) -> HTMLRespo
         request, "external_agent_detail.html",
         {"a": detail, "can_manage": can_manage, "access": access,
          "can_respond": has_permission(request, "respond"),
-         "drift": await run_in_threadpool(_agent_drift_view, agent_id)},
+         "drift": await run_in_threadpool(_agent_drift_view, agent_id),
+         "platform_switch": await run_in_threadpool(_platform_switch_view, agent_id)},
         headers={"Cache-Control": "private, no-store"}
     )
 
