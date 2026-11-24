@@ -1768,6 +1768,7 @@ def test_with_postgres_a_damaged_drift_record_is_refused_and_left_alone(tmp_path
     _enroll()
     record_documents.at(drift.store_path()).write_text('{"version": 1, "agents": []}')
     drift.observe_run(AGENT, cost_dollars=1.0)
-    with pytest.raises(drift.AgentDriftStoreError, match="cannot be read"):
+    with pytest.raises(drift.AgentDriftStoreError, match="cannot be read") as refused:
         drift.evaluate(AGENT)
+    assert "database" in str(refused.value) and "file" not in str(refused.value)
     assert saved_records(records_in_postgres)["external_agents_drift.json"] == '{"version": 1, "agents": []}'

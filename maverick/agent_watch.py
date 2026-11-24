@@ -661,9 +661,13 @@ def _load_store(path: Path | None = None) -> dict[str, dict]:
             raise ValueError("platform record holds a malformed entry")
         return store
     except (OSError, UnicodeError, ValueError, RecursionError) as e:
+        from .record_documents import using_postgres
+
+        what_next = ("Check that the database is reachable. If the record itself is damaged, "
+                     "restore the database from a backup." if using_postgres() else
+                     "Restore it from a backup, or move the file aside to start a new record.")
         raise AgentWatchStoreError(
-            "The saved platform record cannot be read, so nothing was checked or changed. "
-            "Restore it from a backup, or move the file aside to start a new record.") from e
+            f"The saved platform record cannot be read, so nothing was checked or changed. {what_next}") from e
 
 
 def _well_formed(store: dict) -> bool:

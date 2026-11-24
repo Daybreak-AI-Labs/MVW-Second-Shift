@@ -120,10 +120,12 @@ def _enroll(agent_id: str = AGENT, ref: str | None = "fake:bot-1") -> None:
 
 def _set_ref(agent_id: str, ref) -> None:
     """Enrollment does not write ``external_ref`` yet, so the test does."""
-    path = xa.registry_path()
-    entries = json.loads(path.read_text(encoding="utf-8"))
+    from maverick import record_documents
+
+    record = record_documents.at(xa.registry_path())
+    entries = json.loads(record.read_text() or "{}")
     entries[agent_id]["external_ref"] = ref
-    path.write_text(json.dumps(entries), encoding="utf-8")
+    record.write_text(json.dumps(entries))
 
 
 def _stored() -> dict:
