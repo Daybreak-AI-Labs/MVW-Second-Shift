@@ -424,14 +424,15 @@ def store_path():
 
 @contextmanager
 def _store():
-    """The gate's small record file, locked, read, and written back on exit.
-    It holds approval tickets and the agents seen but not enrolled, nothing
+    """The gate's small record, locked, read, and written back on exit. It is
+    kept with the other records (``maverick.record_documents``). It holds approval tickets and the agents seen but not enrolled, nothing
     from a conversation."""
-    from .file_lock import atomic_write_text, cross_process_lock, ensure_private_directory
-    path = store_path()
-    with _lock, cross_process_lock(path):
+    from .record_documents import at
+    record = at(store_path())
+    with _lock, record.locked():
         try:
-            data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+            text = record.read_text()
+            data = json.loads(text) if text is not None else {}
             if not isinstance(data, dict):
                 raise ValueError("not an object")
         except (OSError, ValueError):
@@ -448,8 +449,7 @@ def _store():
         data["seen"] = dict(sorted(
             data["seen"].items(), key=lambda kv: kv[1].get("last_seen", 0), reverse=True)[:_MAX_SEEN])
         if json.dumps(data, sort_keys=True) != before:
-            ensure_private_directory(path.parent)
-            atomic_write_text(path, json.dumps(data, indent=2, sort_keys=True), mode=0o600)
+            record.write_text(json.dumps(data, indent=2, sort_keys=True))
 
 
 def _digest(salt: str, req: ToolRequest) -> str:

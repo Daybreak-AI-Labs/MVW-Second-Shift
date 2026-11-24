@@ -1,4 +1,7 @@
-"""Bounded, tenant-scoped delivery receipts containing no notification content."""
+"""Bounded, tenant-scoped delivery receipts containing no notification content.
+
+They are kept with the other records (``maverick.record_documents``).
+"""
 from __future__ import annotations
 
 import hashlib
@@ -7,12 +10,7 @@ import time
 import uuid
 from pathlib import Path
 
-from .file_lock import (
-    atomic_read_text,
-    atomic_write_text,
-    cross_process_lock,
-    ensure_private_directory,
-)
+from .record_documents import at
 
 
 class DeliveryReceipts:
@@ -23,10 +21,10 @@ class DeliveryReceipts:
         self.path = path
 
     def _load(self) -> list[dict]:
-        try:
-            value = json.loads(atomic_read_text(self.path))
-        except FileNotFoundError:
+        text = at(self.path).read_text()
+        if text is None:
             return []
+        value = json.loads(text)
         if not isinstance(value, list) or len(value) > 1000:
             raise ValueError("Delivery history could not be read")
         return value
@@ -34,7 +32,7 @@ class DeliveryReceipts:
     def _save(self, rows: list[dict]) -> None:
         threshold = time.time() - 7 * 86400
         rows = [r for r in rows if r["updated_at"] >= threshold]
-        atomic_write_text(self.path, json.dumps(rows[-1000:], separators=(",", ":")))
+        at(self.path).write_text(json.dumps(rows[-1000:], separators=(",", ":")))
 
     @staticmethod
     def key(event: str, backend: str) -> str:
@@ -47,8 +45,7 @@ class DeliveryReceipts:
         if kind == "test":
             event = str(uuid.UUID(event))
         ident = self.key(event, backend)
-        ensure_private_directory(self.path.parent)
-        with cross_process_lock(self.path):
+        with at(self.path).locked():
             rows = [row for row in self._load() if row["updated_at"] >= time.time() - 7 * 86400]
             previous = next((row for row in rows if row["id"] == ident), None)
             if previous is not None:
@@ -86,7 +83,7 @@ class DeliveryReceipts:
         return rows if oldest is None else [row for row in rows if row is not oldest]
 
     def update(self, ident: str, state: str, message: str, *, safe_to_retry: bool = False) -> None:
-        with cross_process_lock(self.path):
+        with at(self.path).locked():
             rows = self._load()
             record = next((row for row in rows if row["id"] == ident), None)
             if record is None:

@@ -664,3 +664,24 @@ def test_a_decision_the_audit_log_refuses_to_record_is_blocked_whatever_on_error
     monkeypatch.setattr(audit_pkg, "record", lambda *a, **k: (_ for _ in ()).throw(AuditRefused("sealed")))
     body = _analyze(client).json()  # not enrolled: the gate writes its own audit entry
     assert body["blockAction"] is True and "record" in body["reason"]
+
+
+def test_with_postgres_the_agents_seen_are_kept_there(home, client, records_in_postgres):
+    from maverick import copilot_studio_gate as gate
+    from tests.new.conftest import saved_records
+
+    assert _analyze(client).json() == {"blockAction": False}
+    assert [(r["agent_id"], r["tool"]) for r in gate.seen_unenrolled()] == [(BOT_ID, "Send email")]
+    assert not gate.store_path().exists()
+    assert "copilot_studio_gate.json" in saved_records(records_in_postgres)
+
+
+def test_with_postgres_a_damaged_record_is_refused(home, client, records_in_postgres):
+    from maverick import copilot_studio_gate as gate
+    from maverick import record_documents
+    from tests.new.conftest import saved_records
+
+    record_documents.at(gate.store_path()).write_text("[1, 2]")
+    with pytest.raises(RuntimeError, match="cannot be read"):
+        gate.seen_unenrolled()
+    assert saved_records(records_in_postgres)["copilot_studio_gate.json"] == "[1, 2]"

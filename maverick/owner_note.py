@@ -26,8 +26,8 @@ Settings (``~/.maverick/config.toml``)::
 The note also needs alerts by email to be set up (the same mail settings the
 alerts use); without them nothing is sent.
 
-What was sent is kept per owner and week in ``owner_notes.json`` beside the
-other records, under a one-way digest of the address, so a restart never sends
+What was sent is kept per owner and week in the record ``owner_notes.json``, with the
+other records (``maverick.record_documents``), under a one-way digest of the address, so a restart never sends
 a note twice. A note that was being handed to the mail server when the app
 stopped is not repeated. A pass run within :data:`GRACE_SECONDS` after the
 scheduled time still sends, so a short outage does not skip a week.
@@ -164,10 +164,12 @@ def _path():
 
 
 def _load() -> dict[str, dict]:
-    path = _path()
-    if not path.exists():
+    from .record_documents import at
+
+    text = at(_path()).read_text()
+    if text is None:
         return {}
-    data = json.loads(path.read_text(encoding="utf-8"))
+    data = json.loads(text)
     if not isinstance(data, dict):
         raise ValueError("the weekly note record is not an object")
     return {str(k): v for k, v in data.items() if isinstance(v, dict)}
@@ -186,36 +188,35 @@ def _key(address: str, week: str, channel: str) -> str:
 def _claim(key: str, moment: float) -> bool:
     """Take this owner's week for one attempt. False when it is already done,
     or in progress, or failed too recently to try again."""
-    from .file_lock import atomic_write_text, cross_process_lock, ensure_private_directory
+    from .record_documents import at
 
-    path = _path()
-    ensure_private_directory(path.parent)
-    with cross_process_lock(path):
+    with at(_path()).locked():
         data = _load()
         before = data.get(key)
         if before:
             if before.get("state") != "failed" or moment - float(before.get("at") or 0) < _RETRY_SECONDS:
                 return False
         data[key] = {"state": "sending", "at": moment}
-        _store(data, atomic_write_text)
+        _store(data)
     return True
 
 
-def _store(data: dict, write) -> None:
+def _store(data: dict) -> None:
+    from .record_documents import at
+
     if len(data) > _KEEP:
         newest = sorted(data.items(), key=lambda kv: float(kv[1].get("at") or 0), reverse=True)
         data = dict(newest[:_KEEP])
-    write(_path(), json.dumps(data, sort_keys=True, separators=(",", ":")))
+    at(_path()).write_text(json.dumps(data, sort_keys=True, separators=(",", ":")))
 
 
 def _finish(key: str, state: str, moment: float) -> None:
-    from .file_lock import atomic_write_text, cross_process_lock
+    from .record_documents import at
 
-    path = _path()
-    with cross_process_lock(path):
+    with at(_path()).locked():
         data = _load()
         data[key] = {"state": state, "at": moment}
-        _store(data, atomic_write_text)
+        _store(data)
 
 
 def _done(key: str) -> bool:

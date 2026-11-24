@@ -2,7 +2,8 @@
 
 Only fixed event descriptions and opaque references leave Second Shift.
 Governance calls persist their intent locally. The dashboard timer handles
-network calls and reconciliation outside the queue lock.
+network calls and reconciliation outside the queue lock. The queue is kept with
+the other records (``maverick.record_documents``).
 """
 from __future__ import annotations
 
@@ -22,7 +23,7 @@ from urllib.parse import urlencode
 
 from . import agent_watch
 from .agent_watch_servicenow import _instances
-from .file_lock import atomic_read_text, atomic_write_text, cross_process_lock, ensure_private_directory
+from .record_documents import at, using_postgres
 
 log = logging.getLogger(__name__)
 _SECTION = "[servicenow_incidents]"
@@ -123,11 +124,16 @@ def _path() -> Path:
 
 def _read(path: Path) -> list[Incident]:
     try:
-        if path.stat().st_size > 4 * 1024 * 1024:
+        if not using_postgres() and path.stat().st_size > 4 * 1024 * 1024:
             raise IncidentError(_QUEUE_MESSAGE)
-        raw = json.loads(atomic_read_text(path))
     except FileNotFoundError:
         return []
+    text = at(path).read_text()
+    if text is None:
+        return []
+    if using_postgres() and len(text.encode("utf-8")) > 4 * 1024 * 1024:
+        raise IncidentError(_QUEUE_MESSAGE)
+    raw = json.loads(text)
     if not isinstance(raw, dict) or raw.get("version") != 1 or not isinstance(raw.get("records"), list):
         raise IncidentError(_QUEUE_MESSAGE)
     rows = [Incident(**entry) for entry in raw["records"]]
@@ -144,14 +150,14 @@ def _read(path: Path) -> list[Incident]:
 @contextmanager
 def _editing() -> Iterator[list[Incident]]:
     path = _path()
-    ensure_private_directory(path.parent)
-    with cross_process_lock(path, strict=True):
+    record = at(path)
+    with record.locked(strict=True):
         rows = _read(path)
         before = [asdict(row) for row in rows]
         yield rows
         after = [asdict(row) for row in rows]
         if before != after:
-            atomic_write_text(path, json.dumps({"version": 1, "records": after}, separators=(",", ":")), mode=0o600)
+            record.write_text(json.dumps({"version": 1, "records": after}, separators=(",", ":")))
 
 
 def enqueue(event: str, agent_id: str = "", *, cause: str = "", resolve: bool = False) -> None:
@@ -326,11 +332,11 @@ def deliver_due() -> None:
         return
     try:
         settings = _settings()
-        if settings is None or not _path().exists():
+        if settings is None or not at(_path()).exists():
             return
         # Distinct from the short queue lock so event producers do not wait on
         # ServiceNow. A strict OS lock gives one sender for the data directory.
-        with cross_process_lock(_path().with_suffix(".delivery"), strict=True):
+        with at(_path().with_suffix(".delivery")).locked(strict=True):
             for row in _due(settings):
                 try:
                     sys_id = _deliver(settings, row)

@@ -1086,3 +1086,32 @@ def test_the_teams_app_package_is_built_from_the_template(tmp_path):
             module.render(bad, "secondshift.contoso.com")
     with pytest.raises(SystemExit):
         module.render(APP_ID, "https://secondshift.contoso.com/path")
+
+
+# ---------------------------------------------------------------- Postgres
+
+
+def test_with_postgres_links_are_kept_there_and_a_damaged_record_is_refused(env, records_in_postgres):
+    from maverick import record_documents, teams_identity
+    from tests.new.conftest import saved_records
+
+    teams_identity.link(AAD["alice"], "user:alice", actor="admin")
+    assert teams_identity.principal_for(AAD["alice"]) == "user:alice"
+    assert not teams_identity.store_path().exists()
+    assert "teams-identities.json" in saved_records(records_in_postgres)
+    record_documents.at(teams_identity.store_path()).write_text("[1]")
+    with pytest.raises(teams_identity.TeamsIdentityError):
+        teams_identity.list_links()
+    assert saved_records(records_in_postgres)["teams-identities.json"] == "[1]"
+
+
+def test_with_postgres_the_cards_the_bot_posted_are_kept_there(env, records_in_postgres):
+    from maverick_dashboard import teams_bot
+    from tests.new.conftest import saved_records
+
+    teams_bot._remember_cards(7, [{"conversation_id": "19:alice", "activity_id": "a1"}])
+    assert teams_bot._peek_cards(7) == [{"conversation_id": "19:alice", "activity_id": "a1"}]
+    assert teams_bot._forget_cards(7) == [{"conversation_id": "19:alice", "activity_id": "a1"}]
+    assert teams_bot._peek_cards(7) == []
+    assert not (env.path / "teams-cards.json").exists()
+    assert "teams-cards.json" in saved_records(records_in_postgres)
