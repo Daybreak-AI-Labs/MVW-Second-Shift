@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %}New agent · Agent factory · Second Shift{% endblock %}
+{% block content %}
+  <p><a href="/factory">Back to the agent factory</a></p>
+  <h1 class="page-title">New agent</h1>
+  <p class="page-subtitle">Tell Second Shift what the agent is for. It asks the model to propose how the agent should work; you check and change it before anything is saved.</p>
+
+  {% if not factory_installed %}
+  <div class="panel" role="status"><p style="margin:0"><strong>The agent factory is not installed.</strong> {{ factory_not_installed }}</p></div>
+  {% else %}
+    {% if not status.ready %}
+    <div class="panel" role="status" id="factory-setup"><p style="margin:0"><strong>The model is not set up yet, so a draft cannot be proposed.</strong></p>
+      <ul style="margin:var(--space-2) 0 0; padding-left:1.2rem">{% for p in status.problems %}<li>{{ p }}</li>{% endfor %}</ul></div>
+    {% endif %}
+    <form id="fx-brief" class="panel" autocomplete="off">
+      <div style="display:grid; gap:var(--space-3)">
+        <label>What is the agent for?
+          <textarea class="textarea" id="fx-purpose" rows="3" maxlength="2000" required placeholder="Answer staff questions about our travel policy using the policy document."></textarea>
+        </label>
+        <label>Who will use it?
+          <input class="input" id="fx-users" maxlength="1000" placeholder="Employees in the finance team">
+        </label>
+        <label>What may it do?
+          <textarea class="textarea" id="fx-may" rows="2" maxlength="2000" placeholder="Look up public web pages. Write a short Word summary."></textarea>
+        </label>
+        <label>What must it never do?
+          <textarea class="textarea" id="fx-must-not" rows="2" maxlength="2000" placeholder="Never give legal advice. Never share anything personal."></textarea>
+        </label>
+      </div>
+      <p style="margin-bottom:0"><button type="submit" class="btn btn--primary" id="fx-propose"{% if not status.ready %} disabled aria-disabled="true"{% endif %}>Ask the model for a draft</button>
+        <span id="fx-propose-status" class="muted" role="status" aria-live="polite"></span></p>
+    </form>
+
+    <div id="fx-problems" class="panel" role="alert" hidden>
+      <h2 style="margin-top:0">The model's proposal could not be used</h2>
+      <p class="muted">Nothing was saved. These are the reasons:</p>
+      <ul id="fx-problem-list" style="padding-left:1.2rem"></ul>
+      <details><summary>What the model sent</summary><pre id="fx-excerpt" style="white-space:pre-wrap"></pre></details>
+    </div>
+    <div id="fx-notes" class="panel" role="status" hidden></div>
+
+    <div id="fx-editor-wrap" hidden>
+      {% include "_factory_editor.html" %}
+    </div>
+  {% endif %}
+{% endblock %}
+{% block scripts_extra %}
+  {% if factory_installed %}
+  <script id="fx-status" type="application/json">{{ status | tojson }}</script>
+  <script src="/static/second-shift-factory.js" defer></script>
+  {% endif %}
+{% endblock %}

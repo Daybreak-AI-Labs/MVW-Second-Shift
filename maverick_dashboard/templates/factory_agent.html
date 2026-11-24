@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}{{ agent.name }} · Agent factory · Second Shift{% endblock %}
+{% block content %}
+  <p><a href="/factory">Back to the agent factory</a></p>
+  <h1 class="page-title" id="fx-title">{{ agent.name }}</h1>
+  <p class="page-subtitle" id="fx-subtitle"></p>
+
+  {% if not status.ready %}
+  <div class="panel" role="status" id="factory-setup"><p style="margin:0"><strong>The model is not set up yet.</strong> Tests cannot run until it is.</p>
+    <ul style="margin:var(--space-2) 0 0; padding-left:1.2rem">{% for p in status.problems %}<li>{{ p }}</li>{% endfor %}</ul></div>
+  {% endif %}
+
+  <div class="panel" id="fx-release" aria-live="polite"></div>
+
+  <div id="fx-editor-wrap">
+    {% if can_build %}{% include "_factory_editor.html" %}
+    {% else %}<div class="panel"><p class="muted" style="margin:0">You can read this agent. Changing it needs the operator role.</p></div>{% endif %}
+  </div>
+  <div id="fx-readonly" class="panel" hidden></div>
+
+  <div class="section-head"><h2>Test cases</h2></div>
+  <div class="panel" id="fx-cases"></div>
+
+  <div class="section-head"><h2>Tests</h2></div>
+  <div class="panel" id="fx-tests" aria-live="polite"></div>
+
+  <div class="section-head"><h2>Versions</h2></div>
+  <div class="panel" id="fx-versions"></div>
+{% endblock %}
+{% block scripts_extra %}
+  <script id="fx-status" type="application/json">{{ status | tojson }}</script>
+  <script id="fx-agent" type="application/json">{{ agent | tojson }}</script>
+  <script id="fx-perms" type="application/json">{{ {'build': can_build, 'admin': can_admin, 'approve': can_approve, 'me': me} | tojson }}</script>
+  <script src="/static/second-shift-factory.js" defer></script>
+{% endblock %}

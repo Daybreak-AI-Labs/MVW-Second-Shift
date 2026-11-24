@@ -92,7 +92,14 @@ PAGES: tuple[dict, ...] = ({'path': '/',
   'group': 'Agents',
   'icon': 'agents',
   'floor': 'operate',
-  'default': 'operate'})
+  'default': 'operate'},
+ {'path': '/factory',
+  'label': 'Agent factory',
+  'aliases': 'Build an agent',
+  'group': 'Agents',
+  'icon': 'agents',
+  'floor': 'view',
+  'default': 'view'})
 
 # Moderate sidebar declutter: keep a focused set of everyday destinations in the
 # rail; fold the rest OUT of the sidebar (in_nav=False) while leaving them fully
@@ -277,6 +284,7 @@ PAGE_AREAS: dict[str, tuple[str, str]] = {
     "/replay": ("Evidence & audit", "Task replay"),
     "/trust": ("Rules & safety", "Outside agents"),
     "/external-agents": ("Rules & safety", "Outside agents"),
+    "/factory": ("Agents", "Build an agent"),
     "/skills": ("Agents", "Skills"),
     "/store": ("Agents", "Skills"),
     "/templates": ("Ask", "Start from a template"),

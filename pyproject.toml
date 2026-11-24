@@ -23,6 +23,9 @@ dependencies = [
 
 [project.optional-dependencies]
 postgres = ["psycopg[binary,pool]>=3.3.5,<4"]
+# The agent factory uses the Second Shift runtime as a library. Install the runtime first when working from a checkout
+# (pip install -e './runtime[office]'); the extra is then already satisfied. Without it the factory pages say it is not installed.
+factory = ["second-shift-runtime[office]>=0.1"]
 dev = ["pytest>=8", "pytest-asyncio", "pytest-xdist", "pytest-timeout", "ruff>=0.5"]
 
 [tool.setuptools.packages.find]

@@ -1,0 +1,29 @@
+{# The editor for one agent definition, used when a draft is first proposed and on the agent's page. The script
+   (second-shift-factory.js) fills it from data-* and reads it back; every value is escaped by the browser. #}
+<form id="fx-editor" class="panel" autocomplete="off" novalidate>
+  <h2 style="margin-top:0">The agent</h2>
+  <div style="display:grid; gap:var(--space-3)">
+    <label>Name
+      <input class="input" id="fx-name" maxlength="200" required>
+    </label>
+    <label>What it does
+      <input class="input" id="fx-description" maxlength="2000">
+    </label>
+    <label>Instructions
+      <span class="muted" style="display:block; font-size:var(--text-sm)">What the agent is told every time it runs: what it may do, what it must never do, and how to answer.</span>
+      <textarea class="textarea" id="fx-instructions" rows="12" maxlength="50000" required></textarea>
+    </label>
+  </div>
+
+  <h3>Skills</h3>
+  <p class="muted" style="margin-top:0">Tick only what the agent needs. The risk rating is what Second Shift checks every use against; you can raise a rating here, never lower it.</p>
+  <div id="fx-skills" style="display:grid; gap:var(--space-2)"></div>
+
+  <h3>Limits</h3>
+  <p class="muted" style="margin-top:0">The agent stops when it reaches any of these.</p>
+  <div id="fx-limits" style="display:grid; grid-template-columns:repeat(auto-fit,minmax(14rem,1fr)); gap:var(--space-3)"></div>
+
+  <p class="muted" id="fx-model-note" style="font-size:var(--text-sm)"></p>
+  <p style="margin-bottom:0"><button type="submit" class="btn btn--primary" id="fx-save">Save as draft</button>
+    <span id="fx-save-status" class="muted" role="status" aria-live="polite"></span></p>
+</form>
