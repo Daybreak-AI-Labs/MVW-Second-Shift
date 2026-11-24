@@ -211,17 +211,20 @@ def registry_path():
 
     Identity and ceilings live in the Agent Trust Plane; this file carries what
     the trust entry deliberately does not: platform provenance, ownership, and
-    the cumulative reported-spend meter the budget cutoff reads."""
+    the cumulative reported-spend meter the budget cutoff reads. It is kept
+    with the other records (:mod:`maverick.record_documents`)."""
     from .paths import data_dir
     return data_dir("external_agents.json")
 
 
 def _load_sidecar(*, strict: bool = False) -> dict[str, dict]:
-    path = registry_path()
+    from .record_documents import at
+
     try:
-        if not path.exists():
+        text = at(registry_path()).read_text()
+        if text is None:
             return {}
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(text)
         if not isinstance(data, dict):
             raise ValueError("sidecar root must be an object")
         if strict and any(not isinstance(value, dict) for value in data.values()):
@@ -240,29 +243,27 @@ def _load_sidecar(*, strict: bool = False) -> dict[str, dict]:
 
 
 def _save_sidecar(entries: dict[str, dict]) -> None:
-    from .file_lock import atomic_write_text, ensure_private_directory
+    from .record_documents import at
+
     # Callers read with the lenient loader, which turns an unreadable or
     # corrupt sidecar into ``{}``. Writing that back would replace every other
     # agent's enrollment, containment flag and meters, so refuse instead.
     _load_sidecar(strict=True)
-    path = registry_path()
-    ensure_private_directory(path.parent)
-    atomic_write_text(path, json.dumps(entries, indent=2, sort_keys=True),
-                      mode=0o600)
+    at(registry_path()).write_text(json.dumps(entries, indent=2, sort_keys=True))
 
 
 def _sidecar_locked():
     from contextlib import ExitStack
 
     from .authority_effects import authority_effect_fence
-    from .file_lock import cross_process_lock
+    from .record_documents import at
 
     # The enrollment/containment/budget/execution sidecar is authority.  Keep
     # its mutation order aligned with the trust registry and provider paths:
     # global authority fence first, then the store-specific lock.
     with ExitStack() as stack:
         stack.enter_context(authority_effect_fence())
-        stack.enter_context(cross_process_lock(registry_path()))
+        stack.enter_context(at(registry_path()).locked())
         return stack.pop_all()
 
 

@@ -79,7 +79,8 @@ def _replay_path():
     """Single-use ledger for the signed schemes, tenant-scoped like the
     enrollment sidecar: ``{agent_id: {key: expires_at}}``.
 
-    On disk rather than in memory because the gateway runs inside the
+    Kept with the other records (:mod:`maverick.record_documents`) rather than
+    in memory because the gateway runs inside the
     dashboard app, which is deployed with MULTIPLE WORKERS — a per-process
     cache would let the same signed request replay successfully on a
     different worker."""
@@ -88,16 +89,18 @@ def _replay_path():
 
 
 def _load_replay() -> dict[str, dict[str, float]]:
-    from .file_lock import atomic_read_text, ensure_private_file
+    from .file_lock import ensure_private_file
+    from .record_documents import at, using_postgres
     path = _replay_path()
     try:
-        ensure_private_file(path)
-        raw = atomic_read_text(path)
+        if not using_postgres():
+            ensure_private_file(path)
+        raw = at(path).read_text()
     except FileNotFoundError:
         return {}
     except OSError as e:
         raise ReplayStoreError(f"replay ledger unreadable: {e}") from e
-    if not raw.strip():
+    if raw is None or not raw.strip():
         return {}
 
     def _reject_constant(value: str):
@@ -139,33 +142,32 @@ def claim_once(agent_id: str, key: str, *, expires_at: float,
     (evicting one would silently reopen its replay window). Raises
     :class:`ReplayStoreError` when the ledger cannot be read or written — the
     caller turns that into a refusal."""
-    from .file_lock import (
-        atomic_write_text,
-        cross_process_lock,
-        ensure_private_directory,
-    )
-    path = _replay_path()
-    ensure_private_directory(path.parent)
-    with cross_process_lock(path):
-        ledger = _load_replay()
-        bucket = {k: v for k, v in (ledger.get(agent_id) or {}).items()
-                  if v > now}
-        if key in bucket:
-            return "replay"
-        if len(bucket) >= _MAX_KEYS_PER_AGENT:
-            return "replay_budget_full"
-        bucket[key] = float(expires_at)
-        ledger[agent_id] = bucket
-        # Drop agents whose keys have all expired so the file stays bounded
-        # by ACTIVE callers, not by every agent ever enrolled.
-        ledger = {a: {k: v for k, v in keys.items() if v > now}
-                  for a, keys in ledger.items()}
-        ledger = {a: keys for a, keys in ledger.items() if keys}
-        try:
-            atomic_write_text(path, json.dumps(ledger, sort_keys=True),
-                              mode=0o600)
-        except OSError as e:
-            raise ReplayStoreError(f"replay ledger unwritable: {e}") from e
+    from .record_documents import RecordDocumentError, at
+    record = at(_replay_path())
+    try:
+        with record.locked():
+            ledger = _load_replay()
+            bucket = {k: v for k, v in (ledger.get(agent_id) or {}).items()
+                      if v > now}
+            if key in bucket:
+                return "replay"
+            if len(bucket) >= _MAX_KEYS_PER_AGENT:
+                return "replay_budget_full"
+            bucket[key] = float(expires_at)
+            ledger[agent_id] = bucket
+            # Drop agents whose keys have all expired so the record stays
+            # bounded by ACTIVE callers, not by every agent ever enrolled.
+            ledger = {a: {k: v for k, v in keys.items() if v > now}
+                      for a, keys in ledger.items()}
+            ledger = {a: keys for a, keys in ledger.items() if keys}
+            try:
+                record.write_text(json.dumps(ledger, sort_keys=True))
+            except OSError as e:
+                raise ReplayStoreError(f"replay ledger unwritable: {e}") from e
+    except RecordDocumentError as e:
+        # Only Postgres raises this (the database could not hold the claim);
+        # refuse as an unreadable ledger is refused.
+        raise ReplayStoreError(f"replay ledger unavailable: {e}") from e
     return None
 
 

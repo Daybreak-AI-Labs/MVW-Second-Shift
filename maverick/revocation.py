@@ -10,7 +10,7 @@ though its signed capability is otherwise still valid.
 "Propagation" is two things:
 
 * **to running agents** — the registry is re-read whenever its file changes
-  (mtime check), so an operator running ``maverick capability revoke`` in
+  (mtime check; with Postgres it is read on every check), so an operator running ``maverick capability revoke`` in
   another process reaches agents already mid-run, not just new spawns;
 * **down the delegation tree** — :meth:`revoke_subtree` walks the
   parent→child principal graph (the same delegation graph the capability
@@ -22,6 +22,7 @@ registry cannot prove that a principal remains authorized, so the tool
 chokepoint denies the call. Direct registry/operator APIs surface
 ``RevocationStoreError`` instead of silently replacing damaged state. A
 genuinely absent registry still means that no revocations have been recorded.
+The registry is kept with the other records (:mod:`maverick.record_documents`).
 Only consulted when capability enforcement is on (otherwise there is no
 principal to revoke against).
 """
@@ -41,6 +42,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TypeVar
+
+from .record_documents import at, using_postgres
 
 log = logging.getLogger(__name__)
 
@@ -209,17 +212,16 @@ class RevocationRegistry:
         """Hold the stable strict authority for one principal's projections."""
         if not _valid_principal(principal):
             raise ValueError("invalid revocation principal")
-        from .file_lock import cross_process_lock, ensure_private_directory
+        from .record_documents import at
 
-        ensure_private_directory(self.path.parent)
-        with cross_process_lock(
-            self._containment_authority_path(principal), strict=True,
-        ):
+        with at(self._containment_authority_path(principal)).locked(strict=True):
             yield
 
     # -- read path (hot) --------------------------------------------------
 
     def _current_version(self) -> tuple[int, int, int, int] | None:
+        if using_postgres():
+            return None
         try:
             info = self.path.lstat()
         except FileNotFoundError:
@@ -240,6 +242,13 @@ class RevocationRegistry:
         )
 
     def _load_if_changed(self) -> None:
+        if using_postgres():
+            # No file to compare, so never serve a remembered copy: another
+            # worker or server may have changed the record.
+            self._cache = self._read()
+            self._version = None
+            self._loaded = True
+            return
         version = self._current_version()
         if self._loaded and version == self._version:
             return
@@ -251,14 +260,23 @@ class RevocationRegistry:
         from .file_lock import ensure_private_file, private_path_is_restricted
 
         try:
-            info = self.path.lstat()
-            if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
-                raise PermissionError(
-                    f"revocation store is not a regular file: {self.path}"
-                )
-            if not private_path_is_restricted(self.path, 0o600):
-                ensure_private_file(self.path)
-            text = _bounded_read_text(self.path)
+            if using_postgres():
+                text = at(self.path).read_text()
+                if text is None:
+                    return {}
+                if len(text.encode("utf-8")) > _MAX_STORE_BYTES:
+                    raise RevocationStoreError(
+                        f"revocation store exceeds {_MAX_STORE_BYTES} bytes"
+                    )
+            else:
+                info = self.path.lstat()
+                if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+                    raise PermissionError(
+                        f"revocation store is not a regular file: {self.path}"
+                    )
+                if not private_path_is_restricted(self.path, 0o600):
+                    ensure_private_file(self.path)
+                text = _bounded_read_text(self.path)
         except FileNotFoundError:
             return {}
         except OSError as exc:
@@ -318,10 +336,7 @@ class RevocationRegistry:
     # -- write path (operator actions) ------------------------------------
 
     def _write(self, data: dict[str, Revocation]) -> None:
-        from .file_lock import atomic_write_text, ensure_private_directory
-
         p = self.path
-        ensure_private_directory(p.parent)
         if len(data) > _MAX_ENTRIES:
             raise ValueError(f"revocation registry exceeds {_MAX_ENTRIES} entries")
         for principal, revocation in data.items():
@@ -351,7 +366,7 @@ class RevocationRegistry:
             raise ValueError(
                 f"revocation registry exceeds {_MAX_STORE_BYTES} bytes"
             )
-        atomic_write_text(p, encoded, mode=0o600)
+        at(p).write_text(encoded)
         self._cache = dict(data)
         self._version = self._current_version()
         self._loaded = True
@@ -372,12 +387,11 @@ class RevocationRegistry:
         ts = float(now if now is not None else time.time())
         if not math.isfinite(ts) or ts <= 0:
             raise ValueError("revocation timestamp must be finite and positive")
-        from .file_lock import cross_process_lock, ensure_private_directory
+        from .record_documents import at
 
-        ensure_private_directory(self.path.parent)
         with self.containment_authority(principal):
             with self._lock:
-                with cross_process_lock(self.path, strict=True):
+                with at(self.path).locked(strict=True):
                     # Re-read while holding the process lock. Atomic publication
                     # alone cannot prevent concurrent read-modify-write updates
                     # from overwriting another revocation.
@@ -424,12 +438,11 @@ class RevocationRegistry:
         """
         if not _valid_principal(principal):
             raise ValueError("invalid revocation principal")
-        from .file_lock import cross_process_lock, ensure_private_directory
+        from .record_documents import at
 
-        ensure_private_directory(self.path.parent)
         with self.containment_authority(principal):
             with self._lock:
-                with cross_process_lock(self.path, strict=True):
+                with at(self.path).locked(strict=True):
                     self._loaded = False
                     self._load_if_changed()
                     if principal not in self._cache:
@@ -472,12 +485,11 @@ class RevocationRegistry:
         """
         if not _valid_principal(principal):
             raise ValueError("invalid revocation principal")
-        from .file_lock import cross_process_lock, ensure_private_directory
+        from .record_documents import at
 
-        ensure_private_directory(self.path.parent)
         with self.containment_authority(principal):
             with self._lock:
-                with cross_process_lock(self.path, strict=True):
+                with at(self.path).locked(strict=True):
                     self._loaded = False
                     self._load_if_changed()
                     current = self._cache.get(principal)
@@ -506,12 +518,11 @@ class RevocationRegistry:
         ts = float(now if now is not None else time.time())
         if not math.isfinite(ts) or ts <= 0:
             raise ValueError("revocation timestamp must be finite and positive")
-        from .file_lock import cross_process_lock, ensure_private_directory
+        from .record_documents import at
 
-        ensure_private_directory(self.path.parent)
         with self.containment_authority(principal):
             with self._lock:
-                with cross_process_lock(self.path, strict=True):
+                with at(self.path).locked(strict=True):
                     self._loaded = False
                     self._load_if_changed()
                     data = dict(self._cache)
