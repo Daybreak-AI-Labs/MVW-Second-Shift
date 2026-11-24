@@ -85,7 +85,7 @@ def _managed_locked():
     from contextlib import ExitStack
 
     from .authority_effects import authority_effect_fence
-    from .file_lock import cross_process_lock
+    from .record_documents import at
 
     # Authority changes and external effects share one global-then-store lock
     # order.  An effect re-resolves the trust record while it owns this fence,
@@ -96,7 +96,7 @@ def _managed_locked():
     with ExitStack() as stack:
         stack.enter_context(authority_effect_fence())
         stack.enter_context(_MANAGED_LOCK)
-        stack.enter_context(cross_process_lock(managed_path()))
+        stack.enter_context(at(managed_path()).locked())
         return stack.pop_all()
 
 
@@ -648,7 +648,8 @@ def managed_path():
     """Path to the CLI-managed registry overlay (``agent_trust.json``).
 
     Under the active client's data dir (the tenant floor), so the managed
-    registry is automatically per-deployment/per-client.
+    registry is automatically per-deployment/per-client. It is kept with the
+    other records (:mod:`maverick.record_documents`).
     """
     from .paths import data_dir
     return data_dir("agent_trust.json")
@@ -657,17 +658,21 @@ def managed_path():
 def _load_managed() -> list[dict]:
     import json
 
-    from .file_lock import atomic_read_text, ensure_private_directory, ensure_private_file
+    from .file_lock import ensure_private_directory, ensure_private_file
     from .paths import maverick_home
+    from .record_documents import at, using_postgres
 
     try:
         p = managed_path()
-        ensure_private_directory(maverick_home())
-        ensure_private_directory(p.parent)
-        if not p.exists():
+        if not using_postgres():
+            ensure_private_directory(maverick_home())
+            ensure_private_directory(p.parent)
+            if not p.exists():
+                return []
+            ensure_private_file(p)
+        raw = at(p).read_text()
+        if raw is None:
             return []
-        ensure_private_file(p)
-        raw = atomic_read_text(p)
         if len(raw) > 4 * 1024 * 1024:
             raise AgentTrustError("managed registry exceeds the size limit")
 
@@ -701,14 +706,15 @@ def _load_managed() -> list[dict]:
 def _save_managed(entries: list[dict]) -> None:
     import json
 
-    from .file_lock import atomic_write_text, ensure_private_directory
+    from .file_lock import ensure_private_directory
     from .paths import maverick_home
+    from .record_documents import at, using_postgres
 
     p = managed_path()
-    ensure_private_directory(maverick_home())
-    ensure_private_directory(p.parent)
+    if not using_postgres():
+        ensure_private_directory(maverick_home())
     body = json.dumps(entries[:_MAX_AGENTS], indent=2, sort_keys=True)
-    atomic_write_text(p, body, mode=0o600)
+    at(p).write_text(body)
 
 
 def _entry_from_agent(agent: TrustedAgent) -> dict[str, Any]:

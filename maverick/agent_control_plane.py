@@ -715,7 +715,9 @@ _TIMEBOX_STATUSES = frozenset({
 
 
 def _timebox_state_path():
-    """Tenant-scoped durable schedule state, separate from revocation truth."""
+    """Tenant-scoped durable schedule state, separate from revocation truth.
+
+    Kept with the other records (:mod:`maverick.record_documents`)."""
 
     from .paths import data_dir
 
@@ -804,15 +806,19 @@ def _validate_timebox_record(key: object, value: object) -> dict[str, Any]:
 
 
 def _load_timebox_state(path) -> dict[str, Any]:
-    from .file_lock import atomic_read_text, ensure_private_file
+    from .file_lock import ensure_private_file
+    from .record_documents import at, using_postgres
 
     try:
-        if not path.exists():
+        if not using_postgres():
+            if not path.exists():
+                return _empty_timebox_state()
+            ensure_private_file(path, 0o600)
+            if path.stat().st_size > _MAX_TIMEBOX_STATE_BYTES:
+                raise ValueError("timebox state exceeds capacity")
+        raw = at(path).read_text()
+        if raw is None:
             return _empty_timebox_state()
-        ensure_private_file(path, 0o600)
-        if path.stat().st_size > _MAX_TIMEBOX_STATE_BYTES:
-            raise ValueError("timebox state exceeds capacity")
-        raw = atomic_read_text(path, encoding="utf-8")
         if len(raw.encode("utf-8")) > _MAX_TIMEBOX_STATE_BYTES:
             raise ValueError("timebox state exceeds capacity")
 
@@ -858,7 +864,7 @@ def _load_timebox_state(path) -> dict[str, Any]:
 
 
 def _save_timebox_state(path, state: dict[str, Any]) -> None:
-    from .file_lock import atomic_write_text
+    from .record_documents import at
 
     try:
         records = state.get("records") if isinstance(state, dict) else None
@@ -884,7 +890,7 @@ def _save_timebox_state(path, state: dict[str, Any]) -> None:
         )
         if len(body.encode("utf-8")) > _MAX_TIMEBOX_STATE_BYTES:
             raise ValueError("timebox state exceeds capacity")
-        atomic_write_text(path, body, mode=0o600, encoding="utf-8")
+        at(path).write_text(body)
     except ControlPlaneError:
         raise
     except (OSError, UnicodeError, ValueError) as exc:
@@ -896,11 +902,10 @@ def _mutate_timebox_state(callback):
     """Atomically mutate one tenant's private schedule state."""
 
     try:
-        from .file_lock import cross_process_lock, ensure_private_directory
+        from .record_documents import at
 
         path = _timebox_state_path()
-        ensure_private_directory(path.parent)
-        with cross_process_lock(path, strict=True):
+        with at(path).locked(strict=True):
             state = _load_timebox_state(path)
             result = callback(state)
             _save_timebox_state(path, state)
@@ -1049,7 +1054,9 @@ def _retire_timeboxes_after_manual_release(
         return 0
     # A deployment that never uses time-boxes must not gain a new state file
     # merely because it released an ordinary containment.
-    if not _timebox_state_path().exists():
+    from .record_documents import at
+
+    if not at(_timebox_state_path()).exists():
         return 0
 
     def _mutate(state: dict[str, Any]):
@@ -1540,8 +1547,10 @@ def timeboxed_containments() -> list[dict[str, Any]]:
     """Read the active tenant's durable time-box records, earliest first."""
 
     _active_tenant_scope()  # resolve storage boundary strictly before reading
+    from .record_documents import at
+
     path = _timebox_state_path()
-    if not path.exists():
+    if not at(path).exists():
         return []
     state = _load_timebox_state(path)
     return [
@@ -1554,8 +1563,10 @@ def timeboxed_containments() -> list[dict[str, Any]]:
 
 
 def _claim_due_timeboxes(*, now: float, limit: int) -> list[dict[str, Any]]:
+    from .record_documents import at
+
     path = _timebox_state_path()
-    if not path.exists():
+    if not at(path).exists():
         return []
 
     def _claim(state: dict[str, Any]):
