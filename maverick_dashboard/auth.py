@@ -191,7 +191,7 @@ def _self_authenticated_path(path: str) -> bool:
     authentication."""
     return path in _SELF_AUTH_EXEMPT_PATHS or path.startswith(
         ("/share/", "/scim/", "/form/", "/dsar/response/", "/unsubscribe/", "/saml/",
-         "/auth/invite/", "/api/v1/external/",
+         "/auth/invite/", "/api/v1/external/", "/copilot-studio/",
          "/api/v1/public/consent/", "/api/v1/public/policies/",
          "/api/v1/devices/pairing/", "/rights/", "/api/v1/public/rights/",
          # Public website chat: the publishable key and visitor session are the
