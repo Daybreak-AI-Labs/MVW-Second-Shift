@@ -967,6 +967,7 @@ def record_run(agent_id: str, run: dict, *, shield: Any | None = None) -> dict:
                 goal_id=gid, external_agent=agent_id, outcome=outcome,
                 cost_dollars=cost, steps=len(steps), over_budget=over_budget,
                 over_wall=over_wall)
+    _observe_drift_run(agent_id, run, outcome=outcome, cost=cost)
     return {"goal_id": gid, "over_budget": over_budget, "over_wall": over_wall}
 
 
@@ -1211,6 +1212,7 @@ def finish_run(agent_id: str, goal_id: int, run: dict,
                 goal_id=int(goal_id), external_agent=agent_id,
                 outcome=outcome, cost_dollars=cost, steps=len(steps),
                 over_budget=over_budget, over_wall=over_wall, live=True)
+    _observe_drift_run(agent_id, run, outcome=outcome, cost=cost)
     out = {"goal_id": int(goal_id), "over_budget": over_budget,
            "over_wall": over_wall}
     if contained:
@@ -1240,7 +1242,43 @@ def _finished_run_text(run: dict, shield: Any | None) -> tuple[str, str, list[st
     return summary, outcome, steps
 
 
-def screen(
+def _observe_drift_screen(agent_id: str, tool: str, verdict: dict) -> None:
+    """Pass a finished verdict to drift observation; a failure there stops here."""
+    try:
+        from . import agent_drift
+        agent_drift.observe_screen(agent_id, tool, allowed=bool(verdict.get("allowed")),
+                                   rule=str(verdict.get("rule") or ""))
+    except Exception:
+        log.debug("external_agents: drift observation failed", exc_info=True)
+
+
+def _observe_drift_run(agent_id: str, run: dict, *, outcome: str, cost: float) -> None:
+    """Pass a finished run's numbers, tool names (``tools``) and self-declared
+    version, config digest and model (``declared``) to drift observation, never
+    its text; a failure there stops here."""
+    try:
+        from . import agent_drift
+        agent_drift.observe_run(
+            agent_id, cost_dollars=cost, outcome=outcome,
+            input_tokens=run.get("input_tokens") or 0,
+            output_tokens=run.get("output_tokens") or 0,
+            tool_calls=run.get("tool_calls") or 0,
+            tools=run.get("tools") or (), declared=run.get("declared"))
+    except Exception:
+        log.debug("external_agents: drift observation failed", exc_info=True)
+
+
+def screen(agent_id: str, tool: str, *, detail: str = "", risk: str | None = None,
+           shield: Any | None = None) -> dict:
+    """Decide one proposed external action BEFORE the agent takes it (see
+    :func:`_screen_decision`), then pass the verdict to drift observation:
+    once per call, whichever path produced it."""
+    verdict = _screen_decision(agent_id, tool, detail=detail, risk=risk, shield=shield)
+    _observe_drift_screen(agent_id, tool, verdict)
+    return verdict
+
+
+def _screen_decision(
     agent_id: str,
     tool: str,
     *,

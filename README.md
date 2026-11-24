@@ -12,6 +12,12 @@ Early. What works today:
   and spend, cap its budget, contain it after repeated refusals, and suspend
   or release it. Operators use the **Outside agents** and **Agent controls**
   pages; agents call the API under `/api/v1/external/`.
+- **Drift.** Each enrolled agent's activity is recorded as daily totals. An
+  administrator approves a baseline; after that a new tool, a shifted tool
+  mix, changed volume or cost, more refusals or failures, or a changed model,
+  version or configuration is reported on the agent's page, written to the
+  audit log and alerted once. Set `[agent_drift] on_drift = "contain"` to
+  also block an agent on a high-severity change.
 - **Sign-in.** OpenID Connect (for example Microsoft Entra ID), or a single
   break-glass token. With neither configured the app only answers on the
   local machine.
@@ -19,7 +25,7 @@ Early. What works today:
   local store and repeated-work discovery. Its pages are not here yet.
 
 Not here yet: the approvals queue page, the agent factory, the AI asset
-inventory, drift views, and the Ekko pages.
+inventory, and the Ekko pages.
 
 ## Run
 

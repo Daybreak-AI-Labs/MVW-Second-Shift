@@ -1,0 +1,82 @@
+{# Drift for one outside agent: whether it still behaves like the baseline a
+   person approved, what changed, and the actions an operator can take. #}
+{% set _DRIFT_STATE = {'no_baseline': 'No baseline yet', 'learning': 'Collecting activity',
+                       'within_baseline': 'Matches its baseline', 'drifted': 'Changed since its baseline'} %}
+{% set _SEVERITY = {'high': 'High', 'medium': 'Medium', 'low': 'Low'} %}
+<div class="panel" id="agent-drift" data-agent="{{ a.id }}">
+  <h2 style="margin-top:0">Behaviour and configuration changes</h2>
+  {% if drift is none %}
+  <p class="muted">The record of this agent's activity could not be read, so nothing is being compared. Ask an administrator to check the server's data folder.</p>
+  {% else %}
+  <p style="margin: 0 0 var(--space-3);">
+    <span class="badge {{ 'failure' if drift.state == 'drifted' else ('active' if drift.state == 'within_baseline' else '') }}">{{ _DRIFT_STATE.get(drift.state, drift.state | humanize) }}</span>
+    {% if drift.baseline %}<span class="badge">Baseline approved {{ drift.baseline.approved_at | datetime }}{% if drift.baseline.approved_by %} by {{ (drift.baseline.approved_by | identity).name }}{% endif %}</span>{% endif %}
+    {% if drift.last_observed_at %}<span class="badge">Last activity {{ drift.last_observed_at | datetime }}</span>{% endif %}
+  </p>
+  {% if drift.reason %}<p class="muted">{{ drift.reason }}</p>{% endif %}
+  {% if drift.state == 'no_baseline' %}
+  <p class="muted">A baseline is this agent's normal: the tools it uses, how often it runs, what it costs and how it is set up. Approve one after it has worked normally for a while; from then on any move away from it is reported here.</p>
+  {% endif %}
+  {% if drift.findings %}
+  <table>
+    <thead><tr><th>Severity</th><th>What changed</th><th>Baseline</th><th>Now</th><th></th></tr></thead>
+    <tbody>
+      {% for f in drift.findings %}
+      <tr>
+        <td><span class="badge {{ 'failure' if f.severity == 'high' and not f.acknowledged else '' }}">{{ _SEVERITY.get(f.severity, f.severity) }}</span></td>
+        <td>{{ f.summary }}</td>
+        <td class="muted">{{ f.baseline if f.baseline is not none else '—' }}</td>
+        <td>{{ f.current if f.current is not none else '—' }}</td>
+        <td>{% if f.acknowledged %}<span class="muted">Acknowledged</span>{% else %}
+          <button type="button" class="btn btn--ghost" data-drift-ack="{{ f.key }}"{% if not can_operate %} disabled aria-disabled="true"{% endif %}>Acknowledge</button>{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+  <div class="mv-row__actions" style="flex-wrap: wrap; margin-top: var(--space-3);">
+    <button type="button" class="btn {{ 'btn--primary' if not drift.baseline else 'btn--ghost' }}" id="drift-approve"{% if not can_manage %} disabled aria-disabled="true"{% endif %}>{{ 'Approve a new baseline' if drift.baseline else 'Approve current behaviour as the baseline' }}</button>
+    <button type="button" class="btn btn--ghost" id="drift-check"{% if not can_operate %} disabled aria-disabled="true"{% endif %}>Check now</button>
+  </div>
+  {% if not can_manage %}<p class="muted" style="margin: var(--space-2) 0 0; font-size: var(--text-sm);">Only an administrator can approve a baseline.</p>{% endif %}
+  {% endif %}
+</div>
+<script nonce="{{ csp_script_nonce }}">
+(function () {
+  var panel = document.getElementById("agent-drift");
+  if (!panel) return;
+  var base = "/api/v1/external-agents/" + encodeURIComponent(panel.getAttribute("data-agent")) + "/drift";
+  function post(path, body) {
+    return { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) };
+  }
+  async function send(path, body, what) {
+    try { return await window.mvFetchJSON(base + path, post(path, body), what); }
+    catch (e) { return { failed: e.message || "The request did not go through." }; }
+  }
+  function done(message) { window.mvToast(message); setTimeout(function () { window.location.reload(); }, 400); }
+  var approve = document.getElementById("drift-approve");
+  if (approve) approve.addEventListener("click", async function () {
+    if (!(await window.mvConfirm("Approve this agent's recent behaviour and setup as its baseline? Earlier findings are cleared and later changes are compared with this.", { okText: "Approve baseline" }))) return;
+    var out = await send("/baseline", {}, "approve the baseline");
+    if (out.failed) {
+      if (!(await window.mvConfirm(out.failed + " Approve it anyway?", { okText: "Approve anyway" }))) return;
+      out = await send("/baseline", { force: true }, "approve the baseline");
+      if (out.failed) { window.mvToast(out.failed, { error: true }); return; }
+    }
+    done("Baseline approved.");
+  });
+  var check = document.getElementById("drift-check");
+  if (check) check.addEventListener("click", async function () {
+    var out = await send("/check", {}, "check for changes");
+    if (out.failed) { window.mvToast(out.failed, { error: true }); return; }
+    done((out.new_findings || []).length ? "New changes found." : "Checked. Nothing new.");
+  });
+  panel.querySelectorAll("[data-drift-ack]").forEach(function (b) {
+    b.addEventListener("click", async function () {
+      var out = await send("/acknowledge", { finding: b.getAttribute("data-drift-ack") }, "acknowledge the change");
+      if (out.failed) { window.mvToast(out.failed, { error: true }); return; }
+      done("Acknowledged.");
+    });
+  });
+})();
+</script>

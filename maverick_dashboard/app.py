@@ -372,6 +372,27 @@ def _assert_dashboard_auth_configured() -> None:
     )
 
 
+async def _drift_check_loop() -> None:
+    """Compare every enrolled outside agent with its baseline on a timer.
+
+    New findings are audited and alerted by the check itself. A failed pass is
+    logged and the loop carries on; it never stops the app.
+    """
+    while True:
+        minutes = 15
+        try:
+            from maverick import agent_drift
+
+            minutes = agent_drift.settings().get("check_minutes", 15)
+            if agent_drift.enabled():
+                await run_in_threadpool(agent_drift.check_all)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.warning("scheduled agent drift check failed", exc_info=True)
+        await asyncio.sleep(max(1, int(minutes)) * 60)
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     """Start-up and shut-down for the web app.
@@ -380,6 +401,7 @@ async def _lifespan(app: FastAPI):
     same data folder (records are hash-chained and assume one writer), and the
     app must not serve without sign-in configured.
     """
+    import contextlib
     from functools import partial
 
     from maverick.control_plane_lease import acquire as _acquire_control_plane
@@ -397,7 +419,13 @@ async def _lifespan(app: FastAPI):
             warn_if_untrusted_proxy_config()
         except Exception:  # pragma: no cover -- a warning must never block startup
             pass
-        yield
+        drift_checks = asyncio.create_task(_drift_check_loop())
+        try:
+            yield
+        finally:
+            drift_checks.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await drift_checks
     finally:
         await run_in_threadpool(partial(close_postgres_pools, timeout=5))
         if owns_lease:
@@ -536,6 +564,9 @@ app.include_router(api_router)
 from .static_files import router as static_files_router  # noqa: E402
 
 app.include_router(static_files_router)
+from .agent_drift_api import router as agent_drift_router  # noqa: E402
+
+app.include_router(agent_drift_router)
 
 
 def _compress_enabled() -> bool:
@@ -1554,6 +1585,17 @@ async def external_agents_page(request: Request) -> HTMLResponse:
     )
 
 
+def _agent_drift_view(agent_id: str) -> dict | None:
+    """The agent's drift state for its page; None when the record cannot be read."""
+    try:
+        from maverick import agent_drift
+
+        return agent_drift.detail(agent_id)
+    except Exception:
+        log.warning("agent drift record unavailable", exc_info=True)
+        return None
+
+
 @app.get("/external-agents/{agent_id}", response_class=HTMLResponse)
 async def external_agent_scorecard(request: Request, agent_id: str) -> HTMLResponse:
     """One external agent's scorecard: ceilings, spend vs budget, run
@@ -1568,7 +1610,9 @@ async def external_agent_scorecard(request: Request, agent_id: str) -> HTMLRespo
     access = None
     return templates.TemplateResponse(
         request, "external_agent_detail.html",
-        {"a": detail, "can_manage": can_manage, "access": access},
+        {"a": detail, "can_manage": can_manage, "access": access,
+         "can_operate": has_permission(request, "operate"),
+         "drift": await run_in_threadpool(_agent_drift_view, agent_id)},
         headers={"Cache-Control": "private, no-store"}
     )
 
