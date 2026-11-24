@@ -13,10 +13,10 @@ import httpx
 import pytest
 
 from tests.new import entra_kit as kit
+from tests.new import test_teams_approvals as teams
 from tests.new.entra_kit import PEOPLE, Graph
-from tests.new.test_teams_approvals import (  # noqa: F401 -- fixtures shared with the Teams tests
+from tests.new.test_teams_approvals import (
     AAD,
-    ROLES,
     SERVICE_URL,
     TENANT,
     _click,
@@ -24,13 +24,11 @@ from tests.new.test_teams_approvals import (  # noqa: F401 -- fixtures shared wi
     _message_text,
     _park,
     _status,
-    bot,
-    env,
-    inline_background,
-    rsa_key,
-    transport,
-    world,
 )
+
+# The Teams tests' own set-up (bot, signing key, world model, recording transport), used as it is.
+rsa_key, env, world, transport, bot, inline_background = (
+    teams.rsa_key, teams.env, teams.world, teams.transport, teams.bot, teams.inline_background)
 
 ERIN, FRANK = PEOPLE["erin"], PEOPLE["frank"]
 AAD["erin"], AAD["frank"] = ERIN, FRANK
