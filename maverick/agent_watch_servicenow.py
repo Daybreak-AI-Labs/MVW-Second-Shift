@@ -42,7 +42,7 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from typing import Any
 
-from . import agent_watch
+from . import agent_watch, agent_watch_changes
 from .agent_watch import OBSERVED_SNAPSHOT, ObservedAgent, WatchConfigError, WatchError
 
 #: An instance's own address. Customers may add company-branded custom URLs,
@@ -171,12 +171,35 @@ class ServiceNowWatcher:
         published = [version["label"] for version in live if version["state"] == "published"]
         active = {setting["active"] for setting in settings}
         parts = {**agent["parts"], "settings": sorted(setting["digest"] for setting in settings),
-                 "versions": sorted(version["digest"] for version in live), "tools": sorted(tools)}
+                 "versions": sorted(version["digest"] for version in live),
+                 "tools": sorted(tool["digest"] for tool in tools)}
+        flags = {key: _agreed(settings, key) for key in ("active", "public", "advanced_mode", "agent_learning")}
         return ObservedAgent(
             platform=self.name, external_id=f"{host}/{agent['sys_id']}", name=agent["name"] or "",
             version=published[0] if len(published) == 1 else "", updated_at=agent["updated"] or "",
             state=_STATES.get(active.pop(), "") if len(active) == 1 else "",
-            fingerprint=agent_watch.fingerprint(parts), binding_strength=OBSERVED_SNAPSHOT)
+            fingerprint=agent_watch.fingerprint(parts), binding_strength=OBSERVED_SNAPSHOT,
+            details=self._described(agent, flags, settings, live, published, tools))
+
+    def _described(self, agent: dict, flags: dict, settings: list[dict], live: list[dict],
+                   published: list[str], tools: list[dict]) -> dict:
+        """What is kept to say later what changed. Labels and flags from the
+        columns named in the class docstring, and digests of the long ones
+        (the instructions of the versions that are not drafts, and the role,
+        description, condition and script of the agent); none of that text is
+        kept. A tool without a name is shown by the start of its id."""
+        digest = agent_watch_changes.digest
+        users = {setting["run_as_user"] for setting in settings}
+        names = {tool["label"]: tool["digest"] for tool in tools}
+        return agent_watch_changes.describe(self.name, {
+            **agent["details"], **flags, "version": published[0] if len(published) == 1 else None,
+            "versions": [f"{version['label']} ({version['state']})" for version in live if version["label"]],
+            "version_settings": {f"{version['label']} ({version['state']})": digest(version["digest"])
+                                 for version in live if version["label"]},
+            "instructions": digest(agent_watch.fingerprint(sorted(
+                version["instructions"] or "" for version in live))) if live else None,
+            "run_as_user": users.pop() if len(users) == 1 else None,
+            "tools": list(names), "tool_settings": {label: digest(code) for label, code in names.items()}})
 
 
 def _scope(settings: dict, section: str) -> str:
@@ -255,6 +278,13 @@ def _by_offset(first_url: str) -> Callable[[dict, str], str | None]:
     return next_url
 
 
+def _agreed(settings: list[dict], key: str) -> bool | None:
+    """A flag the agent's settings records agree on, or ``None`` when there is
+    none or they differ."""
+    values = {setting[key] for setting in settings}
+    return values.pop() if len(values) == 1 else None
+
+
 def _by_agent(kept: list[tuple[str | None, Any]]) -> dict[str, list]:
     """Settings, version or tool records grouped under the agent each names.
     One that names no agent belongs to something else and is left out."""
@@ -316,17 +346,26 @@ def _agent(row: dict) -> dict:
              "record_type": _text(row, "record_type"), "parent": _reference(row, "parent"),
              **{key: _hashed(_text(row, key))
                 for key in ("role", "description", "condition", "context_processing_script")}}
+    details = {"name": name, "agent_type": parts["agent_type"], "channel": parts["channel"],
+               "record_type": parts["record_type"], "parent": parts["parent"],
+               "role": agent_watch_changes.digest(parts["role"]),
+               "description": agent_watch_changes.digest(parts["description"]),
+               "condition": agent_watch_changes.digest(parts["condition"]),
+               "context_script": agent_watch_changes.digest(parts["context_processing_script"])}
     return {"sys_id": _sys_id(row.get("sys_id")), "name": name,
-            "updated": _timestamp(row, "sys_updated_on"), "parts": parts}
+            "updated": _timestamp(row, "sys_updated_on"), "parts": parts, "details": details}
 
 
 def _setting(row: dict) -> tuple[str | None, dict]:
-    """One ``sn_aia_agent_config`` record: the agent it belongs to, its active
-    flag, and a digest of the settings that are fingerprinted."""
+    """One ``sn_aia_agent_config`` record: the agent it belongs to, its flags,
+    and a digest of the settings that are fingerprinted."""
     active = _flag(row, "active")
     parts = {"active": active, "run_as_user": _reference(row, "run_as_user"),
              **{key: _flag(row, key) for key in ("public", "advanced_mode", "agent_learning")}}
-    return _reference(row, "agent"), {"active": active, "digest": agent_watch.fingerprint(parts)}
+    return _reference(row, "agent"), {"active": active, "digest": agent_watch.fingerprint(parts),
+                                      "public": parts["public"], "advanced_mode": parts["advanced_mode"],
+                                      "agent_learning": parts["agent_learning"],
+                                      "run_as_user": parts["run_as_user"]}
 
 
 def _version(row: dict) -> tuple[str | None, dict]:
@@ -339,16 +378,18 @@ def _version(row: dict) -> tuple[str | None, dict]:
              "instructions": _hashed(_text(row, "instructions")),
              "condition": _hashed(_text(row, "condition"))}
     return _reference(row, "target_id"), {"state": state, "label": name or number or "",
-                                          "digest": agent_watch.fingerprint(parts)}
+                                          "digest": agent_watch.fingerprint(parts),
+                                          "instructions": parts["instructions"]}
 
 
-def _tool(row: dict) -> tuple[str | None, str]:
+def _tool(row: dict) -> tuple[str | None, dict]:
     """One ``sn_aia_agent_tool_m2m`` record: the agent, and a digest of the
     tool it links to. How the tool may be used is not read column by column;
     a change to it moves the link's ``sys_updated_on``."""
     parts = {"tool": _reference(row, "tool"), "name": _text(row, "name"),
              "sys_updated_on": _timestamp(row, "sys_updated_on")}
-    return _reference(row, "agent"), agent_watch.fingerprint(parts)
+    label = parts["name"] or (parts["tool"] or "")[:8] or "tool"
+    return _reference(row, "agent"), {"digest": agent_watch.fingerprint(parts), "label": label}
 
 
 agent_watch.register(ServiceNowWatcher.name, ServiceNowWatcher)

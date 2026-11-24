@@ -45,7 +45,7 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote
 
-from . import agent_watch
+from . import agent_watch, agent_watch_changes
 from .agent_watch import (
     IMMUTABLE_REVISION,
     OBSERVED_SNAPSHOT,
@@ -222,7 +222,12 @@ class EntraAgentIdWatcher:
             platform=self.name, external_id=_guid(row, "id"), name=parts["displayName"] or "",
             state={True: "enabled", False: "disabled"}.get(enabled, ""),
             fingerprint=agent_watch.fingerprint({**parts, "accountEnabled": enabled}),
-            binding_strength=OBSERVED_SNAPSHOT)
+            binding_strength=OBSERVED_SNAPSHOT,
+            details=agent_watch_changes.describe(self.name, {
+                "name": parts["displayName"], "enabled": enabled,
+                "blueprint": parts["agentIdentityBlueprintId"],
+                "disabled_by_microsoft": parts["disabledByMicrosoftStatus"],
+                "identity_type": parts["servicePrincipalType"]}))
 
 
 #: https://learn.microsoft.com/en-us/azure/foundry/agents/quickstarts/prompt-agent
@@ -299,7 +304,11 @@ class FoundryWatcher:
             updated_at=_unix_time(latest.get("created_at")),
             state=state if state in ("enabled", "disabled") else "",
             fingerprint=agent_watch.fingerprint({"version": version, **_defined(definition)}),
-            binding_strength=IMMUTABLE_REVISION)
+            binding_strength=IMMUTABLE_REVISION,
+            details=agent_watch_changes.describe(self.name, {
+                "name": name, "version": version,
+                "state": state if state in ("enabled", "disabled") else None,
+                **_described(definition)}))
 
 
 def _version(value: Any) -> str:
@@ -341,6 +350,39 @@ def _defined(definition: dict) -> dict:
     return {"kind": _optional(definition, "kind", str), "model": _optional(definition, "model", str),
             "instructions": None if instructions is None else _sha256(instructions),
             "tools": sorted(_sha256(_canonical(tool)) for tool in tools)}
+
+
+def _described(definition: dict) -> dict:
+    """What a version's definition contributes to its description: the model,
+    the kind, each tool's short label and a digest of that tool's settings, and
+    a digest of the instructions. Nothing the author wrote is kept."""
+    instructions = _optional(definition, "instructions", str)
+    labels: dict[str, str] = {}
+    for tool in _optional(definition, "tools", list) or []:
+        label = _tool_label(tool)
+        while label in labels:
+            label += "#"
+        labels[label] = agent_watch_changes.digest(_sha256(_canonical(tool))) or ""
+    return {"kind": _optional(definition, "kind", str), "model": _optional(definition, "model", str),
+            "instructions": agent_watch_changes.digest(None if instructions is None else _sha256(instructions)),
+            "tools": list(labels), "tool_settings": labels}
+
+
+def _tool_label(tool: Any) -> str:
+    """A tool as a short label: its type, and its name or MCP server label when
+    it has one (``function:send_email``, ``mcp:github``, ``code_interpreter``).
+    The tool types and the name and ``server_label`` fields are those in
+    https://learn.microsoft.com/azure/foundry/agents/how-to/tools/toolbox
+    (tool names) and the Foundry agent reference. Only these two short fields
+    are read; descriptions and settings are not."""
+    if not isinstance(tool, dict):
+        return "tool"
+    kind = tool.get("type") if isinstance(tool.get("type"), str) else "tool"
+    for key in ("name", "server_label"):
+        named = tool.get(key)
+        if isinstance(named, str) and named.strip():
+            return f"{kind}:{named.strip()}"
+    return kind
 
 
 def _canonical(value: Any) -> str:
@@ -432,7 +474,10 @@ class CopilotStudioWatcher:
         return ObservedAgent(
             platform=self.name, external_id=f"{host}/{_guid(row, 'botid')}", name=name,
             updated_at=modified, state=_BOT_STATES.get(state, ""),
-            fingerprint=agent_watch.fingerprint(parts), binding_strength=OBSERVED_SNAPSHOT)
+            fingerprint=agent_watch.fingerprint(parts), binding_strength=OBSERVED_SNAPSHOT,
+            details=agent_watch_changes.describe(self.name, {
+                "name": name, "state": _BOT_STATES.get(state), "status_code": parts["statuscode"],
+                "published": parts["publishedon"], "modified": modified}))
 
 
 agent_watch.register(EntraAgentIdWatcher.name, EntraAgentIdWatcher)
