@@ -65,6 +65,13 @@ def _panel(client) -> str:
     return page.text.split('id="platform-checks"', 1)[1].split('id="xa-add"', 1)[0]
 
 
+def _roster(client) -> str:
+    """The roster: agents the checks found, and agents added here, in one list."""
+    page = client.get("/external-agents")
+    assert page.status_code == 200
+    return page.text.split('id="xa-roster"', 1)[1].split('id="xa-connect"', 1)[0]
+
+
 def test_the_page_says_when_platform_checks_are_off(client, settings):
     settings("")
     panel = _panel(client)
@@ -78,10 +85,10 @@ def test_a_platform_not_checked_yet_is_shown_as_such(client):
 def test_an_agent_nobody_added_is_listed_with_the_reference_to_claim_it(client):
     FakePlatform.agents = [_seen("a-1", "Refund <b>bot</b>"), _seen("a-2", "Invoice helper")]
     assert client.post("/api/v1/agent-watch/sync").status_code == 200
-    panel = _panel(client)
-    assert "2 agents are on your platforms but not added here" in panel
-    assert "Refund &lt;b&gt;bot&lt;/b&gt;" in panel and "<b>bot</b>" not in panel
-    assert 'data-ref="fake:a-1"' in panel and "<code" in panel and "fake:a-2" in panel
+    assert "2 agents are on your platforms but not added here" in _panel(client)
+    roster = _roster(client)
+    assert "Refund &lt;b&gt;bot&lt;/b&gt;" in roster and "<b>bot</b>" not in roster
+    assert 'data-ref="fake:a-1"' in roster and 'data-level="watched"' in roster and "fake:a-2" in roster
 
 
 def test_claiming_an_agent_takes_it_off_the_list(client):
@@ -90,13 +97,13 @@ def test_claiming_an_agent_takes_it_off_the_list(client):
     added = client.post("/api/v1/external-agents", json={
         "id": "refund-bot", "platform": "custom", "owner": "ops@example.com", "external_ref": "fake:a-1"})
     assert added.status_code == 201, added.text
-    panel = _panel(client)  # at once, without waiting for the next check
-    assert "1 agent is on your platforms but not added here" in panel
-    assert 'data-ref="fake:a-1"' not in panel and 'data-ref="fake:a-2"' in panel
+    assert "1 agent is on your platforms but not added here" in _panel(client)  # at once, without waiting for a check
+    roster = _roster(client)
+    assert 'data-ref="fake:a-1"' not in roster and 'data-ref="fake:a-2"' in roster
     client.post("/api/v1/agent-watch/sync")
-    panel = _panel(client)
-    assert "1 agent is on your platforms but not added here" in panel
-    assert 'data-ref="fake:a-1"' not in panel and 'data-ref="fake:a-2"' in panel
+    assert "1 agent is on your platforms but not added here" in _panel(client)
+    roster = _roster(client)
+    assert 'data-ref="fake:a-1"' not in roster and 'data-ref="fake:a-2"' in roster
 
 
 def test_a_failed_check_is_shown_with_its_plain_reason(client):

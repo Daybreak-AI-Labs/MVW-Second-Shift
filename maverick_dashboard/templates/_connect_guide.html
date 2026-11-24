@@ -1,0 +1,134 @@
+{#- The guided "connect an agent" path: plain steps for the agent's platform,
+    then a wait for its first call. Opened from a row's Connect button, or when
+    the page is opened with ?connect=<agent id>. `guides` is connect_guide.all_guides();
+    `connect_agent` is the enrolled agent's roster row or none. All text from an
+    agent or platform is set with textContent. -#}
+<section class="panel" id="xa-connect" tabindex="-1" aria-labelledby="xa-connect-title" hidden
+  {% if connect_agent %}data-open-id="{{ connect_agent.id }}" data-open-label="{{ connect_agent.description or (connect_agent.id | humanize) }}" data-open-platform="{{ connect_agent.platform }}" data-open-gate="{{ connect_agent.gate }}" data-open-new="1"{% endif %}>
+  <h2 id="xa-connect-title" style="margin-top:0">Connect <span id="xa-connect-name">your agent</span></h2>
+  <p class="muted" id="xa-connect-added" hidden style="margin-top:0;">The agent is added. Three steps left: its access key, what to put where on <span id="xa-connect-platform"></span>, and a check that it works.</p>
+  {% for g in guides %}
+  <div data-guide-for="{{ g.platform }}"{% if g.platform == 'copilot' %} data-gate="{{ g.gate }}"{% endif %} hidden>
+    <h3 style="margin: var(--space-3) 0 var(--space-2);">{{ g.label }}</h3>
+    <ol style="margin:0 0 var(--space-3); padding-left:1.2rem;">
+      {% for step in g.steps %}
+      <li style="margin-bottom: var(--space-2);"><strong>{{ step.title }}.</strong> {{ step.body }}
+        {% if step.title == 'Create the access key' %}
+        <div style="margin-top: var(--space-2);">
+          <button type="button" class="btn btn--primary" data-xa-guide-key{% if not external_agents_can_manage %} disabled aria-disabled="true"{% endif %}>Create access key</button>
+          <span data-xa-guide-keybox hidden><code data-xa-guide-token style="word-break: break-all;"></code> <button type="button" class="btn btn--ghost" data-xa-guide-copy>Copy the key</button></span>
+        </div>
+        {% endif %}
+        {% if step.title == 'Give the platform the connection file' and enabled %}
+        <div style="margin-top: var(--space-2);"><a class="btn btn--ghost" href="/api/v1/external/openapi.json" download="second-shift-connection.json">Download the connection file</a></div>
+        {% elif step.title in ('Add the connection in Copilot Studio',) and enabled %}
+        <div style="margin-top: var(--space-2);"><a class="btn btn--ghost" href="/api/v1/external/openapi.json" download="second-shift-connection.json">Download the connection file</a></div>
+        {% endif %}
+      </li>
+      {% endfor %}
+    </ol>
+    <p class="muted" style="font-size: var(--text-sm);">{{ g.untested }} The same steps are in docs/connect-an-agent.md.</p>
+  </div>
+  {% endfor %}
+  <h3 style="margin: var(--space-3) 0 var(--space-2);">Waiting to hear from the agent</h3>
+  <p id="xa-connect-status" role="status" aria-live="polite" style="margin: 0 0 var(--space-2);">Waiting to hear from the agent. Run it once so it makes a call; this page turns to Connected as soon as it does.</p>
+  <p>
+    <button type="button" class="btn btn--ghost" id="xa-connect-again" hidden>Check again</button>
+    <button type="button" class="btn btn--ghost" id="xa-connect-close">Close</button>
+  </p>
+</section>
+<script nonce="{{ csp_script_nonce }}">
+(function () {
+  var panel = document.getElementById("xa-connect");
+  if (!panel) return;
+  var POLL_MS = 4000, MAX_POLLS = 60;  // about four minutes, then it stops and says so
+  var current = null, timer = null, polls = 0, baseline = null;
+  var statusEl = document.getElementById("xa-connect-status");
+  var againBtn = document.getElementById("xa-connect-again");
+  function say(text) { statusEl.textContent = text; }
+  function when(sec) { return sec ? new Date(sec * 1000).toLocaleString() : ""; }
+  function stop() { if (timer) { clearTimeout(timer); timer = null; } }
+  function settle(info) {
+    // Connected counts only for a call newer than the one the page started with.
+    var fresh = info.level === "connected" && (baseline === null || (info.last_heard_at || 0) > baseline);
+    if (!fresh) return false;
+    stop(); againBtn.hidden = true;
+    say("Connected. Second Shift heard from it on " + when(info.last_heard_at) + " (" + (info.received || "a call") + ").");
+    var done = document.getElementById("xa-connect-close"); done.textContent = "Done";
+    done.dataset.reload = "1";
+    return true;
+  }
+  async function check(first) {
+    if (!current) return;
+    var info;
+    try { info = await window.mvFetchJSON("/api/v1/external-agents/" + encodeURIComponent(current) + "/connection", { headers: { Accept: "application/json" } }, "check the connection"); }
+    catch (e) { stop(); say(e.message + " Press Check again to try once more."); againBtn.hidden = false; return; }
+    if (first) {
+      baseline = info.level === "connected" ? (info.last_heard_at || 0) : null;
+      if (baseline !== null) say("Second Shift last heard from it on " + when(info.last_heard_at) + ". Waiting for a new call.");
+    } else if (settle(info)) return;
+    if (++polls >= MAX_POLLS) {
+      stop(); say("Still waiting: Second Shift has not heard from it in the last few minutes. Check the steps above, run the agent once, then press Check again.");
+      againBtn.hidden = false; return;
+    }
+    timer = setTimeout(function () { check(false); }, POLL_MS);
+  }
+  function begin() {
+    stop(); polls = 0; againBtn.hidden = true;
+    say("Waiting to hear from the agent. Run it once so it makes a call; this page turns to Connected as soon as it does.");
+    check(true);
+  }
+  function open(id, label, platform, gate, added) {
+    current = id; baseline = null;
+    document.getElementById("xa-connect-name").textContent = label || id;
+    document.getElementById("xa-connect-added").hidden = !added;
+    Array.prototype.forEach.call(panel.querySelectorAll("[data-guide-for]"), function (el) {
+      var match = el.getAttribute("data-guide-for") === platform &&
+        (platform !== "copilot" || el.getAttribute("data-gate") === (gate || "none"));
+      el.hidden = !match;
+      if (match) document.getElementById("xa-connect-platform").textContent = el.querySelector("h3").textContent;
+      var box = el.querySelector("[data-xa-guide-keybox]"); if (box) box.hidden = true;
+    });
+    if (!panel.querySelector('[data-guide-for="' + platform + '"]:not([hidden])')) {
+      var other = panel.querySelector('[data-guide-for="custom"]'); if (other) other.hidden = false;
+    }
+    var done = document.getElementById("xa-connect-close"); done.textContent = "Close"; delete done.dataset.reload;
+    panel.hidden = false; panel.focus(); panel.scrollIntoView({ behavior: "smooth", block: "start" });
+    begin();
+  }
+  document.querySelectorAll("[data-xa-connect]").forEach(function (b) {
+    b.addEventListener("click", function () {
+      open(b.getAttribute("data-xa-connect"), b.getAttribute("data-xa-label"), b.getAttribute("data-xa-platform"),
+           b.getAttribute("data-xa-gate"), false);
+    });
+  });
+  againBtn.addEventListener("click", begin);
+  document.getElementById("xa-connect-close").addEventListener("click", function () {
+    stop(); current = null;
+    if (this.dataset.reload) { window.location.assign("/external-agents"); return; }
+    panel.hidden = true;
+  });
+  panel.addEventListener("click", async function (event) {
+    var key = event.target.closest ? event.target.closest("[data-xa-guide-key]") : null;
+    var copy = event.target.closest ? event.target.closest("[data-xa-guide-copy]") : null;
+    if (copy) { window.mvCopy(copy.parentNode.querySelector("[data-xa-guide-token]").textContent); return; }
+    if (!key || key.disabled || !current) return;
+    var out;
+    try {
+      out = await window.mvFetchJSON("/api/v1/external-agents/" + encodeURIComponent(current) + "/credentials", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ surface: "rest" }),
+      }, "create the access key");
+    } catch (e) { window.mvToast(e.message, { error: true }); return; }
+    var box = key.parentNode.querySelector("[data-xa-guide-keybox]");
+    box.querySelector("[data-xa-guide-token]").textContent = out.token;
+    box.hidden = false;
+    window.mvToast("Access key created. Copy it now; it is not shown again.");
+  });
+  // The shared page helpers load after this script, so open the guide once the page is ready.
+  if (panel.dataset.openId) {
+    window.addEventListener("load", function () {
+      open(panel.dataset.openId, panel.dataset.openLabel, panel.dataset.openPlatform, panel.dataset.openGate, true);
+    });
+  }
+})();
+</script>

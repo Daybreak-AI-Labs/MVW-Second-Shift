@@ -37,6 +37,10 @@ class ExternalAgentIn(BaseModel):
     # The agent's record on its home platform, "<platform check>:<id>". None keeps
     # the stored link on re-enrollment and "" removes it.
     external_ref: str | None = Field(default=None, max_length=300)
+    # The risk rating from which a person must approve this agent's actions ("" removes
+    # it), and which starter rule set the form began from.
+    approval_at: str | None = Field(default=None, pattern="^(low|medium|high|)$")
+    starter: str | None = Field(default=None, max_length=32)
 
 
 class ExternalCredentialIn(BaseModel):
