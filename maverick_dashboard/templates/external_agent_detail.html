@@ -36,6 +36,8 @@
 
   {% include "_agent_drift_panel.html" %}
 
+  {% include "_model_findings_panel.html" %}
+
   {% if access %}
   <details class="panel" id="agent-access">
     <summary><strong>Check access</strong> <span class="badge">{{ access.label }}</span> <span class="sub">— what this agent can do here, and which rule allows it</span></summary>

@@ -155,6 +155,22 @@ def _drift(section: dict) -> None:
     section.update(lines=_order(items)[:SHOWN], count=total, watching="changes in how agents behave")
 
 
+def _drift_and_models(section: dict) -> None:
+    """The agent findings, then the findings on the models agents use. A model
+    register that cannot be read leaves the agent findings as they are."""
+    _drift(section)
+    try:
+        from maverick import model_register
+
+        items, count = model_register.home_items()
+    except Exception:  # noqa: BLE001 - the models are an addition; their failure must not hide agent drift
+        log.warning("home page: model findings could not be read", exc_info=True)
+        return
+    if count:
+        section.update(lines=_order([*section["lines"], *items])[:SHOWN], count=section["count"] + count,
+                       watching="changes in how agents behave and in the data around their models")
+
+
 def _blocked_agents(section: dict) -> None:
     from maverick import external_agents, revocation
 
@@ -294,7 +310,7 @@ def build(request: Request) -> dict[str, Any]:
         plan.append(("approvals", "Waiting for your decision", "/approvals", "Open approvals", "approve",
                      lambda s: _approvals(s, request)))
     if _allowed(request, "view"):
-        plan.append(("drift", "Agents behaving differently", _AGENTS_PAGE, "Open outside agents", "view", _drift))
+        plan.append(("drift", "Agents behaving differently", _AGENTS_PAGE, "Open outside agents", "view", _drift_and_models))
         plan.append(("agents", "Agents that are blocked, over budget or paused", _AGENTS_PAGE, "Open outside agents", "view",
                      _blocked_agents))
         plan.append(("platforms", "Found on your platforms", f"{_AGENTS_PAGE}#platform-checks", "Open platform checks", "view",

@@ -663,6 +663,13 @@ app.include_router(create_agent_control_plane_page_router(templates))
 from .audit_page import create_audit_page_router  # noqa: E402
 
 app.include_router(create_audit_page_router(templates))
+from .models_api import agent_router as models_agent_router  # noqa: E402
+from .models_api import router as models_router  # noqa: E402
+from .models_page import create_models_page_router  # noqa: E402
+
+app.include_router(models_router)
+app.include_router(models_agent_router)
+app.include_router(create_models_page_router(templates))
 from .agent_control_plane_api import router as agent_control_plane_router  # noqa: E402
 
 app.include_router(agent_control_plane_router, prefix="/api/v1")
@@ -1732,6 +1739,17 @@ def _agent_drift_view(agent_id: str) -> dict | None:
         return None
 
 
+def _agent_model_findings(agent_id: str) -> list | None:
+    """Open drift findings on the models the agent uses; None when the register cannot be read."""
+    try:
+        from maverick import model_register
+
+        return model_register.findings_for_agent(agent_id)
+    except Exception:
+        log.warning("model register unavailable", exc_info=True)
+        return None
+
+
 @app.get("/external-agents/{agent_id}", response_class=HTMLResponse)
 async def external_agent_scorecard(request: Request, agent_id: str) -> HTMLResponse:
     """One external agent's scorecard: ceilings, spend vs budget, run
@@ -1749,6 +1767,7 @@ async def external_agent_scorecard(request: Request, agent_id: str) -> HTMLRespo
         {"a": detail, "can_manage": can_manage, "access": access,
          "can_respond": has_permission(request, "respond"),
          "drift": await run_in_threadpool(_agent_drift_view, agent_id),
+         "model_findings": await run_in_threadpool(_agent_model_findings, agent_id),
          "platform_switch": await run_in_threadpool(_platform_switch_view, agent_id)},
         headers={"Cache-Control": "private, no-store"}
     )

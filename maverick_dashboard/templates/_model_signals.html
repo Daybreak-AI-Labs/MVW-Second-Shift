@@ -1,0 +1,23 @@
+{#- The signals of a baseline or a waiting candidate, one row each. Everything shown
+    is an aggregate: a count, a mean, a range, a category name seen at least five
+    times, an embedding's size or an accuracy. -#}
+<table>
+  <caption class="sr-only">What the {{ label }} was made from</caption>
+  <thead><tr><th scope="col">What it covers</th><th scope="col">Kind</th><th scope="col">Samples</th><th scope="col">Summary</th></tr></thead>
+  <tbody>
+    {% for s in profile.signals %}
+    <tr>
+      <td>{% if s.signal.startswith('feature:') %}Feature: <strong>{{ s.signal[8:] }}</strong>{% elif s.signal == 'prediction' %}Predictions{% elif s.signal == 'embedding' %}Embeddings{% elif s.signal == 'accuracy' %}Accuracy against true labels{% else %}{{ s.signal }}{% endif %}</td>
+      <td>{{ {'numeric': 'Numbers', 'categorical': 'Categories', 'embedding': 'Embedding average', 'accuracy': 'Accuracy'}.get(s.kind, s.kind) }}</td>
+      <td>{{ s.n }}</td>
+      <td>
+        {% if s.kind == 'numeric' %}Average {{ s.mean }}; most values between {{ s.low }} and {{ s.high }}
+        {% elif s.kind == 'categorical' %}{% if s.categories %}{{ s.categories | join(', ') }}{% else %}No category was common enough to name{% endif %}; everything else counted as "other"
+        {% elif s.kind == 'embedding' %}{{ s.dimension }} numbers per embedding; only their average is kept
+        {% elif s.kind == 'accuracy' %}{{ '%.1f' | format(s.value * 100) }}% correct
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>

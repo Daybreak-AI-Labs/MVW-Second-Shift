@@ -1,0 +1,22 @@
+{# Open drift findings on the models this agent uses, with a link to each model. Names
+   and summaries come from people and agents and are escaped by the template engine. #}
+{% if model_findings is none %}
+<div class="panel" id="model-drift"><p class="muted" style="margin: 0;">The register of models could not be read, so changes in the data around this agent's models are not shown. Ask an administrator to look at the server log.</p></div>
+{% elif model_findings %}
+<div class="panel" id="model-drift">
+  <h2 style="margin-top:0">Changes in the data around its models</h2>
+  <table>
+    <caption class="sr-only">Open changes on the models this agent uses</caption>
+    <thead><tr><th scope="col">Model</th><th scope="col">Severity</th><th scope="col">What changed</th></tr></thead>
+    <tbody>
+      {% for f in model_findings %}
+      <tr>
+        <td><a href="/models/{{ f.model_id }}#model-findings">{{ f.model }}</a></td>
+        <td><span class="badge {{ 'failure' if f.severity == 'high' and not f.acknowledged else '' }}">{{ {'high': 'High', 'medium': 'Medium', 'low': 'Low'}.get(f.severity, f.severity) }}</span></td>
+        <td>{{ f.summary }}{% if f.acknowledged %} <span class="muted">(acknowledged)</span>{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
