@@ -56,3 +56,36 @@ preparation and the serial sample. Existence checks accounted for 542 of
 those reads. Run reports and some screens reopened the world model, which
 rechecked the PostgreSQL schema and row policies. The page and card traces
 also repeated roster access and approval reads.
+
+### After request-cost changes, 0.5 CPU and 1 GiB
+
+[Hosted run](https://github.com/Daybreak-AI-Labs/MVW-Second-Shift/actions/runs/45535952387)
+
+| Scenario | Operation | Median | P95 | Maximum | Under target | Errors |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| Serial | Home | 113.93 | 135.06 | 135.06 | 4/4 | 0 |
+| Serial | Outside agents | 77.83 | 118.36 | 118.36 | 4/4 | 0 |
+| Serial | Approvals | 83.71 | 85.62 | 85.62 | 4/4 | 0 |
+| Serial | Screen | 59.92 | 60.91 | 60.91 | 4/4 | 0 |
+| Serial | Report run | 75.51 | 78.95 | 78.95 | 4/4 | 0 |
+| Serial | Teams card | 129.05 | 160.14 | 160.14 | 4/4 | 0 |
+
+| Scenario | Operation | Median | P95 | Maximum | Under target | Errors |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| Burst | Home | 12,254.61 | 15,433.82 | 15,434.66 | 0/34 | 0 |
+| Burst | Outside agents | 12,325.27 | 14,490.67 | 14,594.10 | 0/33 | 0 |
+| Burst | Approvals | 12,226.01 | 15,180.33 | 15,432.51 | 0/33 | 0 |
+
+| Scenario | Operation | Median | P95 | Maximum | Under target | Errors |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| Steady | Home | 63,631.41 | 79,697.44 | 82,793.37 | 0/333 | 0 |
+| Steady | Outside agents | 62,876.95 | 77,471.98 | 80,935.05 | 0/334 | 0 |
+| Steady | Approvals | 63,341.52 | 79,376.36 | 81,270.16 | 0/333 | 0 |
+| Steady | Screen | 17,364.94 | 85,012.51 | 91,901.06 | 4/200 | 107 |
+| Steady | Report run | 21,455.57 | 87,800.09 | 93,649.31 | 1/200 | 123 |
+| Steady | Teams card | 61,314.61 | 79,120.07 | 79,120.07 | 0/10 | 0 |
+
+Home went under 200 ms in all four serial samples. The 100-person mixed
+burst is faster, and its page times are still above two seconds. The
+steady workload still queues work. Job 2 increases the available CPU
+for that workload.
