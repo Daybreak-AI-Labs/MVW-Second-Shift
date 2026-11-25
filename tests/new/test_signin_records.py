@@ -67,6 +67,15 @@ def test_page_visibility_is_read_from_postgres(records_in_postgres, tmp_path):
     assert ui_visibility.overrides() == {}
 
 
+def _keyed_bodies(dsn: str, name: str) -> dict[tuple[str, str], str]:
+    import psycopg
+
+    with psycopg.connect(dsn) as database:
+        return {(kind, person): value for kind, person, value in database.execute(
+            "SELECT name, entry_key, body FROM second_shift_keyed_records WHERE address=%s", (name,),
+        )}
+
+
 def test_account_names_are_kept_in_postgres(records_in_postgres, tmp_path, monkeypatch):
     from maverick_dashboard import account_profiles
 
@@ -74,7 +83,7 @@ def test_account_names_are_kept_in_postgres(records_in_postgres, tmp_path, monke
     account_profiles.record_sign_in("user:u1", {"name": "Ada Lovelace"})
     assert account_profiles._read()["user:u1"]["name"] == "Ada Lovelace"
     assert not (tmp_path / "account-profiles.json").exists()
-    assert list(saved_records(records_in_postgres)) == ["account-profiles.json"]
+    assert set(_keyed_bodies(records_in_postgres, "account-profiles.json")) == {("people", "user:u1")}
     account_profiles.record_sign_in("user:u1", {})
     assert account_profiles._read() == {}
 
@@ -88,7 +97,7 @@ def test_subjects_and_retired_subjects_are_kept_in_postgres(records_in_postgres,
     assert sd.subject_for("ada@example.com") == "sub-1"
     assert sd._subject_key("sub-1") in sd._load_retired()  # the tombstone carried over
     assert not list(tmp_path.glob("oidc-*"))
-    assert set(saved_records(records_in_postgres)) == {"oidc-subjects.json", "oidc-retired-subjects.json"}
+    assert {kind for kind, _ in _keyed_bodies(records_in_postgres, "oidc-subjects.json")} == {"people", "aliases", "retired"}
 
 
 def test_a_corrupt_subject_record_in_postgres_is_refused(records_in_postgres):
@@ -113,7 +122,7 @@ def test_a_revoked_session_is_still_refused_in_postgres(records_in_postgres, tmp
     assert sr.is_revoked("user:eve", issued_at=None) is True
     assert sr.is_revoked("user:someone-else", issued_at=1.0) is False
     assert not (tmp_path / "session-revocations.json").exists()
-    assert list(saved_records(records_in_postgres)) == ["session-revocations.json"]
+    assert _keyed_bodies(records_in_postgres, "session-revocations.json") == {("people", "user:eve"): "100.0"}
 
 
 def test_a_corrupt_revocation_record_in_postgres_refuses_every_session(records_in_postgres):
@@ -135,7 +144,7 @@ def test_account_names_stay_encrypted_in_postgres_when_encryption_is_on(records_
     monkeypatch.setenv("MAVERICK_ENCRYPT_AT_REST", "1")
     assert crypto_at_rest.deployment_at_rest_enabled()
     account_profiles.record_sign_in("user:u1", {"name": "Ada Lovelace"})
-    stored = saved_records(records_in_postgres)["account-profiles.json"]
+    stored = _keyed_bodies(records_in_postgres, "account-profiles.json")[("people", "user:u1")]
     assert "Ada Lovelace" not in stored and crypto_at_rest.is_sealed_str(stored)
     assert account_profiles._read()["user:u1"]["name"] == "Ada Lovelace"
 

@@ -489,7 +489,7 @@ class TeamsBot:
         link to the object id Teams just vouched for."""
         from maverick import teams_identity
 
-        if not any(item["kind"] == "user principal name" for item in teams_identity.list_links()):
+        if not teams_identity.has_upn_links():
             return
         upn = self.connector.member_upn(parsed.service_url, parsed.conversation_id, parsed.sender_id)
         if upn:

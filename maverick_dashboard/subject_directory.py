@@ -37,12 +37,13 @@ from collections.abc import Iterable
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
-from maverick import record_documents
+from maverick import keyed_records, record_documents
 from maverick.paths import maverick_home
 
 # Cap on stored identifier->sub entries. Beyond it the oldest (by last-seen) are
 # pruned, so the file stays bounded for a long-lived deployment.
 _MAX_ENTRIES = 50_000
+_MAX_PG_IDENTIFIERS = 200_000
 _MAX_RETIRED = 100_000
 _MAX_STORE_CHARS = 4 * 1024 * 1024
 _MAX_RETIRED_STORE_CHARS = 16 * 1024 * 1024
@@ -170,7 +171,7 @@ def _load() -> dict:
     return validated
 
 
-def _load_retired() -> dict[str, int | float]:
+def _load_retired_legacy() -> dict[str, int | float]:
     data = _read_json(
         _retired_path(),
         label="retired subject ledger",
@@ -229,6 +230,87 @@ def _prune(data: dict) -> dict:
     return dict(kept[:_MAX_ENTRIES])
 
 
+def _keyed() -> keyed_records.KeyedRecords:
+    return keyed_records.KeyedRecords(_path(), legacy=(_retired_path(),))
+
+
+def _migrate(collection: keyed_records.Collection) -> None:
+    previous = _load()
+    people = {}
+    for entry in previous.values():
+        sub, seen = entry["sub"], entry["ts"]
+        key = _subject_key(sub)
+        if key not in people or people[key]["ts"] < seen:
+            people[key] = entry
+    collection.rows("people").seed((key, json.dumps(entry), "", entry["ts"]) for key, entry in people.items())
+    collection.rows("aliases").seed((key, _subject_key(entry["sub"]), _subject_key(entry["sub"]), entry["ts"])
+                                    for key, entry in previous.items())
+    collection.rows("retired").seed((key, json.dumps(seen), "", float(seen))
+                                    for key, seen in _load_retired_legacy().items())
+
+
+def _load_retired() -> dict[str, int | float]:
+    if record_documents.using_postgres():
+        with _keyed().transaction(_migrate) as store:
+            return store.rows("retired").json_items()
+    return _load_retired_legacy()
+
+
+def _record_keyed(sub: str, keys: set[str], seen: float) -> None:
+    from maverick.authority_effects import authority_effect_fence
+
+    with authority_effect_fence(), _keyed().transaction(_migrate, write=True) as store:
+        people, aliases, retired = (store.rows(name) for name in ("people", "aliases", "retired"))
+        subject_key = _subject_key(sub)
+        people.put(subject_key, json.dumps({"sub": sub, "ts": seen}), stamp=seen)
+        for key in sorted(keys):
+            aliases.put(key, subject_key, tag=subject_key, stamp=seen)
+        people.trim(_MAX_ENTRIES)
+        aliases.trim(_MAX_PG_IDENTIFIERS)
+        if any(retired.get(key) is not None for key in keys):
+            if retired.get(subject_key) is not None or retired.count() < _MAX_RETIRED:
+                retired.put(subject_key, json.dumps(seen), stamp=seen)
+
+
+def _saved_subject(alias: str, body: str) -> str:
+    entry = json.loads(body)
+    sub = entry.get("sub") if isinstance(entry, dict) else None
+    if not isinstance(sub, str) or not sub or _subject_key(sub) != alias:
+        raise ValueError("invalid subject binding")
+    return sub
+
+
+def _subject_keyed(key: str) -> str | None:
+    try:
+        with _keyed().transaction(_migrate) as store:
+            alias = store.rows("aliases").get(key)
+            if alias is None:
+                return None
+            body = store.rows("people").get(alias)
+            return None if body is None else _saved_subject(alias, body)
+    except (OSError, TypeError, ValueError) as exc:
+        raise SubjectDirectoryError("The sign-in directory could not be read.") from exc
+
+
+def subjects_for(identifiers: Iterable[str]) -> dict[str, str]:
+    """Read a batch of directory matches without opening one transaction per name."""
+    keys = {name: _key(name) for name in identifiers if name.strip()}
+    if not keys:
+        return {}
+    if not record_documents.using_postgres():
+        with _locked():
+            bindings = _load()
+        return {name: entry["sub"] for name, key in keys.items() if (entry := bindings.get(key))}
+    try:
+        with _keyed().transaction(_migrate) as store:
+            aliases = store.rows("aliases").get_many(keys.values())
+            people = store.rows("people").get_many(set(aliases.values()))
+        return {name: _saved_subject(alias, people[alias]) for name, key in keys.items()
+                if (alias := aliases.get(key)) in people}
+    except (OSError, TypeError, ValueError) as exc:
+        raise SubjectDirectoryError("The sign-in directory could not be read.") from exc
+
+
 def record_login(sub: str, identifiers: Iterable[str], *, at: float | None = None) -> None:
     """Record that ``sub`` was seen at login for each of ``identifiers`` (e.g.
     the OIDC ``email`` / ``preferred_username`` / ``oid`` claims). Blank
@@ -236,7 +318,7 @@ def record_login(sub: str, identifiers: Iterable[str], *, at: float | None = Non
     the login path."""
     s = (sub or "").strip()
     keys = {_key(i) for i in identifiers if (i or "").strip()}
-    if not s or not keys:
+    if not s or len(s) > 4096 or not keys:
         return
     try:
         ts = time.time() if at is None else float(at)
@@ -245,6 +327,9 @@ def record_login(sub: str, identifiers: Iterable[str], *, at: float | None = Non
     if not math.isfinite(ts) or ts < 0:
         return
     try:
+        if record_documents.using_postgres():
+            _record_keyed(s, keys, ts)
+            return
         with _locked():
             data = _load()
             for k in keys:
@@ -273,6 +358,8 @@ def subject_for(identifier: str) -> str | None:
     key = _key(identifier)
     if not (identifier or "").strip():
         return None
+    if record_documents.using_postgres():
+        return _subject_keyed(key)
     with _locked():
         entry = _load().get(key)
     return str(entry["sub"]) if entry else None

@@ -30,13 +30,17 @@ import logging
 import secrets
 import threading
 import time
+from collections.abc import MutableMapping
+from contextlib import contextmanager
 from pathlib import Path
+
+from . import keyed_records, record_documents
 
 log = logging.getLogger(__name__)
 
 CODE_TTL_SECONDS = 15 * 60
-MAX_LINKS = 5000
-MAX_CONVERSATIONS = 20000
+MAX_LINKS = 50_000
+MAX_CONVERSATIONS = 50_000
 _LOCK = threading.Lock()
 _ID_CHARS = set("abcdefghijklmnopqrstuvwxyz0123456789-@._'+")
 _CONVERSATION_KEYS = ("service_url", "conversation_id", "tenant_id", "user_id")
@@ -75,7 +79,7 @@ def _is_upn(key: str) -> bool:
     return "@" in key
 
 
-def _load() -> dict:
+def _load_legacy() -> dict:
     from .record_documents import at, using_postgres
 
     path = store_path()
@@ -98,39 +102,80 @@ def _load() -> dict:
     return {name: data[name] if isinstance(data.get(name), dict) else {} for name in _EMPTY}
 
 
+def _keyed() -> keyed_records.KeyedRecords:
+    return keyed_records.KeyedRecords(store_path())
+
+
+def _migrate(collection: keyed_records.Collection) -> None:
+    for name, entries in _load_legacy().items():
+        collection.rows(name).seed((entry, json.dumps(value), str(value.get("principal") or "") if isinstance(value, dict)
+                                    else "", 0.0) for entry, value in entries.items())
+        if name == "links":
+            collection.rows("upns").seed((entry, "true", "", 0.0) for entry in entries if _is_upn(entry))
+
+
+class _SavedRows(MutableMapping):
+    """The existing Teams actions read and change only their addressed rows."""
+
+    def __init__(self, collection: keyed_records.Collection, name: str):
+        self.values_store = collection.rows(name)
+        self.upns = collection.rows("upns") if name == "links" else None
+
+    def __getitem__(self, key: str):
+        saved = self.values_store.get(key)
+        if saved is None:
+            raise KeyError(key)
+        return json.loads(saved)
+
+    def __setitem__(self, key: str, value: dict) -> None:
+        self.values_store.put(key, json.dumps(value), tag=str(value.get("principal") or ""))
+        if self.upns is not None and _is_upn(key):
+            self.upns.put(key, "true")
+
+    def __delitem__(self, key: str) -> None:
+        if not self.values_store.discard(key):
+            raise KeyError(key)
+        if self.upns is not None and _is_upn(key):
+            self.upns.discard(key)
+
+    def __iter__(self):
+        return iter(self.values_store.select())
+
+    def __len__(self) -> int:
+        return self.values_store.count()
+
+    def items(self):
+        return self.values_store.json_items().items()
+
+
+def _load() -> dict:
+    if record_documents.using_postgres():
+        with _keyed().transaction(_migrate) as store:
+            return {name: store.rows(name).json_items() for name in ("links", "codes", "conversations")}
+    return _load_legacy()
+
+
 def _write(data: dict) -> None:
-    from .record_documents import at
+    if not isinstance(data["links"], _SavedRows):
+        record_documents.at(store_path()).write_text(json.dumps(data, indent=2, sort_keys=True))
 
-    at(store_path()).write_text(json.dumps(data, indent=2, sort_keys=True))
 
-
-class _locked:
-    """Read-modify-write under one in-process and one cross-process lock."""
-
-    def __enter__(self) -> dict:
-        from contextlib import ExitStack
-
-        from .record_documents import at
-
-        self._stack = ExitStack()
-        self._stack.enter_context(_LOCK)
-        try:
-            self._stack.enter_context(at(store_path()).locked())
-            self.data = _load()
-        except BaseException:
-            self._stack.close()
-            raise
-        return self.data
-
-    def __exit__(self, *exc) -> None:
-        self._stack.close()
+@contextmanager
+def _locked():
+    """Serialize a Teams identity mutation and its one-time code consumption."""
+    if record_documents.using_postgres():
+        with _keyed().transaction(_migrate, write=True) as store:
+            yield {name: _SavedRows(store, name) for name in ("links", "codes", "conversations")}
+    else:
+        with _LOCK, record_documents.at(store_path()).locked():
+            yield _load_legacy()
 
 
 def _prune_codes(data: dict, now: float) -> None:
-    data["codes"] = {
-        digest: row for digest, row in data["codes"].items()
-        if isinstance(row, dict) and float(row.get("expires_at") or 0) > now
-    }
+    codes = data["codes"]
+    for digest, row in list(codes.items()):
+        if not isinstance(row, dict) or float(row.get("expires_at") or 0) <= now:
+            codes.pop(digest)
 
 
 def _code_digest(code: str) -> str:
@@ -183,26 +228,46 @@ def unlink(teams_id: object, *, actor: str = "") -> bool:
     return removed
 
 
+def _describe_link(key: str, row: dict, reachable: bool) -> dict:
+    return {"teams_id": key, "kind": "user principal name" if _is_upn(key) else "object id",
+            "principal": str(row.get("principal") or ""), "linked_by": str(row.get("linked_by") or ""),
+            "linked_at": float(row.get("linked_at") or 0), "can_be_reached": reachable}
+
+
 def list_links() -> list[dict]:
     """Every link made by hand or by code, oldest first."""
     with _LOCK:
         data = _load()
-    out = []
-    for key, row in data["links"].items():
-        if not isinstance(row, dict):
-            continue
-        out.append({"teams_id": key, "kind": "user principal name" if _is_upn(key) else "object id",
-                    "principal": str(row.get("principal") or ""),
-                    "linked_by": str(row.get("linked_by") or ""),
-                    "linked_at": float(row.get("linked_at") or 0),
-                    "can_be_reached": key in data["conversations"]})
-    out.sort(key=lambda item: item["linked_at"])
-    return out
+    out = [_describe_link(key, row, key in data["conversations"])
+           for key, row in data["links"].items() if isinstance(row, dict)]
+    return sorted(out, key=lambda item: item["linked_at"])
 
 
 def links_for_principal(principal: object) -> list[dict]:
     who = normalize_principal(principal)
+    if record_documents.using_postgres():
+        with _keyed().transaction(_migrate) as store:
+            links = store.rows("links").json_items(tag=who)
+            conversations = store.rows("conversations")
+            out = [_describe_link(key, row, conversations.get(key) is not None)
+                   for key, row in links.items() if isinstance(row, dict) and row.get("principal") == who]
+        return sorted(out, key=lambda item: item["linked_at"])
     return [item for item in list_links() if item["principal"] == who]
+
+
+def has_upn_links() -> bool:
+    if record_documents.using_postgres():
+        with _keyed().transaction(_migrate) as store:
+            return store.rows("upns").count() != 0
+    return any(item["kind"] == "user principal name" for item in list_links())
+
+
+def _principal_in(links, candidates: list[str]) -> str | None:
+    for key in candidates:
+        row = links.get(key)
+        if isinstance(row, dict) and row.get("principal"):
+            return str(row["principal"])
+    return None
 
 
 def principal_for(*ids: object) -> str | None:
@@ -210,13 +275,11 @@ def principal_for(*ids: object) -> str | None:
     candidates = _candidates(*ids)
     if not candidates:
         return None
+    if record_documents.using_postgres():
+        with _keyed().transaction(_migrate) as store:
+            return _principal_in(_SavedRows(store, "links"), candidates)
     with _LOCK:
-        links = _load()["links"]
-    for key in candidates:
-        row = links.get(key)
-        if isinstance(row, dict) and row.get("principal"):
-            return str(row["principal"])
-    return None
+        return _principal_in(_load_legacy()["links"], candidates)
 
 
 def _candidates(*ids: object) -> list[str]:
@@ -250,30 +313,29 @@ def pin_upn(upn: object, object_id: object) -> bool:
 # --------------------------------------------------------- Entra sign-in
 
 
-def directory_principal(*ids: object) -> str | None:
-    """With Entra sign-in on: the person who signed in with this Entra object id
-    or user principal name, as recorded at their sign-in. ``None`` when sign-in
-    is off, when nobody signed in with it, or when the record cannot be read."""
+def _directory_principals(ids: list[str]) -> dict[str, str]:
+    if not ids:
+        return {}
     try:
+        from maverick_dashboard import subject_directory
+
         from .oidc import oidc_enabled
 
         if not oidc_enabled():
-            return None
-        from maverick_dashboard import subject_directory
-    except Exception:  # noqa: BLE001 -- unreadable sign-in settings recognise nobody
+            return {}
+        return {key: f"user:{sub}" for key, sub in subject_directory.subjects_for(ids).items()}
+    except Exception:  # an unreadable sign-in setting or record recognises nobody
+        log.warning("teams: the sign-in directory could not be read", exc_info=True)
+        return {}
+
+
+def directory_principal(*ids: object) -> str | None:
+    """Resolve the first identifier recognised by the Entra sign-in directory."""
+    names = [name for value in ids if (name := str(value or "").strip())]
+    if not names:
         return None
-    for value in ids:
-        text = str(value or "").strip()
-        if not text:
-            continue
-        try:
-            subject = subject_directory.subject_for(text)
-        except Exception:  # noqa: BLE001 -- a damaged record recognises nobody
-            log.warning("teams: the sign-in directory could not be read", exc_info=True)
-            return None
-        if subject:
-            return f"user:{subject}"
-    return None
+    matches = _directory_principals(names)
+    return next((matches[name] for name in names if name in matches), None)
 
 
 def resolve_principal(object_id: object, upn: object = "") -> str | None:
@@ -308,8 +370,12 @@ def conversation_for(teams_id: object) -> dict | None:
     keys = _candidates(teams_id)
     if not keys:
         return None
-    with _LOCK:
-        ref = _load()["conversations"].get(keys[0])
+    if record_documents.using_postgres():
+        with _keyed().transaction(_migrate) as store:
+            ref = _SavedRows(store, "conversations").get(keys[0])
+    else:
+        with _LOCK:
+            ref = _load_legacy()["conversations"].get(keys[0])
     return dict(ref) if isinstance(ref, dict) else None
 
 
@@ -324,12 +390,9 @@ def reachable_people() -> list[dict]:
         if isinstance(row, dict) and row.get("principal") and not _is_upn(key):
             people[key] = {"teams_id": key, "principal": str(row["principal"]),
                            "conversation": data["conversations"].get(key)}
-    for key, ref in data["conversations"].items():
-        if key in people or not isinstance(ref, dict):
-            continue
-        principal = directory_principal(key)
-        if principal:
-            people[key] = {"teams_id": key, "principal": principal, "conversation": ref}
+    candidates = {key: ref for key, ref in data["conversations"].items() if key not in people and isinstance(ref, dict)}
+    for key, principal in _directory_principals(list(candidates)).items():
+        people[key] = {"teams_id": key, "principal": principal, "conversation": candidates[key]}
     return list(people.values())
 
 
