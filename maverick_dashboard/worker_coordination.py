@@ -32,6 +32,11 @@ _RATE_SHARDS = 32
 _RATE_FILE_PREFIX = {"ekko": "recorder", "external": "agent"}
 _RATE_CONNECTIONS_LOCK = threading.Lock()
 _RATE_CONNECTIONS = {}
+_AGENT_RATE_LOCK_TIMEOUT = 1.0
+
+
+class RateConnectionBusy(TimeoutError):
+    """This worker's connection was busy for the entire rate admission wait."""
 
 
 def worker_count() -> int:
@@ -147,7 +152,7 @@ def _rate_shard_file(namespace: str, shard: int) -> str:
 
 
 @contextmanager
-def _sharded_rate_connection(root: Path, file: str):
+def _sharded_rate_connection(root: Path, file: str, *, lock_timeout: float = -1):
     """Reuse one local handle per shard while SQLite coordinates the workers."""
     key = (os.getpid(), root, file)
     with _RATE_CONNECTIONS_LOCK:
@@ -166,8 +171,13 @@ def _sharded_rate_connection(root: Path, file: str):
             yield conn
         return
     lock, conn = entry
-    with lock, conn:
-        yield conn
+    if not lock.acquire(timeout=lock_timeout):
+        raise RateConnectionBusy
+    try:
+        with conn:
+            yield conn
+    finally:
+        lock.release()
 
 
 def close_rate_connections() -> None:
@@ -192,7 +202,10 @@ def rate_allowed(root: Path, namespace: str, bucket: tuple[str, str], limit: int
         shard = int.from_bytes(digest, "big") % _RATE_SHARDS
         capacity, remainder = divmod(max_buckets, _RATE_SHARDS)
         max_buckets = capacity + int(shard < remainder)
-        connection = _sharded_rate_connection(root, _rate_shard_file(namespace, shard))
+        connection = _sharded_rate_connection(
+            root, _rate_shard_file(namespace, shard),
+            lock_timeout=_AGENT_RATE_LOCK_TIMEOUT if namespace == "external" else -1,
+        )
     with connection as conn:
         # A preflight can inspect the latest committed window while another
         # worker spends a hit. Counted requests still update atomically.

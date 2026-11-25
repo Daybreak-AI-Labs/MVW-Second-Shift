@@ -2179,6 +2179,11 @@ async def livez() -> dict:
     return {"status": "ok"}
 
 
+def _database_probe_response(ok: bool) -> JSONResponse:
+    return JSONResponse({"status": "ok" if ok else "degraded"}, status_code=200 if ok else 503,
+                        headers={"Cache-Control": "no-store"})
+
+
 async def _database_probe(*, require_workspace: bool = False) -> JSONResponse:
     def check() -> bool:
         try:
@@ -2186,9 +2191,7 @@ async def _database_probe(*, require_workspace: bool = False) -> JSONResponse:
         except Exception:
             return False
 
-    ok = await run_in_threadpool(check)
-    return JSONResponse({"status": "ok" if ok else "degraded"}, status_code=200 if ok else 503,
-                        headers={"Cache-Control": "no-store"})
+    return _database_probe_response(await run_in_threadpool(check))
 
 
 @app.get("/healthz")
@@ -2197,10 +2200,22 @@ async def healthz() -> JSONResponse:
     return await _database_probe()
 
 
+_READINESS_RESPONSE_SECONDS = 3.0
+
+
 @app.get("/readyz")
 async def readyz() -> JSONResponse:
-    """Ready to serve traffic against the configured workspace."""
-    return await _database_probe(require_workspace=True)
+    """Answer within the ingress probe window without piling up database checks."""
+    loop = asyncio.get_running_loop()
+    probe = getattr(loop, "_second_shift_readiness_probe", None)
+    if probe is None or probe.done():
+        probe = loop.create_task(_database_probe(require_workspace=True))
+        loop._second_shift_readiness_probe = probe
+    try:
+        async with asyncio.timeout(_READINESS_RESPONSE_SECONDS):
+            return await asyncio.shield(probe)
+    except TimeoutError:
+        return _database_probe_response(False)
 
 
 def _is_loopback_host(host: str) -> bool:

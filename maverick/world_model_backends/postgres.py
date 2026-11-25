@@ -2214,13 +2214,18 @@ class PostgresWorldModel:
         return [_PgRow.wrap(r, columns) for r in rows]
 
     def ping(self, *, require_workspace: bool = False) -> bool:
-        """Check the live connection and, for readiness, its workspace scope."""
+        """Check connectivity and, for readiness, whether the connection can serve writes."""
         scoped = require_workspace and self._rls
         if scoped and _active_tenant() is None:
             return False
+        query = "SELECT 1"
+        if require_workspace:
+            query = "SELECT NOT pg_is_in_recovery() AND current_setting('transaction_read_only') = 'off'"
+            if scoped:
+                query += (" AND EXISTS (SELECT 1 FROM pg_roles WHERE rolname=current_user "
+                          "AND NOT (rolsuper OR rolbypassrls))")
         with self._tx() as cur:
-            cur.execute("SELECT NOT (rolsuper OR rolbypassrls) FROM pg_roles WHERE rolname=current_user"
-                        if scoped else "SELECT 1")
+            cur.execute(query)
             row = cur.fetchone()
         return bool(row and row[0])
 

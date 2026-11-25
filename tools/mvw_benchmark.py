@@ -70,6 +70,18 @@ def summary(timings, errors, threshold):
     return results
 
 
+def _run_receipt_id(reply):
+    if not isinstance(reply, dict) or reply.get("ok") is not True:
+        return None
+    goal_id = reply.get("goal_id")
+    return goal_id if type(goal_id) is int and goal_id > 0 else None
+
+
+def _screen_allowed(reply):
+    return (isinstance(reply, dict) and reply.get("allowed") is True
+            and reply.get("requires_approval", False) is False)
+
+
 class Workload:
     """One measured request tracker used by the serial, burst and steady scenarios."""
 
@@ -106,7 +118,7 @@ class Workload:
                 if code == "503" and b"external request capacity is busy" in reply.content:
                     code = "503 gateway busy"
                 self.errors[name][code] += 1
-            elif name == "Screen" and reply.json().get("allowed") is not True:
+            elif name == "Screen" and not _screen_allowed(reply.json()):
                 self.errors[name]["screen refused"] += 1
             elif name == "Teams card" and "Rejected by" not in reply.text:
                 self.errors[name]["decision not recorded"] += 1
@@ -133,12 +145,14 @@ class Workload:
         await self.request(name, "GET", path, {"Cookie": f"ss_session={cookie}"})
 
     async def agent(self, headers, key):
-        await self.request("Screen", "POST", "/api/v1/external/screen", headers, {"tool": "load_read", "risk": "low"},
-                           retry_busy=True)
+        screened = await self.request("Screen", "POST", "/api/v1/external/screen", headers,
+                                      {"tool": "load_read", "risk": "low"}, retry_busy=True)
+        if not screened:
+            return
         await self.request("Report run", "POST", "/api/v1/external/runs", headers, {
             "title": "Local MVW load check", "outcome": "success", "tools": ["load_read"],
             "tool_calls": 1, "idempotency_key": key,
-        }, retry_busy=True, expected=201)
+        }, retry_busy=True, expected=201, check=lambda reply: _run_receipt_id(reply) is not None)
 
     async def teams(self, card):
         await self.request("Teams card", "POST", "/webhook/teams", {"Authorization": f"Bearer {self.team_token}"}, card)
@@ -148,11 +162,8 @@ class Workload:
 
         def remember_goal(reply):
             nonlocal goal_id
-            value = reply.get("goal_id") if isinstance(reply, dict) else None
-            if type(value) is not int or value < 1:
-                return False
-            goal_id = value
-            return True
+            goal_id = _run_receipt_id(reply)
+            return goal_id is not None
 
         started = await self.request("Start live run", "POST", "/api/v1/external/runs/start", headers,
                                      {"title": "Local MVW live run"}, retry_busy=True, expected=201,
@@ -169,11 +180,12 @@ class Workload:
         run = f"/api/v1/external/runs/{goal_id}"
         continued = await self.request("Heartbeat", "POST", run + "/heartbeat", headers, retry_busy=True,
                                        check=lambda reply: isinstance(reply, dict) and reply.get("continue") is True)
+        succeeded = screened and pending and continued
         finished = await self.request("Finish live run", "POST", run + "/finish", headers, {
-            "outcome": "success" if screened and continued else "failure",
-            "tools": ["load_read"] if screened and continued else [],
-        }, retry_busy=True, check=lambda reply: isinstance(reply, dict) and reply.get("goal_id") == goal_id)
-        return screened and pending and continued and finished
+            "outcome": "success" if succeeded else "failure",
+            "tools": ["load_read"] if succeeded else [],
+        }, retry_busy=True, check=lambda reply: _run_receipt_id(reply) == goal_id)
+        return succeeded and finished
 
 
 async def wait_for_ready(client):
@@ -442,6 +454,9 @@ def target_failures(report):
             failures.append("A page or Teams request failed during steady traffic.")
     if any(item["errors"] for item in report.get("overload", {}).values()):
         failures.append("An agent still failed after the bounded retry.")
+    if any(not report["steady"].get(operation) or report["steady"][operation]["errors"]
+           for operation in ("Screen", "Report run")):
+        failures.append("An agent screen or run report failed during steady traffic.")
     return failures
 
 
