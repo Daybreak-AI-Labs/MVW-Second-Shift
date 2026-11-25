@@ -460,14 +460,26 @@ async def _owner_note_loop() -> None:
 
 def _warm_dashboard_worker() -> None:
     """Open its database pools and compile the most-used templates."""
+    from jinja2.meta import find_referenced_templates
+
     from maverick import record_documents
 
-    from . import rbac, ui_visibility
+    from . import rbac, session_registry, ui_visibility
 
     _world()
     record_documents.read_texts(rbac.store_path(), rbac.tenant_store_path(), ui_visibility.store_path())
-    for name in ("base.html", "home.html", "external_agents.html", "approvals.html"):
-        templates.env.get_template(name)
+    session_registry.prepare_storage()
+    choices = ["base.html", "home.html", "external_agents.html", "approvals.html"]
+    loaded = set()
+    env = templates.env
+    while choices:
+        name = choices.pop()
+        if name in loaded:
+            continue
+        loaded.add(name)
+        env.get_template(name)
+        source, _, _ = env.loader.get_source(env, name)
+        choices.extend(child for child in find_referenced_templates(env.parse(source)) if child is not None)
 
 
 @asynccontextmanager
@@ -1993,6 +2005,10 @@ def _approval_progress(approvals: list, request: Request) -> dict:
     return progress
 
 
+from maverick.safety.secret_detector import reuse_display_scans  # noqa: E402
+
+
+@reuse_display_scans
 def _approval_queue_context(approvals: list, request: Request | None = None) -> dict:
     """Build the exact-operation review context shared by approval surfaces."""
 

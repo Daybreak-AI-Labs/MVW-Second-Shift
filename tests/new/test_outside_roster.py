@@ -204,6 +204,19 @@ def test_nothing_the_roster_did_before_is_lost(client):
         assert needle in page
 
 
+def test_read_only_roster_displays_agents_and_omits_unavailable_controls(client, monkeypatch):
+    from maverick_dashboard import app as dashboard
+
+    _add("quiet")
+    monkeypatch.setattr(dashboard, "has_permission", lambda *_: False)
+    response = client.get("/external-agents")
+    assert response.status_code == 200
+    assert "View agent" in response.text
+    assert "Only an administrator can change these agents" in response.text
+    assert 'data-xa-mint="quiet"' not in response.text
+    assert 'data-xa-remove="quiet"' not in response.text
+
+
 # --- a Watched agent is added and moves up ---------------------------------------
 
 def test_adding_a_watched_agent_moves_it_to_added_then_connected(client):

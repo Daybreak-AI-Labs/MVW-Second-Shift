@@ -270,3 +270,25 @@ async def test_recorder_traffic_has_bounded_slots_separate_from_agent_requests(t
             recorder.release()
     finally:
         agent.release()
+
+
+def test_worker_warms_imported_page_templates_and_the_session_store(monkeypatch):
+    from maverick import record_documents
+    from maverick_dashboard import app as dashboard
+    from maverick_dashboard import session_registry
+
+    compiled = []
+    prepared = []
+    get_template = dashboard.templates.env.get_template
+    monkeypatch.setattr(dashboard, "_world", lambda: None)
+    monkeypatch.setattr(record_documents, "read_texts", lambda *_: ())
+    monkeypatch.setattr(session_registry, "prepare_storage", lambda: prepared.append(True), raising=False)
+
+    def track(name):
+        compiled.append(name)
+        return get_template(name)
+
+    monkeypatch.setattr(dashboard.templates.env, "get_template", track)
+    dashboard._warm_dashboard_worker()
+    assert prepared == [True]
+    assert {"external_agents.html", "_connect_guide.html", "_external_agent_actions.html"} <= set(compiled)

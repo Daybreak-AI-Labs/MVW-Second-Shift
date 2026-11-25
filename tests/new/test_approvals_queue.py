@@ -32,6 +32,28 @@ def world(app):
     return _world()
 
 
+def test_approval_queue_scans_a_repeated_display_label_once_per_render(monkeypatch):
+    from types import SimpleNamespace
+
+    from maverick.safety import secret_detector
+    from maverick_dashboard.app import _approval_queue_context
+
+    read = []
+
+    class Pattern:
+        def finditer(self, text):
+            read.append(text)
+            return iter(())
+
+    monkeypatch.setattr(secret_detector, "_PATTERNS", [("test", Pattern())])
+    rows = [SimpleNamespace(id=i, provenance="", action="Review", scope="Object", detail="")
+            for i in range(3)]
+    for _ in range(2):
+        context = _approval_queue_context(rows)
+        assert list(context["approval_actions"].values()) == ["Review"] * 3
+    assert read.count("Review") == 2
+
+
 @pytest.fixture
 def agent(app, client):
     """An enrolled outside agent's own view: a client that carries only its access key."""
