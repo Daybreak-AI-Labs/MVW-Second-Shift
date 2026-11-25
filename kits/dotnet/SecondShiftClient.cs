@@ -134,9 +134,14 @@ public sealed class SecondShiftClient : IDisposable
                 var status = Text(reply, "status");
                 if (status == "approved") return true;
                 if (status != "pending") return false;
+                var interval = TimeSpan.FromSeconds(1);
                 remaining = wait - clock.Elapsed;
-                if (remaining > TimeSpan.Zero)
-                    await Task.Delay(remaining < TimeSpan.FromSeconds(1) ? remaining : TimeSpan.FromSeconds(1), cancellation);
+                if (remaining <= interval)
+                {
+                    if (remaining > TimeSpan.Zero) await Task.Delay(remaining, cancellation);
+                    return false;
+                }
+                await Task.Delay(interval, cancellation);
             }
         }
         catch (Exception error) when (error is InvalidOperationException or OperationCanceledException)

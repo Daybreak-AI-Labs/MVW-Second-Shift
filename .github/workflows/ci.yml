@@ -1,0 +1,98 @@
+name: Second Shift CI
+
+on:
+  pull_request:
+    branches: [claude/friendly-shannon-e8jwva]
+  push:
+    branches: [claude/friendly-shannon-e8jwva]
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    name: Python (${{ matrix.posture }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - posture: default
+            secure: '0'
+            postgres: ''
+          - posture: secure with PostgreSQL
+            secure: '1'
+            postgres: postgres:16
+    services:
+      postgres:
+        image: ${{ matrix.postgres }}
+        env:
+          # Disposable credentials for the runner-local service. The built-in
+          # postgres role can create and drop the test databases.
+          POSTGRES_PASSWORD: local-ci-password
+        ports:
+          - 5432/tcp
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: '3.12'
+      - run: python -m pip install '.[postgres,dev]' './runtime[office]'
+      - if: matrix.secure == '0'
+        run: python -m ruff check .
+      - name: Run the whole suite
+        env:
+          MAVERICK_TEST_SECURE_DEFAULT: ${{ matrix.secure }}
+          MAVERICK_PG_DSN: ${{ matrix.postgres != '' && format('postgresql://postgres:local-ci-password@127.0.0.1:{0}/postgres', job.services.postgres.ports['5432']) || '' }}
+        run: python -m pytest -q -n auto --dist loadfile
+      - if: matrix.secure == '0'
+        run: python -m pytest tests
+        working-directory: runtime
+
+  kits:
+    name: Connection kits
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: '22'
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          dotnet-version: '8.0.x'
+      - run: npm ci && npm test
+        working-directory: kits/typescript
+      - run: dotnet test kits/dotnet/tests
+      # This kit starts its mock server from a console test runner.
+      # https://learn.microsoft.com/en-us/dotnet/core/tools/dotnet-test
+      # https://learn.microsoft.com/en-us/dotnet/core/tools/dotnet-run
+      - name: Run .NET mock gateway checks
+        run: |
+          log="$RUNNER_TEMP/second-shift-dotnet.log"
+          if ! dotnet run --project kits/dotnet/tests --configuration Release > "$log" 2>&1; then
+            cat "$log"
+            error=$(grep -m 1 -E 'Exception:|error ' "$log" || true)
+            echo "::error::${error:-The .NET mock gateway checks failed. Read the job log.}"
+            exit 1
+          fi
+          cat "$log"
+
+  azure:
+    name: Azure build checks
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - run: docker build -f deploy/azure/Dockerfile .
+      - name: Compile Azure deployment templates
+        # https://learn.microsoft.com/en-us/cli/azure/bicep#az-bicep-install
+        # https://learn.microsoft.com/en-us/cli/azure/bicep#az-bicep-build
+        run: |
+          az bicep install
+          for template in deploy/azure/*.bicep; do
+            az bicep build --file "$template" --outdir "$RUNNER_TEMP"
+          done
