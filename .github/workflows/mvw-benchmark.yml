@@ -8,6 +8,7 @@ on:
       - codex/sqlite-stores-to-postgres
       - codex/per-person-records
       - codex/load-check-mvw
+      - codex/ekko-throughput
     paths-ignore:
       - 'docs/**'
       - 'handoff/**'
@@ -64,12 +65,12 @@ jobs:
           workers=$(sed -nE 's/^param dashboardWorkers int = ([0-9]+)$/\1/p' deploy/azure/app.bicep)
           pool=$(sed -nE "s/.*SECOND_SHIFT_PG_POOL_SIZE: '([0-9]+)'.*/\1/p" deploy/azure/app.bicep)
           args=()
-          if [ "$GITHUB_REF_NAME" = codex/load-check-mvw ]; then
+          if [ "$GITHUB_REF_NAME" = codex/load-check-mvw ] || [ "$GITHUB_REF_NAME" = codex/ekko-throughput ]; then
             args=(--mvw --population 20000 --seconds 120 --require-targets)
             case "$BENCHMARK_SCENARIO:$BENCHMARK_TITLE" in
               requested:*"Measure recorder hour"*|requested:*"Measure final recorder hour"*)
                 args=(--recorders 2000 --population 20000 --seconds 3600) ;;
-              requested:*"Measure recorder pilot"*) args=(--recorders 2000 --population 20000 --seconds 65) ;;
+              requested:*"Measure recorder pilot"*) args=(--recorders 2000 --population 20000 --seconds 90) ;;
               requested:*"Measure burst"*) args=(--quick --population 20000) ;;
             esac
           fi
