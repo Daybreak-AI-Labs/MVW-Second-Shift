@@ -54,7 +54,10 @@ jobs:
           out="$RUNNER_TEMP/second-shift-benchmark"
           cpu=$(sed -nE "s/.*cpu: json\('([^']+)'\).*/\1/p" deploy/azure/app.bicep)
           memory=$(sed -nE "s/.*memory: '([0-9]+)Gi'.*/\1/p" deploy/azure/app.bicep)
-          python -m tools.mvw_benchmark --cpus "$cpu" --memory-gib "$memory" --output "$out/measure.json"
+          workers=$(sed -nE 's/^param dashboardWorkers int = ([0-9]+)$/\1/p' deploy/azure/app.bicep)
+          pool=$(sed -nE "s/.*SECOND_SHIFT_PG_POOL_SIZE: '([0-9]+)'.*/\1/p" deploy/azure/app.bicep)
+          python -m tools.mvw_benchmark --cpus "$cpu" --memory-gib "$memory" \
+            --workers "$workers" --pool-size "$pool" --output "$out/measure.json"
           OUT="$out" python - <<'PY'
           import json
           import os
@@ -63,6 +66,7 @@ jobs:
           for scenario, results in json.loads((out / "measure.json").read_text()).items():
               print(f"::notice title={scenario}::{json.dumps(results, separators=(',', ':'))}")
           PY
+          if [ "$workers" -ne 1 ]; then exit 0; fi
           python -m tools.mvw_benchmark --cpus "$cpu" --memory-gib "$memory" --profile --output "$out/profile.json"
           OUT="$out" python - <<'PY'
           import json

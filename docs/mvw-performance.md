@@ -89,3 +89,36 @@ Home went under 200 ms in all four serial samples. The 100-person mixed
 burst is faster, and its page times are still above two seconds. The
 steady workload still queues work. Job 2 increases the available CPU
 for that workload.
+
+### Four workers, 4 vCPU and 8 GiB
+
+[Hosted run](https://github.com/Daybreak-AI-Labs/MVW-Second-Shift/actions/runs/45538236449)
+
+| Scenario | Operation | Median | P95 | Maximum | Under target | Errors |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| Serial | Home | 109.99 | 125.95 | 125.95 | 4/4 | 0 |
+| Serial | Outside agents | 77.35 | 85.30 | 85.30 | 4/4 | 0 |
+| Serial | Approvals | 79.21 | 81.69 | 81.69 | 4/4 | 0 |
+| Serial | Screen | 61.42 | 62.90 | 62.90 | 4/4 | 0 |
+| Serial | Report run | 78.95 | 82.99 | 82.99 | 4/4 | 0 |
+| Serial | Teams card | 127.62 | 162.10 | 162.10 | 4/4 | 0 |
+
+| Scenario | Operation | Median | P95 | Maximum | Under target | Errors |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| Burst | Home | 2,869.82 | 2,993.48 | 2,993.59 | 6/34 | 0 |
+| Burst | Outside agents | 2,237.12 | 2,645.32 | 2,991.06 | 7/33 | 0 |
+| Burst | Approvals | 2,563.49 | 2,970.59 | 2,992.41 | 5/33 | 0 |
+
+| Scenario | Operation | Median | P95 | Maximum | Under target | Errors |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| Steady | Home | 109.49 | 176.19 | 590.77 | 333/333 | 0 |
+| Steady | Outside agents | 59.53 | 139.26 | 460.85 | 334/334 | 0 |
+| Steady | Approvals | 74.45 | 107.43 | 544.70 | 333/333 | 0 |
+| Steady | Screen | 53.63 | 273.51 | 718.25 | 200/200 | 0 |
+| Steady | Report run | 91.14 | 284.52 | 943.58 | 200/200 | 0 |
+| Steady | Teams card | 219.16 | 380.65 | 380.65 | 10/10 | 0 |
+
+Under steady traffic, 1,000/1,000 pages finished under 1 second (highest page p95
+176 ms) with 0 page or Teams failures. All serial requests finished under 200 ms.
+In the burst, 18/100 pages finished under 2 seconds. The burst target remains
+open.

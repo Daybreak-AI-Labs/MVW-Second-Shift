@@ -95,25 +95,35 @@ def configure_app(directory, origin, dsn, pool_size):
 
 
 def teams_test_token():
-    """Point the local connector at an ephemeral signing key and a fake transport."""
+    """Create an ephemeral signer for the local benchmark."""
     import jwt
     from cryptography.hazmat.primitives.asymmetric import rsa
-
-    from maverick_dashboard import teams_bot
 
     private = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     public = jwt.algorithms.RSAAlgorithm.to_jwk(private.public_key(), as_dict=True)
     public.update(kid="load-check", use="sig", alg="RS256", endorsements=["msteams"])
-    bot = teams_bot.build_bot(transport=lambda *args, **kwargs: (200, {}),
-                              keys=teams_bot.SigningKeys(jwks={"keys": [public]}))
-    teams_bot.build_bot = lambda **kwargs: bot
+    os.environ["SECOND_SHIFT_LOAD_JWKS"] = json.dumps({"keys": [public]})
     now = int(time.time())
     return jwt.encode({"iss": "https://api.botframework.com", "aud": BOT_ID, "iat": now,
                        "nbf": now - 1, "exp": now + 3600, "serviceurl": TEAMS_SERVICE},
                       private, algorithm="RS256", headers={"kid": "load-check"})
 
 
-def run_app(pipe, directory, dsn, people, pool_size):
+def benchmark_app():
+    """Install the connector stand-in in each local benchmark worker."""
+    from maverick import approval_notify
+    from maverick_dashboard import teams_bot
+    from maverick_dashboard.app import app
+
+    bot = teams_bot.build_bot(transport=lambda *args, **kwargs: (200, {}),
+                              keys=teams_bot.SigningKeys(jwks=json.loads(os.environ["SECOND_SHIFT_LOAD_JWKS"])))
+    teams_bot.build_bot = lambda **kwargs: bot
+    # The benchmark measures inbound card decisions only.
+    approval_notify._spawn = lambda *args: None
+    return app
+
+
+def run_app(pipe, directory, dsn, people, pool_size, workers=1):
     """Run the normal app, bound only to loopback, using synthetic identities."""
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
@@ -124,20 +134,18 @@ def run_app(pipe, directory, dsn, people, pool_size):
         import uvicorn
         from starlette.requests import Request
 
-        from maverick import approval_notify, record_documents, teams_identity
+        from maverick import record_documents, teams_identity
         from maverick_dashboard import rbac, sign_in_roles
         from maverick_dashboard._shared import _world
-        from maverick_dashboard.app import app
         from maverick_dashboard.oidc_login import mint_browser_session
+        from maverick_dashboard.worker_coordination import supervisor
 
+        signing_key = os.environ["MAVERICK_AUDIT_SIGNING_KEY"]
         world = _world()
         world.ping()
         record_documents.at(rbac.store_path()).write_text(json.dumps({"user:load-teams": "approver"}))
         teams_identity.link(TEAMS_ACTOR, "user:load-teams", actor="load-check")
         teams_token = teams_test_token()
-        # A local load run measures inbound card decisions. There are no
-        # external recipients, outbound messages or background card refreshes.
-        approval_notify._spawn = lambda *args: None
         request = Request({"type": "http", "headers": [], "client": ("127.0.0.1", 1)})
 
         def session(user, role):
@@ -149,7 +157,12 @@ def run_app(pipe, directory, dsn, people, pool_size):
         pipe.send((origin, session("load-admin", "Load.Admin"),
                    [session(f"load-person-{idx}", "Load.Operator") for idx in range(people)], teams_token))
         pipe.close()
-        uvicorn.run(app, fd=listener.fileno(), backlog=4096, access_log=False, log_level="error", lifespan="on")
+        # The setup process uses the same synthetic signer as its fresh workers.
+        if workers > 1:
+            os.environ["MAVERICK_AUDIT_SIGNING_KEY"] = signing_key
+        with supervisor(workers):
+            uvicorn.run("tools.load_check:benchmark_app", factory=True, workers=workers, fd=listener.fileno(),
+                        backlog=4096, access_log=False, log_level="error", lifespan="on")
 
 
 def expect(response, status, name):

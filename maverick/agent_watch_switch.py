@@ -175,12 +175,12 @@ def switch(agent_id: str, *, action: str, actor: str) -> dict:
     watcher, problem = _watcher(platform)
     if link is None or watcher is None:
         raise SwitchRefused(problem or _NOT_LINKED)
-    if not _busy.acquire(blocking=False):
-        raise SwitchRefused(_BUSY)
-    try:
+    from .control_plane_lease import try_dashboard_operation
+
+    with try_dashboard_operation(_busy, 'platform-switch') as acquired:
+        if not acquired:
+            raise SwitchRefused(_BUSY)
         return _send(agent_id, platform, what["platform_name"], link[1], watcher, action, actor)
-    finally:
-        _busy.release()
 
 
 def _send(agent_id: str, platform: str, platform_name: str, external_id: str, watcher,

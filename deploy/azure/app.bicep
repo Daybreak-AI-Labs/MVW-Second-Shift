@@ -1,4 +1,8 @@
 param location string = resourceGroup().location
+@minValue(1)
+@maxValue(8)
+@description('Dashboard processes in the single Second Shift replica.')
+param dashboardWorkers int = 4
 param prefix string
 param vaultName string
 param entraClientId string
@@ -91,7 +95,8 @@ var settings = union(platformSettings, {
   SECOND_SHIFT_KMS_KEY_ID: '${vaultUri}keys/second-shift-encryption'
   SECOND_SHIFT_AUDIT_REQUIRE_OFFHOST_KEY: '1'
   SECOND_SHIFT_WORLD_BACKEND: 'postgres'
-  SECOND_SHIFT_PG_POOL_SIZE: '8'
+  SECOND_SHIFT_PG_POOL_SIZE: '4'
+  SECOND_SHIFT_DASHBOARD_WORKERS: string(dashboardWorkers)
   SECOND_SHIFT_PG_RLS: '1'
   SECOND_SHIFT_EXTERNAL_AGENTS: '1'
   AZURE_CLIENT_ID: identity.properties.clientId
@@ -141,7 +146,8 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
         {
           name: 'second-shift'
           image: '${registry.properties.loginServer}/${image}'
-          resources: { cpu: json('0.5'), memory: '1Gi' }
+          // https://learn.microsoft.com/en-us/azure/container-apps/containers#allocations
+          resources: { cpu: json('4.0'), memory: '8Gi' }
           volumeMounts: [
             { volumeName: 'data', mountPath: dataPath }
           ]

@@ -195,18 +195,15 @@ def _shared_consume_tx(tx_id: str) -> bool | None:
     """Consume ``tx_id`` in the shared world-model store, if one is configured.
 
     Returns True on first-consume (proceed), False on replay (reject), or None
-    when there is no shared backend / the store is unavailable -- in which case
-    the caller falls back to the in-process guard. Runs only when a Postgres
-    backend is configured: that is the multi-replica HA case where the
-    in-process dict alone leaves a replay window across replicas. Reuses the
+    when there is no shared backend or the store is unavailable. Workers need
+    the shared Postgres answer to prevent a replay in a different process. Reuses the
     backend-agnostic ``mark_message_processed`` (a UNIQUE-constrained insert that
     returns True exactly once per id, atomically, on both SQLite and Postgres).
 
     Synchronous and quick (one indexed insert); called from the async callback
     via ``run_in_executor`` so it never blocks the event loop on the DB round
-    trip. Any failure returns None (fall back) rather than raising -- a degraded
-    shared store must not harden into a hard login outage, and the signed
-    cookie + PKCE + state CSRF remain in force regardless.
+    trip. Any shared-store failure returns None so the caller can refuse the
+    callback when several workers are running.
     """
     try:
         from maverick.world_model_backends import is_postgres_configured
@@ -216,8 +213,8 @@ def _shared_consume_tx(tx_id: str) -> bool | None:
         world = _world()
         # True == first writer (not previously consumed) -> allow this callback.
         return bool(world.mark_message_processed(_OIDC_TX_CHANNEL, tx_id))
-    except Exception:  # pragma: no cover - shared store must never gate login hard
-        log.warning("OIDC replay guard: shared store unavailable, using in-process guard")
+    except Exception:  # pragma: no cover - the caller handles unavailable shared state
+        log.warning("OIDC replay guard: shared store unavailable")
         return None
 
 
@@ -230,11 +227,9 @@ async def _consume_tx_once(tx_id: str, expires_at: int) -> bool:
     callbacks with the same cookie are rejected before making an outbound IdP
     request.
 
-    Shared-store first: when a Postgres backend is configured (HA / multi-replica
-    dashboard), the id is consumed in that shared store so the guard holds across
-    every replica -- the in-process dict alone would let a replay land on a
-    sibling replica. Falls back to the in-process guard for the default
-    single-process / SQLite deployment, or if the shared store is unavailable.
+    When Postgres is configured the id is consumed there. If a worker cannot
+    read that shared decision, the callback is refused. A single process can
+    use its local replay guard.
     """
     if not tx_id:
         return False
@@ -244,6 +239,10 @@ async def _consume_tx_once(tx_id: str, expires_at: int) -> bool:
     )
     if shared is not None:
         return shared
+    from .worker_coordination import active_root
+
+    if active_root() is not None:
+        return False  # the local replay map cannot speak for other workers
 
     now = _now()
     async with _CONSUMED_TX_LOCK:

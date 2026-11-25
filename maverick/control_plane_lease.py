@@ -57,6 +57,7 @@ use the supported local volume and retain the deployment singleton guard.
 
 from __future__ import annotations
 
+import asyncio
 import errno
 import json
 import logging
@@ -64,6 +65,7 @@ import os
 import socket
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -285,6 +287,80 @@ class Lease:
 #: The lease this process holds, if any. One control plane per process.
 _held: Lease | None = None
 _admission_lock = threading.RLock()
+
+
+DASHBOARD_WORKER_ROOT = "MAVERICK_DASHBOARD_WORKER_ROOT"
+
+
+def dashboard_worker_root() -> Path | None:
+    value = os.environ.get(DASHBOARD_WORKER_ROOT)
+    if not value:
+        return None
+    root = Path(value)
+    status = root.stat()
+    if not root.is_dir() or root.is_symlink() or status.st_uid != os.getuid() or status.st_mode & 0o077:
+        raise RuntimeError("The private dashboard worker directory could not be verified.")
+    return root
+
+
+class Slot:
+    """Closing a descriptor releases the slot even if its worker dies."""
+
+    def __init__(self, fd: int) -> None:
+        self.fd = fd
+
+    def release(self) -> None:
+        if self.fd >= 0:
+            fd, self.fd = self.fd, -1
+            os.close(fd)
+
+
+def try_dashboard_lock(root: Path, name: str) -> Slot | None:
+    """Take a private process-group lock without waiting."""
+    import fcntl
+
+    fd = os.open(root / f"{name}.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        os.close(fd)
+        return None
+    except BaseException:
+        os.close(fd)
+        raise
+    return Slot(fd)
+
+
+@contextmanager
+def try_dashboard_operation(single_process_lock, name: str):
+    """Keep an administrator operation exclusive while a worker calls a platform."""
+    root = dashboard_worker_root()
+    if root is not None:
+        slot = try_dashboard_lock(root, f"operation-{name}-0")
+        try:
+            yield slot is not None
+        finally:
+            if slot is not None:
+                slot.release()
+        return
+    acquired = single_process_lock.acquire(blocking=False)
+    try:
+        yield acquired
+    finally:
+        if acquired:
+            single_process_lock.release()
+
+
+async def finish_background_call(function):
+    """Drain in-flight timer work before its owner lets a replacement take over."""
+    call = asyncio.create_task(asyncio.to_thread(function))
+    try:
+        return await asyncio.shield(call)
+    except asyncio.CancelledError:
+        try:
+            await call
+        finally:
+            raise
 
 
 def _require_single_replica() -> None:

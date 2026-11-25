@@ -1703,6 +1703,7 @@ class PostgresWorldModel:
             for low in range(0, top, _STAMP_FILL_BATCH):
                 self._fill_stamped_batch(table, low, low + _STAMP_FILL_BATCH)
             with self._tx() as cur:
+                cur.execute("SELECT pg_advisory_xact_lock(%s)", (_MIGRATION_ADVISORY_LOCK,))
                 cur.execute(f"CREATE INDEX IF NOT EXISTS idx_pg_{table}_tenant ON {table}(tenant_id)")
 
     def _fill_stamped_batch(self, table: str, low: int, high: int) -> None:

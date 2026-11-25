@@ -124,6 +124,13 @@ async def _batch(request: Request) -> SamplesIn:
 def _throttle(caller: str, model: str, per_minute: int) -> None:
     now = time.monotonic()
     bucket = (caller, model)
+    from .worker_coordination import active_root, rate_allowed
+
+    if (root := active_root()) is not None:
+        if not rate_allowed(root, "models", bucket, per_minute, _RATE_BUCKET_CAP):
+            raise HTTPException(status_code=429, detail="Too many batches are arriving. Try again in a minute.",
+                                headers={"Retry-After": "60"})
+        return
     with _rate_lock:
         if bucket not in _rate_times and len(_rate_times) >= _RATE_BUCKET_CAP:
             for key, window in tuple(_rate_times.items()):

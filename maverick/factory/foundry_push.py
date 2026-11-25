@@ -205,12 +205,12 @@ def push(fac_id: str, number: int, who: str, *, confirm_project: str, confirm_ag
     if not _CONNECTION.fullmatch(connection_id.strip()):
         raise FactoryError("The project connection must be its full resource id, /subscriptions/.../connections/<name>.", 422)
     body = foundry_agent_body(record, version, skills_url, connection_id.strip())
-    if not _busy.acquire(blocking=False):
-        raise FactoryError("A push is already being sent. Wait for it to finish.", 409)
-    try:
+    from ..control_plane_lease import try_dashboard_operation
+
+    with try_dashboard_operation(_busy, 'foundry-push') as acquired:
+        if not acquired:
+            raise FactoryError("A push is already being sent. Wait for it to finish.", 409)
         return _send(record, number, who, s, name, body, mode)
-    finally:
-        _busy.release()
 
 
 def _send(record: dict[str, Any], number: int, who: str, s: FoundrySettings, name: str, body: dict[str, Any], mode: str) -> dict[str, Any]:
