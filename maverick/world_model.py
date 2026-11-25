@@ -916,7 +916,8 @@ def _log_withheld_once(exc: Exception) -> None:
 
 
 def _dec_field(text: str | None, *, at_rest: bool | None = None,
-               context: str | None = None) -> str | None:
+               context: str | None = None,
+               key_cache: dict[tuple[str, bytes], object] | None = None) -> str | None:
     """Unseal a stored field from a sealed column when at-rest encryption is on.
 
     ``context`` is the column being read (``"goals.title"``). A bound token
@@ -965,7 +966,7 @@ def _dec_field(text: str | None, *, at_rest: bool | None = None,
             return _UNSEALED_WITHHELD
     if is_sealed_str(text):
         try:
-            return unseal_from_str(text)
+            return unseal_from_str(text) if key_cache is None else unseal_from_str(text, key_cache=key_cache)
         except EncryptionUnavailable as exc:
             if bound_str_context(text) is None:
                 raise

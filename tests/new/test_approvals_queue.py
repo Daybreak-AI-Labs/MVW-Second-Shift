@@ -54,6 +54,39 @@ def test_approval_queue_scans_a_repeated_display_label_once_per_render(monkeypat
     assert read.count("Review") == 2
 
 
+def test_postgres_queue_opens_its_encryption_key_once_per_read(records_in_postgres, monkeypatch):
+    from hashlib import sha256
+
+    from maverick import crypto_at_rest
+    from maverick.world_model_backends.postgres import PostgresWorldModel
+
+    key = bytes(range(32))
+    monkeypatch.setenv("MAVERICK_ENCRYPT_AT_REST", "1")
+    monkeypatch.setenv("MAVERICK_ENCRYPT_STRICT", "1")
+    monkeypatch.setenv("MAVERICK_ENCRYPTION_KEY", key.hex())
+    monkeypatch.setenv("MAVERICK_ENCRYPTION_KEY_DIGEST", "sha256:" + sha256(key).hexdigest())
+    world = PostgresWorldModel(dsn=records_in_postgres)
+    try:
+        for label in ("First", "Second", "Third"):
+            world.create_approval(label, scope="Object", detail="Details")
+
+        loaded = []
+        original = crypto_at_rest._load_existing_key
+
+        def tracked():
+            loaded.append(1)
+            return original()
+
+        monkeypatch.setattr(crypto_at_rest, "_load_existing_key", tracked)
+        for _ in range(2):
+            rows = world.pending_approvals()
+            assert [(row.action, row.scope, row.detail) for row in rows] == [
+                (label, "Object", "Details") for label in ("First", "Second", "Third")]
+        assert loaded == [1, 1]
+    finally:
+        world.close()
+
+
 @pytest.fixture
 def agent(app, client):
     """An enrolled outside agent's own view: a client that carries only its access key."""

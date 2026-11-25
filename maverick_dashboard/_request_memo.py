@@ -14,6 +14,7 @@ read. Outside a request scope nothing is cached.
 """
 from __future__ import annotations
 
+import asyncio
 import contextvars
 from collections.abc import Callable
 from contextlib import contextmanager, nullcontext
@@ -22,6 +23,7 @@ from typing import Any, TypeVar
 T = TypeVar("T")
 
 _READ_ONLY_ROLE_PAGES = frozenset({"/", "/external-agents", "/approvals"})
+_DISPLAY_PAGE_SLOTS = 8
 
 _SCOPE: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar(
     "maverick_dashboard_request_memo", default=None,
@@ -50,6 +52,15 @@ def fresh_configuration():
         _SCOPE.reset(token)
 
 
+def _display_page_slots() -> asyncio.Semaphore:
+    loop = asyncio.get_running_loop()
+    slots = getattr(loop, "_second_shift_display_page_slots", None)
+    if slots is None:
+        slots = asyncio.Semaphore(_DISPLAY_PAGE_SLOTS)
+        loop._second_shift_display_page_slots = slots
+    return slots
+
+
 class RequestMemoMiddleware:
     """Pure ASGI: one fresh memo per HTTP request or WebSocket connection.
 
@@ -76,13 +87,16 @@ class RequestMemoMiddleware:
             with kept_reads(), single_read(fresh=True) if display_page else nullcontext():
                 from .auth import display_role_reads, probe_path
 
-                if scope["type"] == "http" and not probe_path(scope):
-                    # A probe answers without configuration or a worker thread.
-                    from starlette.concurrency import run_in_threadpool
+                # Queue before starting page checks or rendering so a burst
+                # does not fragment the worker pool into too many active reads.
+                async with _display_page_slots() if display_page else nullcontext():
+                    if scope["type"] == "http" and not probe_path(scope):
+                        # A probe answers without configuration or a worker thread.
+                        from starlette.concurrency import run_in_threadpool
 
-                    await run_in_threadpool(_prime_request_configuration)
-                with display_role_reads() if display_page else nullcontext():
-                    await self.app(scope, receive, send)
+                        await run_in_threadpool(_prime_request_configuration)
+                    with display_role_reads() if display_page else nullcontext():
+                        await self.app(scope, receive, send)
         finally:
             _SCOPE.reset(token)
 

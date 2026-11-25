@@ -1126,7 +1126,7 @@ def seal_to_str(text: str) -> str:
     return _STR_PREFIX + base64.b64encode(seal(text.encode("utf-8"))).decode("ascii")
 
 
-def unseal_from_str(s: str) -> str:
+def unseal_from_str(s: str, *, key_cache: dict[tuple[str, bytes], object] | None = None) -> str:
     """Inverse of :func:`seal_to_str`.
 
     Strings without the marker are returned unchanged (legacy plaintext written
@@ -1135,9 +1135,10 @@ def unseal_from_str(s: str) -> str:
     a marked value is only decrypted after its payload decodes to a structurally
     valid sealed blob. Marker collisions remain plaintext; authentic-looking
     sealed blobs still fail closed if decryption/authentication fails.
+    A caller may reuse resolved keys for one result set.
     """
     if is_bound_str(s):
-        return unseal_bound_from_str(s)
+        return unseal_bound_from_str(s, key_cache=key_cache)
     if not is_sealed_str(s):
         return s
     try:
@@ -1146,7 +1147,8 @@ def unseal_from_str(s: str) -> str:
         return s
     if not is_sealed(blob) or len(blob) < len(_MAGIC) + _NONCE_BYTES + 16:
         return s
-    return unseal(blob).decode("utf-8", errors="replace")
+    plain = unseal(blob) if key_cache is None else _unseal_with_key_cache(blob, key_cache)
+    return plain.decode("utf-8", errors="replace")
 
 
 def unseal_many_from_str(values: list[str]) -> list[str]:

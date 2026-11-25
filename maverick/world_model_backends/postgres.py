@@ -1219,7 +1219,7 @@ def _legacy_of(table: str, id_column: str) -> str:
             f"WHERE lp.id = {id_column}), FALSE)")
 
 
-def _unseal(text, context=None, *, legacy_row=False):
+def _unseal(text, context=None, *, legacy_row=False, at_rest=None, key_cache=None):
     """Inverse of :func:`_seal` (no-op when at-rest is off; legacy plaintext and
     strict-mode handling identical to the SQLite backend). A value bound to
     another column than ``context`` is withheld.
@@ -1233,13 +1233,13 @@ def _unseal(text, context=None, *, legacy_row=False):
     so they never see a legacy row under a tenant."""
     from ..world_model import _dec_field
     if legacy_row:
-        value = _open_unbound(text, context)
+        value = _open_unbound(text, context, at_rest=at_rest, key_cache=key_cache)
         if value is not None:
             return value
-    return _dec_field(text, context=context)
+    return _dec_field(text, context=context, at_rest=at_rest, key_cache=key_cache)
 
 
-def _open_unbound(text, context):
+def _open_unbound(text, context, *, at_rest=None, key_cache=None):
     """A legacy value opened with the empty tenant binding, or None when that
     binding does not open it (withheld or raised) or there is no tenant to
     differ from: the caller then reads it the ordinary way."""
@@ -1249,7 +1249,7 @@ def _open_unbound(text, context):
         return None
     try:
         with unbound_row_scope():
-            value = _dec_field(text, context=context)
+            value = _dec_field(text, context=context, at_rest=at_rest, key_cache=key_cache)
     except EncryptionUnavailable:
         return None
     return None if value == _UNSEALED_WITHHELD else value
@@ -1278,7 +1278,7 @@ def _goal_from_decoded_row(row, title, description, result) -> PGGoal:
     )
 
 
-def _dec_approval_row(r):
+def _dec_approval_row(r, *, at_rest=None, key_cache=None):
     """Build an Approval, unsealing action/scope/detail (provenance is trusted
     plaintext metadata, sealed neither here nor in SQLite). Row order: id,
     action, risk, scope, detail, provenance, status, requested_at, decided_at,
@@ -1286,9 +1286,9 @@ def _dec_approval_row(r):
     goal_id, department, undo_hold, and optionally tenant_id IS NULL."""
     from ..world_records import Approval
     legacy = len(r) > 17 and bool(r[17])
-    return Approval(r[0], _unseal(r[1], "approvals.action", legacy_row=legacy), r[2],
-                    _unseal(r[3], "approvals.scope", legacy_row=legacy),
-                    _unseal(r[4], "approvals.detail", legacy_row=legacy),
+    return Approval(r[0], _unseal(r[1], "approvals.action", legacy_row=legacy, at_rest=at_rest, key_cache=key_cache), r[2],
+                    _unseal(r[3], "approvals.scope", legacy_row=legacy, at_rest=at_rest, key_cache=key_cache),
+                    _unseal(r[4], "approvals.detail", legacy_row=legacy, at_rest=at_rest, key_cache=key_cache),
                     r[5], r[6], r[7], r[8], r[9], r[10], r[11],
                     int(r[12]) if len(r) > 12 and r[12] is not None else 1,
                     r[13] if len(r) > 13 else None,
@@ -2585,6 +2585,8 @@ class PostgresWorldModel:
         return [int(row[0]) for row in rows]
 
     def pending_approvals(self) -> list:
+        from ..crypto_at_rest import at_rest_enabled
+
         frag, params = _tenant_scope()
         sql = (
             "SELECT id, action, risk, scope, detail, provenance, status, "
@@ -2599,7 +2601,9 @@ class PostgresWorldModel:
         with self._tx() as cur:
             cur.execute(sql, tuple(params))
             rows = cur.fetchall()
-        return [_dec_approval_row(r) for r in rows]
+        at_rest = at_rest_enabled() if rows else False
+        key_cache: dict[tuple[str, bytes], object] = {}
+        return [_dec_approval_row(r, at_rest=at_rest, key_cache=key_cache) for r in rows]
 
     def approval_audit_event_id(
         self,

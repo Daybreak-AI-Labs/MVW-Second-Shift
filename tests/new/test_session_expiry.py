@@ -297,3 +297,27 @@ async def test_read_only_page_shares_one_configuration_check_and_sees_the_next_p
     await page(scope, None, None)
     assert observations == ["first", "first", "replaced", "replaced"]
     assert len(witnesses) == 2
+
+
+@pytest.mark.asyncio
+async def test_read_only_pages_queue_before_more_than_eight_start(monkeypatch):
+    import asyncio
+
+    from maverick_dashboard import _request_memo
+
+    monkeypatch.setattr(_request_memo, "_prime_request_configuration", lambda: None)
+    active = peak = completed = 0
+
+    async def endpoint(scope, receive, send):
+        nonlocal active, peak, completed
+        active += 1
+        peak = max(peak, active)
+        await asyncio.sleep(.03)
+        active -= 1
+        completed += 1
+
+    page = _request_memo.RequestMemoMiddleware(endpoint)
+    calls = [page({"type": "http", "method": "GET", "path": "/"}, None, None) for _ in range(24)]
+    await asyncio.gather(*calls)
+    assert peak == 8
+    assert completed == 24
