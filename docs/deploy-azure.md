@@ -7,8 +7,9 @@ and uses PostgreSQL row-level security. The app's records (enrolled agents,
 trust, drift, platform checks, approvals cards, alerts, sign-in roles) are kept
 in PostgreSQL. The settings saved from the Settings page, the signed audit log,
 the emergency-stop file, browser sessions and Ekko's stores stay at
-`/var/lib/second-shift` on Azure Files. The app keeps up to eight database
-connections open for reuse (`SECOND_SHIFT_PG_POOL_SIZE`).
+`/var/lib/second-shift` on Azure Files. The kit sets a limit of eight connections per database pool
+(`SECOND_SHIFT_PG_POOL_SIZE`). See the local load check for total connections
+across the app.
 
 ## 1. Prepare the subscription and vault
 
@@ -410,6 +411,34 @@ and explicitly grant write access to the selected site. A site grant is
 required in addition to the Graph permission. The templates here provision
 the Second Shift service. The factory runtime and its document stores are
 future deployments.
+
+## Local load check
+
+From a Linux checkout with Python 3.12 and the PostgreSQL extra installed,
+point the developer tool at a disposable PostgreSQL 16 service. It requires
+an explicit `127.0.0.1` bootstrap login that can create roles and databases.
+It launches one local app process, creates a fresh database and a
+non-superuser service login for the run, and removes both on exit.
+
+```bash
+docker run --rm -d --name second-shift-load-db -p 127.0.0.1:55432:5432 \
+  -e POSTGRES_PASSWORD=local-load-only postgres:16
+export SECOND_SHIFT_LOAD_DSN='postgresql://postgres:local-load-only@127.0.0.1:55432/postgres'
+.venv/bin/python -m tools.load_check --people 50 --agents 25
+docker stop second-shift-load-db
+unset SECOND_SHIFT_LOAD_DSN
+```
+
+Each person opens Home, Outside agents and Approvals once in sequence using
+a registered, signed-in session. Each enrolled agent screens one low-risk
+proposal and reports one run with its own key. The concurrent burst also
+includes ten card rejections through the Teams webhook. The tool signs
+those activities with a local test key and uses a stand-in for the outbound
+Teams connector. It checks that the returned card records the rejection.
+The runs use row-level security, encrypted records, an explicit workspace
+and the kit's pool setting of eight. The tool measures complete HTTP
+responses on loopback. The test excludes sign-in redirects, browser asset
+downloads and network time to Microsoft or Azure.
 
 ## Local verification
 
