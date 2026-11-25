@@ -56,7 +56,7 @@ Set the worker count and the Container App's CPU and memory in the Bicep kit fro
 results (use a CPU and memory pair Container Apps allows, and cite the page). Add this job to the
 review queue.
 
-## 3. Browser sessions and Ekko's stores in PostgreSQL
+## 3. Browser sessions and Ekko's stores in PostgreSQL (PR #17)
 
 Branch `codex/sqlite-stores-to-postgres`. With several worker processes and 2,000 Ekko recorders,
 the three SQLite stores in the data folder (browser sessions
