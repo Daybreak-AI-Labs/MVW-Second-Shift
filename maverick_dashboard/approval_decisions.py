@@ -427,18 +427,20 @@ def approval_view(approval_id: int, *, world=None) -> dict | None:
 
     card = None
     card_status = "legacy"
-    detail = safe(approval.detail)
     try:
         card = decode_approval_detail(approval.detail)
     except ApprovalCardError:
         detail = "Structured approval details failed their integrity check."
         card_status = "invalid"
-    if card is not None:
-        card_status = "expired" if time.time() >= card["expires_at"] else "current"
-        if card_status == "expired":
+    else:
+        if card is None:
+            detail = safe(approval.detail)
+        elif time.time() >= card["expires_at"]:
+            card_status = "expired"
             card = None
             detail = "This request's decide-by time has passed. Reject it and ask for a new request."
         else:
+            card_status = "current"
             detail = card["summary"]
     try:
         from .app import _approval_source

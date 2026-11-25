@@ -311,3 +311,53 @@ The paired browser and agent run also passed. The slowest serial request
 was 151 ms, all 100 burst pages finished under two seconds, and all 2,000
 steady pages finished under one second with zero page or Teams failures.
 [Paired browser and agent run](https://github.com/Daybreak-AI-Labs/MVW-Second-Shift/actions/runs/45580352091/job/139088544754)
+
+### Browser traffic with live agents
+
+The benchmark's `--mixed-live` scenario uses 20,000 saved people.
+In the measured burst, 100 signed-in users open Home, Outside agents or
+Approvals while 25 agents start live runs, screen an action, poll a bound
+approval, send a heartbeat and finish. One separate Teams card receives a
+decision during the burst. The load driver checks response statuses,
+approval bindings and successful completion of all 25 agent workflows.
+
+The browser profile identified governed-record reads on Home opening a new
+PostgreSQL connection each time. The Azure service policy puts those reads
+in the same bounded pool as named records. Live-run and approval polling
+handlers use the dashboard's existing database pool and dispatch blocking
+work to workers. Home ranks its visible pending approvals before formatting
+the five it displays. The three benchmark pages read visibility once per
+request, and Teams builds the current card after recording a vote.
+
+The paired run used the same AMD EPYC 7763 GitHub runner for both revisions,
+4 vCPU and 8 GiB for the app, and 2 vCPU and 8 GiB for PostgreSQL. Both revisions
+completed all 25 live workflows with zero browser, agent or Teams errors.
+
+| Operation | Baseline p95 | New p95 |
+| --- | ---: | ---: |
+| Home | 5,683 ms | 4,117 ms |
+| Outside agents | 5,682 ms | 4,025 ms |
+| Approvals | 5,407 ms | 3,988 ms |
+| Start live run | 3,757 ms | 1,837 ms |
+| Screen | 1,199 ms | 534 ms |
+| Approval poll | 1,310 ms | 451 ms |
+| Heartbeat | 1,868 ms | 513 ms |
+| Finish live run | 1,678 ms | 889 ms |
+| Teams card (one request) | 1,746 ms | 3,220 ms |
+
+Pages finishing within two seconds rose from 38 of 100 to 51 of 100.
+This mixed burst still queues page work. The Teams request had a single
+sample per revision and started with the browser and agent requests.
+[Paired browser and live-agent benchmark](https://github.com/Daybreak-AI-Labs/MVW-Second-Shift/actions/runs/45587134033/job/139111485206)
+
+The separate Round 4 workload passed on Intel Xeon 6975P-C. The slowest
+serial request was 141 ms. All 100 burst pages finished within two seconds
+and all 2,000 steady pages finished within one second, with no page or Teams
+failures. The 100-agent burst completed after bounded retries. With 500
+simultaneous arrivals, page p95 reached 4.32 seconds and 259 of 500 pages
+finished within two seconds. [Round 4 workload](https://github.com/Daybreak-AI-Labs/MVW-Second-Shift/actions/runs/45587134033/job/139111485959)
+
+The first revision of this work missed the serial and 100-person burst
+targets on AMD EPYC 7763. In that run 84 of 100 pages finished within two
+seconds and the slowest Teams request took 205 ms.
+[Earlier Round 4 workload](https://github.com/Daybreak-AI-Labs/MVW-Second-Shift/actions/runs/45585493052/job/139105897794)

@@ -1153,7 +1153,7 @@ def _meter_spend(meta: dict, gid: int, *, cost: float, idem: str,
     return over_budget
 
 
-def start_run(agent_id: str, run: dict, *, shield: Any | None = None) -> dict:
+def start_run(agent_id: str, run: dict, *, shield: Any | None = None, world_factory=None) -> dict:
     """Open a LIVE external run on the Operating Record.
 
     The goal lands ``active`` under ``agent:<id>`` so Oversight sees the work
@@ -1184,7 +1184,7 @@ def start_run(agent_id: str, run: dict, *, shield: Any | None = None) -> dict:
         raise ExternalAgentsError("run title rejected by the ingest screen")
     principal = f"agent:{agent_id}"
     from .world_model import open_world
-    w = open_world()
+    w = (world_factory or open_world)()
     gid = w.create_goal(
         title, description=summary or "", owner=principal,
         domain=str(run.get("department") or meta.get("department") or ""))
@@ -1215,7 +1215,7 @@ def start_run(agent_id: str, run: dict, *, shield: Any | None = None) -> dict:
             "heartbeat_seconds": heartbeat_seconds}
 
 
-def heartbeat(agent_id: str, goal_id: int) -> dict:
+def heartbeat(agent_id: str, goal_id: int, *, world_factory=None) -> dict:
     """Keep a live run alive AND ask permission to continue.
 
     Returns ``{"continue": bool, "reason": str}``. ``continue: false`` is
@@ -1236,8 +1236,8 @@ def heartbeat(agent_id: str, goal_id: int) -> dict:
         return {"continue": False,
                 "reason": "agent is contained or unenrolled"}
     from .world_model import open_world
-    alive = open_world().touch_goal(int(goal_id),
-                                    expected_owner=f"agent:{agent_id}")
+    alive = (world_factory or open_world)().touch_goal(int(goal_id),
+                                                       expected_owner=f"agent:{agent_id}")
     if not alive:
         return {"continue": False,
                 "reason": "run is not live under this agent (finished, "
@@ -1246,7 +1246,7 @@ def heartbeat(agent_id: str, goal_id: int) -> dict:
 
 
 def finish_run(agent_id: str, goal_id: int, run: dict,
-               *, shield: Any | None = None) -> dict:
+               *, shield: Any | None = None, world_factory=None) -> dict:
     """Close a live run: outcome, step trail, costed episode, spend meter.
 
     Same schema as ``record_run`` minus ``title``. The goal must be live and
@@ -1269,7 +1269,7 @@ def finish_run(agent_id: str, goal_id: int, run: dict,
     contained = bool(meta.get("contained"))
     principal = f"agent:{agent_id}"
     from .world_model import open_world
-    w = open_world()
+    w = (world_factory or open_world)()
     goal = w.get_goal(int(goal_id))
     if goal is None or goal.owner != principal or goal.status not in (
             "active", "pending"):
@@ -1861,6 +1861,7 @@ def approval_status(
     approval_id: int,
     *,
     expected_binding_sha256: str = "",
+    world_factory=None,
 ) -> dict:
     """Poll endpoint for a parked ``screen`` approval: the external agent
     holds its action until the human decides in the dashboard queue."""
@@ -1872,7 +1873,7 @@ def approval_status(
     )
     from .world_model import open_world
 
-    approval = open_world().get_approval(int(approval_id))
+    approval = (world_factory or open_world)().get_approval(int(approval_id))
     requester = f"agent:{agent_id}"
     if (
         approval is None

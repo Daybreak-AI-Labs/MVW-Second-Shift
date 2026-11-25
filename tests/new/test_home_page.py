@@ -148,6 +148,32 @@ def test_the_sidebar_offers_home_to_everyone_and_approvals_only_to_those_who_may
         assert ('href="/approvals"' in html) == (role in {"admin", "governance_lead", "operator", "approver"}), role
 
 
+def test_page_admission_and_navigation_share_one_current_visibility_read(person, monkeypatch):
+    from maverick import record_documents
+    from maverick_dashboard import ui_visibility
+
+    viewer = person("viewer")
+    path = ui_visibility.store_path()
+    read_text = record_documents.RecordDocument.read_text
+    reads = []
+
+    def count(document):
+        if document.path == path:
+            reads.append(document.path)
+        return read_text(document)
+
+    def sidebar():
+        return _home(viewer).split('<aside class="sidebar"', 1)[1].split("</aside>", 1)[0]
+
+    monkeypatch.setattr(record_documents.RecordDocument, "read_text", count)
+    assert 'href="/external-agents"' in sidebar()
+    assert len(reads) == 1
+    record_documents.at(path).write_text('{"/external-agents":{"viewer":false}}')
+    assert 'href="/external-agents"' not in sidebar()
+    assert len(reads) == 2
+    assert viewer.get("/external-agents").status_code == 403
+
+
 def test_each_item_links_to_where_it_is_fixed(person, installation, monkeypatch):
     _everything_needing_attention(person, installation, monkeypatch)
     html = _home(person("admin"))
@@ -175,6 +201,33 @@ def test_the_most_serious_comes_first(person, installation, monkeypatch):
     _everything_needing_attention(person, installation, monkeypatch)
     agents = _home(person("admin")).split('id="home-agents"', 1)[1].split("</ul>", 1)[0]
     assert agents.index("blocked for breaking rules") < agents.index("over its budget")
+
+
+def test_home_formats_only_the_five_highest_priority_visible_approvals(monkeypatch):
+    from types import SimpleNamespace
+
+    from maverick.safety import secret_detector
+    from maverick_dashboard import _shared, content_access, home_page
+
+    approvals = [SimpleNamespace(id=index, action=f"Request {index}", requested_at=index,
+                                 risk="critical" if index < 4 else "medium", provenance="external_agents")
+                 for index in range(10)]
+    world = SimpleNamespace(pending_approvals=lambda: approvals)
+    monkeypatch.setattr(_shared, "_world", lambda: world)
+    monkeypatch.setattr(content_access, "readable_approvals", lambda request, rows, world: rows[1:])
+    formatted = []
+    redact = secret_detector.redact
+
+    def track(text):
+        formatted.append(text)
+        return redact(text)
+
+    monkeypatch.setattr(secret_detector, "redact", track)
+    section = {}
+    home_page._approvals(section, None)
+    assert [item["href"] for item in section["lines"]] == [f"/approvals#approval-{index}" for index in (3, 2, 1, 9, 8)]
+    assert section["count"] == 9
+    assert formatted == [item["text"] for item in section["lines"]]
 
 
 # ----------------------------------------------------------------- escaping

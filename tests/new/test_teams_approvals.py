@@ -408,6 +408,35 @@ def _click(bot, *args, **kwargs):
     return bot.handle_invoke(teams_bot.parse_activity(_invoke(*args, **kwargs), bot_id=bot.connector.bot_id))
 
 
+def test_teams_renders_only_the_current_card_after_recording_the_vote(env, world, bot, monkeypatch):
+    from maverick.approval_cards import APPROVAL_DETAIL_PREFIX
+    from maverick.safety import secret_detector
+    from maverick_dashboard import approval_decisions
+
+    _link("alice")
+    approval_id, binding = _park(world)
+    project = approval_decisions.approval_view
+    states = []
+    envelope_scans = []
+    redact = secret_detector.redact
+
+    def track(*args, **kwargs):
+        view = project(*args, **kwargs)
+        states.append(view["approval"]["status"])
+        return view
+
+    def no_envelope(text):
+        if text.startswith(APPROVAL_DETAIL_PREFIX):
+            envelope_scans.append(True)
+        return redact(text)
+
+    monkeypatch.setattr(approval_decisions, "approval_view", track)
+    monkeypatch.setattr(secret_detector, "redact", no_envelope)
+    assert "Rejected by" in _message_text(_click(bot, "reject", approval_id, binding))
+    assert states == ["denied"]
+    assert envelope_scans == []
+
+
 def test_a_card_for_a_changed_request_is_refused_on_the_card_and_stays_open(env, world, bot):
     _link("alice")
     approval_id, binding = _park(world)

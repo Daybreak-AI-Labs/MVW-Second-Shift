@@ -43,7 +43,8 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
-from starlette.concurrency import run_in_threadpool
+
+from ._shared import _world
 
 log = logging.getLogger("maverick.dashboard.external_gateway")
 
@@ -274,7 +275,7 @@ def authenticate_agent(request: Request, credential: AgentCredential, body: byte
     return agent.id
 
 
-async def _require_agent(request: Request) -> str:
+def _require_agent(request: Request) -> str:
     _gate()
     agent_id = getattr(request.state, "external_agent_id", None)
     if not agent_id:
@@ -282,7 +283,7 @@ async def _require_agent(request: Request) -> str:
     from maverick import external_agents as xa
 
     path = request.url.path
-    await run_in_threadpool(xa.note_seen, agent_id, "screen" if path.endswith("/screen") else "run" if "/runs" in path else "call")
+    xa.note_seen(agent_id, "screen" if path.endswith("/screen") else "run" if "/runs" in path else "call")
     return agent_id
 
 
@@ -307,8 +308,6 @@ def external_run_report(
     _rate_limit(agent_id, "runs")
     from maverick import external_agents as xa
 
-    from ._shared import _world
-
     try:
         out = xa.record_run(agent_id, payload.model_dump(), shield=_shield(), world_factory=_world)
     except xa.ExternalAgentsError as e:
@@ -317,7 +316,7 @@ def external_run_report(
 
 
 @router.post("/runs/start", status_code=201)
-async def external_run_start(
+def external_run_start(
     payload: ExternalRunStartIn, agent_id: str = Depends(_require_agent),
 ) -> dict:
     """Open a LIVE run: the goal is visible on the Operating Record while
@@ -326,25 +325,25 @@ async def external_run_start(
     _rate_limit(agent_id, "runs")
     from maverick import external_agents as xa
     try:
-        out = xa.start_run(agent_id, payload.model_dump(), shield=_shield())
+        out = xa.start_run(agent_id, payload.model_dump(), shield=_shield(), world_factory=_world)
     except xa.ExternalAgentsError as e:
         raise HTTPException(status_code=403, detail=str(e)) from e
     return {"ok": True, **out}
 
 
 @router.post("/runs/{goal_id}/heartbeat")
-async def external_run_heartbeat(
+def external_run_heartbeat(
     goal_id: int, agent_id: str = Depends(_require_agent),
 ) -> dict:
     """Keep a live run alive and learn whether to continue — ``continue:
     false`` is the kill switch reaching mid-flight work."""
     _rate_limit(agent_id, "heartbeat")
     from maverick import external_agents as xa
-    return xa.heartbeat(agent_id, goal_id)
+    return xa.heartbeat(agent_id, goal_id, world_factory=_world)
 
 
 @router.post("/runs/{goal_id}/finish")
-async def external_run_finish(
+def external_run_finish(
     goal_id: int, payload: ExternalRunFinishIn,
     agent_id: str = Depends(_require_agent),
 ) -> dict:
@@ -353,7 +352,7 @@ async def external_run_finish(
     from maverick import external_agents as xa
     try:
         out = xa.finish_run(agent_id, goal_id, payload.model_dump(),
-                            shield=_shield())
+                            shield=_shield(), world_factory=_world)
     except xa.ExternalAgentsError as e:
         raise HTTPException(status_code=403, detail=str(e)) from e
     return {"ok": True, **out}
@@ -367,14 +366,12 @@ def external_screen(
     _rate_limit(agent_id, "screen")
     from maverick import external_agents as xa
 
-    from ._shared import _world
-
     return xa.screen(agent_id, payload.tool, detail=payload.detail,
                      risk=payload.risk or None, shield=_shield(), world_factory=_world)
 
 
 @router.get("/approvals/{approval_id}")
-async def external_approval_status(
+def external_approval_status(
     approval_id: int,
     binding_sha256: str = Query(default="", max_length=64),
     agent_id: str = Depends(_require_agent),
@@ -387,6 +384,7 @@ async def external_approval_status(
             agent_id,
             approval_id,
             expected_binding_sha256=binding_sha256,
+            world_factory=_world,
         )
     except xa.ApprovalBindingMismatch as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
@@ -638,7 +636,7 @@ _OPENAPI: dict = {
 
 
 @router.get("/openapi.json")
-async def external_openapi(request: Request) -> dict:
+def external_openapi(request: Request) -> dict:
     """The importable gateway description (Agentforce External Services /
     Bedrock action groups consume this file directly). No bearer required —
     pure shape, no data, and the operator needs it before credentials exist —

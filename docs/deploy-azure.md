@@ -13,8 +13,10 @@ emergency-stop file and Ekko's consent and session authority files stay at
 The replica has 4 vCPU and 8 GiB, a supported
 [Azure Container Apps Consumption allocation](https://learn.microsoft.com/en-us/azure/container-apps/containers#allocations).
 The kit sets eight connections per database pool per worker
-(`SECOND_SHIFT_PG_POOL_SIZE`). See the [MVW timings](mvw-performance.md)
-for the measured workload. The four workers together admit up to
+(`SECOND_SHIFT_PG_POOL_SIZE`). Governed records such as the model register,
+assessments and the agent factory share the named-record pool.
+See the [MVW timings](mvw-performance.md) for the measured workload.
+The four workers together admit up to
 32 agent requests and four requests that need a body to verify the sender.
 The limits apply across the replica. One worker runs the scheduled jobs and
 another takes over if it stops. Keep the replica count at one.

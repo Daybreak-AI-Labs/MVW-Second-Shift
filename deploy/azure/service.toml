@@ -1,6 +1,10 @@
 [kms]
 provider = "azure"
 
+[governed_records]
+# Share the named-record pool by matching SECOND_SHIFT_PG_POOL_SIZE in app.bicep.
+pool_size = 8
+
 [auth.oidc.role_map]
 "SecondShift.Admin" = "admin"
 "SecondShift.GovernanceLead" = "governance_lead"

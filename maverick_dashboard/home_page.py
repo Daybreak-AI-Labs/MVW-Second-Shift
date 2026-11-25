@@ -21,6 +21,7 @@ import logging
 import time
 from collections.abc import Callable
 from datetime import datetime, timezone
+from heapq import nsmallest
 from typing import Any
 
 from fastapi import Request
@@ -96,8 +97,10 @@ def _approvals(section: dict, request: Request) -> None:
 
     world = _world()
     waiting = readable_approvals(request, world.pending_approvals(), world)
+    shown = nsmallest(SHOWN, waiting, key=lambda row: (-_RISK_RANK.get(str(row.risk or ""), 0),
+                                                     -float(row.requested_at)))
     items = []
-    for row in waiting:
+    for row in shown:
         action = " ".join(str(row.action or "").split())
         parts = action.split(":")
         agent = parts[1] if (row.provenance == "external_agents" and len(parts) == 3 and parts[0] == "external") else ""
@@ -110,10 +113,8 @@ def _approvals(section: dict, request: Request) -> None:
             "href": f"/approvals#approval-{row.id}",
             "severity": "high" if risk in ("high", "critical") else "medium",
             "at": float(row.requested_at or 0),
-            "risk": _RISK_RANK.get(risk, 0),
         })
-    items.sort(key=lambda item: (-item["risk"], -item["at"]))
-    section.update(lines=items[:SHOWN], count=len(items), watching="requests waiting for a decision")
+    section.update(lines=items, count=len(waiting), watching="requests waiting for a decision")
 
 
 def _agents_enabled() -> bool:
