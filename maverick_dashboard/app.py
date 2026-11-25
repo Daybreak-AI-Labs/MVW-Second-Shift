@@ -875,22 +875,22 @@ _AUTH_EXEMPT = {
 }
 _EXTERNAL_BODY_SLOTS = 32
 _EXTERNAL_UNSIGNED_BODY_SLOTS = 4
+_RECORDER_BODY_SLOTS = 64
 _EXTERNAL_BODY_TIMEOUT_SECONDS = 10.0
 _external_body_limiters: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 _external_body_limiter_lock = threading.Lock()
 
 
-def _external_body_limiter(needs_body_to_authenticate: bool) -> asyncio.Semaphore:
+def _external_body_limiter(namespace: str, limit: int) -> asyncio.Semaphore:
     loop = asyncio.get_running_loop()
     with _external_body_limiter_lock:
         limiters = _external_body_limiters.get(loop)
         if limiters is None:
-            limiters = {
-                True: asyncio.Semaphore(_EXTERNAL_UNSIGNED_BODY_SLOTS),
-                False: asyncio.Semaphore(_EXTERNAL_BODY_SLOTS),
-            }
+            limiters = {}
             _external_body_limiters[loop] = limiters
-        return limiters[needs_body_to_authenticate]
+        if namespace not in limiters:
+            limiters[namespace] = asyncio.Semaphore(limit)
+        return limiters[namespace]
 
 
 _EVIDENCE_GATEWAY_PREFIX = "/api/v1/security/assurance/gateway/"
@@ -952,20 +952,24 @@ def _gateway_busy() -> HTTPException:
                          headers={"Retry-After": "1", "X-Second-Shift-Admission": "busy"})
 
 
-async def _take_external_body_slot(needs_body_to_authenticate: bool):
+async def _take_external_body_slot(needs_body_to_authenticate: bool, *, recorder: bool = False):
     from .worker_coordination import active_root, take_slot
 
+    if recorder:
+        namespace, limit = "admitted-recorder", _RECORDER_BODY_SLOTS
+    elif needs_body_to_authenticate:
+        namespace, limit = "pending-agent", _EXTERNAL_UNSIGNED_BODY_SLOTS
+    else:
+        namespace, limit = "admitted-agent", _EXTERNAL_BODY_SLOTS
     root = active_root()
     if root is not None:
-        limit = _EXTERNAL_UNSIGNED_BODY_SLOTS if needs_body_to_authenticate else _EXTERNAL_BODY_SLOTS
-        namespace = "pending-agent" if needs_body_to_authenticate else "admitted-agent"
         deadline = time.monotonic() + 1.0
         while (slot := take_slot(root, namespace, limit)) is None:
             if time.monotonic() >= deadline:
                 raise _gateway_busy()
             await asyncio.sleep(0.02)
         return slot
-    limiter = _external_body_limiter(needs_body_to_authenticate)
+    limiter = _external_body_limiter(namespace, limit)
     try:
         await asyncio.wait_for(limiter.acquire(), timeout=1.0)
     except TimeoutError as exc:
@@ -984,7 +988,8 @@ async def bound_public_governance_body(request: Request, call_next):
 
     try:
         credential = None
-        if path.startswith("/api/v1/external/ekko/"):
+        recorder = path.startswith("/api/v1/external/ekko/")
+        if recorder:
             from .ekko_handover_api import _known_key
 
             key = await run_in_threadpool(_known_key, request)
@@ -1005,7 +1010,7 @@ async def bound_public_governance_body(request: Request, call_next):
             finally:
                 pending.release()
         else:
-            admitted = await _take_external_body_slot(False)
+            admitted = await _take_external_body_slot(False, recorder=recorder)
         try:
             request._body = body if body is not None else await _bounded_external_body(request)  # noqa: SLF001
             return await call_next(request)

@@ -200,9 +200,11 @@ async def recorder_hour(client, token, recorders, seconds):
     loop = asyncio.get_running_loop()
     starts = loop.time()
     wall_start = time.time()
+    flush_turns = round(FLUSH_SECONDS / poll)
 
     async def recorder(index, key, session):
         offset = index * poll / len(recorders)
+        first_flush = flush_turns + index % flush_turns
         headers = {"Authorization": f"Bearer {key}"}
         for turn in range(math.ceil(seconds / poll)):
             when = offset + turn * poll
@@ -210,7 +212,7 @@ async def recorder_hour(client, token, recorders, seconds):
                 break
             await asyncio.sleep(max(0, starts + when - loop.time()))
             await work.request("Recorder instructions", "GET", "/api/v1/external/ekko/instructions", headers)
-            if turn and turn % round(FLUSH_SECONDS / poll) == 0:
+            if turn >= first_flush and (turn - first_flush) % flush_turns == 0:
                 await work.request("Recorder hand-over", "POST", "/api/v1/external/ekko/handover", headers, {
                     "session_id": session, "batch_id": f"batch-{turn:04d}", "account": f"{index:064x}",
                     "activities": [{"app": "excel" if turn % 12 else "word", "action": "switch",
@@ -223,11 +225,10 @@ async def recorder_hour(client, token, recorders, seconds):
     except TimeoutError:
         pass
     planned = {"Recorder instructions": 0, "Recorder hand-over": 0}
-    flush_turns = round(FLUSH_SECONDS / poll)
     for index in range(len(recorders)):
         scheduled = math.ceil((seconds - index * poll / len(recorders)) / poll)
         planned["Recorder instructions"] += scheduled
-        planned["Recorder hand-over"] += max(0, (scheduled - 1) // flush_turns)
+        planned["Recorder hand-over"] += max(0, (scheduled - 1 - index % flush_turns) // flush_turns)
     result = work.report(1000)
     for name, expected in planned.items():
         item = result.get(name)

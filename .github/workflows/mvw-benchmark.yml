@@ -16,7 +16,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: mvw-benchmark-${{ github.ref }}-${{ contains(github.event.head_commit.message, 'Measure final recorder hour') && 'final-hour' || contains(github.event.head_commit.message, 'Measure recorder hour') && 'recorder-hour' || contains(github.event.head_commit.message, 'Measure burst') && 'quick' || 'comparison' }}
+  group: mvw-benchmark-${{ github.ref }}-${{ contains(github.event.head_commit.message, 'Measure final recorder hour') && github.sha || contains(github.event.head_commit.message, 'Measure recorder hour') && 'recorder-hour' || contains(github.event.head_commit.message, 'Measure burst') && 'quick' || 'comparison' }}
   cancel-in-progress: true
 
 jobs:

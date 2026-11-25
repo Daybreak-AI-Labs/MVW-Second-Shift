@@ -59,9 +59,9 @@ def supervisor(count: int) -> Iterator[None]:
             with _rate_connection(root) as conn:
                 conn.executescript(
                     "PRAGMA journal_mode=WAL;"
-                    "CREATE TABLE hits (namespace text, bucket text, seen real);"
-                    "CREATE INDEX hits_recent ON hits(namespace, seen);"
-                    "CREATE INDEX hits_bucket ON hits(namespace, bucket);"
+                    "CREATE TABLE rate_windows (namespace text, bucket text, latest real, hits text, "
+                    "PRIMARY KEY (namespace, bucket)) WITHOUT ROWID;"
+                    "CREATE INDEX window_expiry ON rate_windows(namespace, latest);"
                 )
             os.environ[WORKER_ROOT] = directory
             os.environ[_WORKER_PARENT] = str(os.getpid())
@@ -130,17 +130,30 @@ def _rate_connection(root: Path):
 def rate_allowed(root: Path, namespace: str, bucket: tuple[str, str], limit: int, max_buckets: int, *,
                  count_hit: bool = True) -> bool:
     """Check and spend one hit in a rolling minute across all the workers."""
-    now = time.monotonic()
     identity = json.dumps(bucket, separators=(",", ":"))
     with _rate_connection(root) as conn:
-        conn.execute("BEGIN IMMEDIATE")
-        conn.execute("DELETE FROM hits WHERE namespace = ? AND seen <= ?", (namespace, now - 60))
-        count = conn.execute("SELECT COUNT(*) FROM hits WHERE namespace = ? AND bucket = ?", (namespace, identity)).fetchone()[0]
-        if count >= limit:
+        # A preflight can inspect the latest committed window while another
+        # worker spends a hit. Counted requests still update atomically.
+        conn.execute("BEGIN IMMEDIATE" if count_hit else "BEGIN")
+        now = time.monotonic()
+        cutoff = now - 60
+        row = conn.execute(
+            "SELECT hits FROM rate_windows WHERE namespace = ? AND bucket = ? AND latest > ?",
+            (namespace, identity, cutoff),
+        ).fetchone()
+        hits = [stamp for stamp in json.loads(row[0]) if stamp > cutoff] if row else []
+        if len(hits) >= limit:
             return False
-        if not count and conn.execute(
-                "SELECT COUNT(DISTINCT bucket) FROM hits WHERE namespace = ?", (namespace,)).fetchone()[0] >= max_buckets:
+        if not hits and conn.execute(
+            "SELECT 1 FROM rate_windows WHERE namespace = ? AND latest > ? LIMIT 1 OFFSET ?",
+            (namespace, cutoff, max_buckets - 1),
+        ).fetchone():
             return False
         if count_hit:
-            conn.execute("INSERT INTO hits VALUES (?, ?, ?)", (namespace, identity, now))
+            conn.execute("DELETE FROM rate_windows WHERE namespace = ? AND latest <= ?", (namespace, cutoff))
+            conn.execute(
+                "INSERT INTO rate_windows VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(namespace, bucket) DO UPDATE SET latest = excluded.latest, hits = excluded.hits",
+                (namespace, identity, now, json.dumps([*hits, now], separators=(",", ":"))),
+            )
         return True
