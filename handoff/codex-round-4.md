@@ -66,7 +66,7 @@ the main database is PostgreSQL, keep them in PostgreSQL tables with the same te
 row-level security as the rest; keep SQLite when it is not. Same checks, limits and refusals in
 both modes; tests in both modes. Add to the review queue.
 
-## 4. Per-person records for 20,000 people
+## 4. Per-person records for 20,000 people (PR #18)
 
 Branch `codex/per-person-records`. The account names (`account_profiles.py`), sign-in subjects
 (`subject_directory.py`), Teams links (`teams_identity.py`) and signed-out sessions
