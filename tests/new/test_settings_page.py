@@ -286,3 +286,53 @@ def test_the_test_buttons_call_the_existing_endpoints(person):
 def test_the_page_script_uses_the_shared_helpers_and_confirms(person):
     page = person("admin").get("/settings").text
     assert "window.mvConfirm" in page and "window.mvFetchJSON" in page and "confirmed: true" in page
+
+
+def test_azure_policy_is_shown_and_cannot_be_changed_or_reset(person, installation, monkeypatch):
+    from pathlib import Path
+
+    from maverick import config, copilot_studio_gate
+
+    overlay = Path(__file__).resolve().parents[2] / "deploy" / "azure" / "service.toml"
+    monkeypatch.setenv(config.CONFIG_OVERLAY_ENV, str(overlay))
+    deployment(installation, '[approval]\nseparate_approver = "never"\nseparate_approver_all_requests = false\n'
+               '[copilot_studio_gate]\non_error = "allow"\nunenrolled = "allow"\n'
+               '[external_agents]\nallow_legacy_signatures = true\n')
+    admin = person("admin")
+    page = admin.get("/settings")
+    assert page.status_code == 200
+    view = admin.get(API)
+    assert view.status_code == 200
+    rows = {row["key"]: row for section in view.json()["sections"] for row in section["settings"]}
+    values = {
+        "approval.separate_approver": ("always", "never"),
+        "approval.separate_approver_all_requests": (True, False),
+        "copilot_studio_gate.on_error": ("block", "allow"),
+        "copilot_studio_gate.unenrolled": ("block", "allow"),
+        "external_agents.allow_legacy_signatures": (False, True),
+    }
+    for key, (fixed, attempted) in values.items():
+        row = rows[key]
+        assert (row["locked"], row["source"], row["value"]) == (True, "deployment", fixed), key
+        form = page.text.split(f'data-key="{key}"', 1)[1].split("</form>", 1)[0]
+        assert "Set by the deployment" in form and "disabled" in form and "data-settings-reset" not in form
+        assert admin.post(f"{API}/{key}", json={"value": attempted, "confirmed": True}).status_code == 409
+        assert admin.post(f"{API}/{key}/reset", json={"confirmed": True}).status_code == 409
+    assert not audit_rows(installation)
+    gate = copilot_studio_gate.load_settings()
+    assert (gate.on_error, gate.unenrolled) == ("block", "block")
+    assert config.get_external_agents()["allow_legacy_signatures"] is False
+
+
+@pytest.mark.parametrize("risk,quorum", [("low", 1), ("medium", 1), ("high", 2)])
+def test_azure_policy_always_requires_a_different_person(installation, monkeypatch, risk, quorum):
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    from maverick import config
+    from maverick.channel_approvals import separate_approver_refusal
+
+    monkeypatch.setenv(config.CONFIG_OVERLAY_ENV, str(Path(__file__).resolve().parents[2] / "deploy" / "azure" / "service.toml"))
+    approval = SimpleNamespace(risk=risk, approvals_required=quorum, requested_by="user:alice")
+    assert "someone else must approve" in separate_approver_refusal(None, approval, "user:alice")
+    assert separate_approver_refusal(None, approval, "user:bob") == ""

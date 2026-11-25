@@ -242,6 +242,22 @@ its local SQLite-backed workflows on your storage before enabling them.
 Second Shift strips callback queries from its Uvicorn access log. Apply
 the same rule to any ingress or proxy logs and restrict log access.
 
+### Settings fixed by the deployment
+
+The Azure settings overlay shipped in the image fixes these decisions.
+The Settings page shows each as **Set by the deployment**.
+
+| Setting | Azure deployment policy |
+| --- | --- |
+| Separate approver | A different person must approve a waiting request. This applies at every risk level and even when more than one vote is needed. |
+| Copilot Studio cannot decide | Refuse the action. |
+| Copilot Studio agent is unenrolled | Refuse the action until an administrator enrolls the agent. |
+| Older request signatures | Refuse version 1 signatures for all outside agents. Use version 2 when signing requests. |
+
+To change deployment policy, update the overlay in `deploy/azure/service.toml`,
+rebuild the image, and deploy the new digest. The Settings page cannot change
+or reset a locked value.
+
 ## 5. Enable approvals in Microsoft Teams (optional)
 
 Create a dedicated single-tenant Entra registration for the bot in the
