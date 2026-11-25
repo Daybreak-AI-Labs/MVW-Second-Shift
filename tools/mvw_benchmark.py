@@ -240,9 +240,45 @@ async def recorder_hour(client, token, recorders, seconds):
     return result
 
 
+class _TrafficClient:
+    """A lightweight load driver that does not scan the idle sockets each time."""
+
+    def __init__(self, origin, connections):
+        import aiohttp
+
+        self.aiohttp = aiohttp
+        self.session = aiohttp.ClientSession(
+            base_url=origin, connector=aiohttp.TCPConnector(limit=connections), trust_env=False,
+            timeout=aiohttp.ClientTimeout(total=60), cookie_jar=aiohttp.DummyCookieJar(),
+            auto_decompress=False,
+        )
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_):
+        await self.session.close()
+
+    async def request(self, method, path, *, headers=None, json=None):
+        try:
+            async with self.session.request(method, path, headers=headers, json=json, allow_redirects=False) as reply:
+                return httpx.Response(reply.status, headers=dict(reply.headers), content=await reply.read())
+        except (self.aiohttp.ClientError, TimeoutError) as exc:
+            raise httpx.TransportError("The local benchmark request did not complete.") from exc
+
+    async def get(self, path, **kwargs):
+        return await self.request("GET", path, **kwargs)
+
+    async def post(self, path, **kwargs):
+        return await self.request("POST", path, **kwargs)
+
+
 def client_for(origin, *, connections=800):
-    return httpx.AsyncClient(base_url=origin, trust_env=False, timeout=60,
-                             limits=httpx.Limits(max_connections=connections, max_keepalive_connections=connections))
+    try:
+        return _TrafficClient(origin, connections)
+    except ImportError:
+        return httpx.AsyncClient(base_url=origin, trust_env=False, timeout=60,
+                                 limits=httpx.Limits(max_connections=connections, max_keepalive_connections=connections))
 
 
 async def measure_steady(payload, args):
@@ -279,6 +315,37 @@ async def measure(payload, args):
     return result
 
 
+async def measure_resources(payload, args, monitor_connection, database_name):
+    """Sample database contention alongside the measured workload."""
+    complete = asyncio.Event()
+    samples = []
+
+    def snapshot():
+        return monitor_connection.execute(
+            "SELECT count(*), count(*) FILTER (WHERE state = 'active'), "
+            "count(*) FILTER (WHERE wait_event_type = 'Lock') "
+            "FROM pg_stat_activity WHERE datname = %s", (database_name,),
+        ).fetchone()
+
+    async def monitor():
+        while not complete.is_set():
+            samples.append(await asyncio.to_thread(snapshot))
+            try:
+                await asyncio.wait_for(complete.wait(), timeout=1)
+            except TimeoutError:
+                continue
+
+    task = asyncio.create_task(monitor())
+    try:
+        result = await measure(payload, args)
+    finally:
+        complete.set()
+        await task
+    totals = tuple(map(max, zip(*samples, strict=True)))
+    result["database"] = dict(zip(("peak_connections", "peak_active", "peak_lock_waits"), totals, strict=True))
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--image", default="second-shift:benchmark")
@@ -308,7 +375,7 @@ def main():
     output = args.output.resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
     name = "second-shift-mvw-" + uuid.uuid4().hex[:12]
-    with test_database(dsn) as (_, _, isolated_dsn):
+    with test_database(dsn) as (monitor_connection, database_name, isolated_dsn):
         command = [
             "docker", "run", "--rm", "-i", "--name", name, "--network", "host",
             "--cpus", str(args.cpus), "--memory", f"{args.memory_gib}g", "--memory-swap", f"{args.memory_gib}g",
@@ -327,7 +394,7 @@ def main():
                 startup = process.stdout.readline()
                 if not startup:
                     raise RuntimeError("The local benchmark app could not start. Read the container error.")
-                report = asyncio.run(measure(json.loads(startup), args))
+                report = asyncio.run(measure_resources(json.loads(startup), args, monitor_connection, database_name))
                 output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
                 print(output)
             finally:

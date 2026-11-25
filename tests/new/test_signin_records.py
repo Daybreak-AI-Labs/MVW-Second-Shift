@@ -168,3 +168,17 @@ def test_postgres_roster_reads_roles_and_presence_together(records_in_postgres, 
     assert len(selects) == 1
     assert not rbac.store_path().exists()
     assert "dashboard-users.json" in saved_records(records_in_postgres)
+
+
+def test_reading_a_related_record_keeps_the_held_postgres_connection(records_in_postgres, tmp_path, monkeypatch):
+    from maverick import record_documents
+
+    monkeypatch.setenv("MAVERICK_PG_POOL_SIZE", "1")
+    first = record_documents.at(tmp_path / "first.json")
+    second = record_documents.at(tmp_path / "second.json")
+    first.write_text("first")
+    second.write_text("second")
+    with first.locked():
+        first.write_text("updated")
+        assert second.read_text() == "second"
+        assert record_documents.read_texts(first.path, second.path) == ("updated", "second")

@@ -103,9 +103,13 @@ class RecordDocument:
             except FileNotFoundError:
                 return None
         key = _key(self.path)
-        held = (_HELD.get() or {}).get(key)
-        if held is not None:
-            return _select(held, key)
+        held = _HELD.get()
+        if held:
+            # Read related records in the current transaction. Borrowing a
+            # second connection while several writers wait behind the same
+            # row lock can exhaust the pool before the holder can finish.
+            cursor = held.get(key) or next(reversed(held.values()))
+            return _select(cursor, key)
         with _transaction() as cursor:
             return _select(cursor, key)
 
