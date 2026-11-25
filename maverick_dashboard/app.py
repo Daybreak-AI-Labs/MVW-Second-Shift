@@ -734,6 +734,9 @@ from .settings_page import create_settings_page_router  # noqa: E402
 
 app.include_router(settings_router)
 app.include_router(create_settings_page_router(templates))
+from .spend_api import create_spend_router  # noqa: E402
+
+app.include_router(create_spend_router(templates))
 from .my_agents_page import create_my_agents_page_router  # noqa: E402
 
 app.include_router(create_my_agents_page_router(templates))

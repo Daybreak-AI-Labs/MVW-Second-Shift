@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block title %}Spend · Second Shift{% endblock %}
+{% block content %}
+  {% macro usd(amount) %}{{ ("$%0.2f" | format(amount)) if amount is not none else "—" }}{% endmacro %}
+  <h1 class="page-title">Spend</h1>
+  <p class="page-subtitle">Completed outside-agent runs from {{ spend.from_month }} through {{ spend.through_month }} in UTC.</p>
+
+  <div class="panel">
+    <p><strong>{{ usd(spend.total_dollars) }} USD</strong> reported in this period.</p>
+    <a class="btn btn--ghost" href="/api/v1/spend.csv" download>Download CSV</a>
+  </div>
+
+  <section class="panel" aria-labelledby="agent-budgets">
+    <h2 id="agent-budgets">Agent budgets</h2>
+    <p class="muted">The month-end estimate uses this month’s reported spending rate.</p>
+    {% if spend.budgets %}
+    <div style="overflow-x: auto">
+      <table>
+        <thead>
+          <tr>
+            <th scope="col">Agent</th><th scope="col">Budget period</th><th scope="col">Used</th>
+            <th scope="col">Limit</th><th scope="col">Estimated at month end</th><th scope="col">Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for budget in spend.budgets %}
+          <tr>
+            <th scope="row">{{ budget.label }}</th><td>{{ budget.budget_period }}</td>
+            <td>{{ usd(budget.spent_dollars) }}</td><td>{{ usd(budget.limit_dollars) }}</td>
+            <td>{{ usd(budget.projected_dollars) }}</td>
+            <td>
+              {% if budget.over_limit %}<span class="badge failure">Over limit</span>
+              {% elif budget.projected_over_limit %}<span class="badge pending">Projected over limit</span>
+              {% elif budget.limit_dollars is none %}No limit
+              {% else %}Within limit{% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}<p>No outside agents are enrolled.</p>{% endif %}
+  </section>
+
+  {% for key, heading, column in (
+     ("months", "Spend by month", "Month"),
+     ("agents", "Spend by agent", "Agent"),
+     ("departments", "Spend by department", "Department"),
+     ("platforms", "Spend by platform", "Platform")
+  ) %}
+  <section class="panel" aria-labelledby="spend-{{ key }}">
+    <h2 id="spend-{{ key }}">{{ heading }}</h2>
+    {% if spend[key] %}
+    <div style="overflow-x: auto">
+      <table>
+        <thead><tr><th scope="col">{{ column }}</th><th scope="col">Reported spend (USD)</th><th scope="col">Runs</th></tr></thead>
+        <tbody>
+          {% for row in spend[key] %}
+          <tr><th scope="row">{{ row.label }}</th><td>{{ usd(row.dollars) }}</td><td>{{ row.runs }}</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}<p>No completed runs in this period.</p>{% endif %}
+  </section>
+  {% endfor %}
+{% endblock %}

@@ -2444,6 +2444,22 @@ class PostgresWorldModel:
             "runs": row[3],
         }
 
+    def agent_spend_groups(self, *, since: float, until: float) -> list:
+        """Aggregate completed outside-agent episodes without sharing legacy rows."""
+        from ..world_records import AgentSpendGroup
+
+        scope, params = _mutation_tenant_scope("g.tenant_id")
+        with self._tx() as cur:
+            cur.execute(
+                "SELECT g.owner, g.domain, to_char(to_timestamp(floor(e.ended_at)) AT TIME ZONE 'UTC', 'YYYY-MM') AS month, "
+                "COALESCE(SUM(e.cost_dollars), 0), COUNT(*) "
+                "FROM episodes e JOIN goals g ON e.goal_id = g.id "
+                "WHERE e.ended_at >= %s AND e.ended_at < %s AND substr(g.owner, 1, 6) = 'agent:' "
+                f"AND length(g.owner) > 6 AND {scope} GROUP BY g.owner, g.domain, month",
+                (since, until, *params),
+            )
+            return [AgentSpendGroup(*row) for row in cur.fetchall()]
+
     # ----- events -----
 
     def append_event(self, goal_id: int, agent: str, kind: str, content: str) -> int:

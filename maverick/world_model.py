@@ -49,6 +49,7 @@ from .metadata_history import SQLITE_INDEXES as _HISTORY_INDEXES
 from .paths import bind_tenant_namespace, current_tenant_id, data_dir
 from .personal_alert_revisions import SQLITE_MIGRATION as _PERSONAL_ALERT_MIGRATION
 from .webhook_subscriptions import SQLITE_SCHEMA as _WEBHOOK_SUBSCRIPTION_SCHEMA
+from .world_records import AgentSpendGroup
 from .world_records import Approval as Approval
 from .world_records import ApprovalAuditEvent as ApprovalAuditEvent
 from .world_records import EpisodeSpend as EpisodeSpend
@@ -2141,6 +2142,18 @@ class WorldModel:
             "output_tokens": row["out_tok"],
             "runs": row["runs"],
         }
+
+    def agent_spend_groups(self, *, since: float, until: float) -> list[AgentSpendGroup]:
+        """Aggregate completed outside-agent episodes in this workspace."""
+        rows = self._read_all(
+            "SELECT g.owner, g.domain, strftime('%Y-%m', CAST(e.ended_at AS INTEGER), 'unixepoch') AS month, "
+            "COALESCE(SUM(e.cost_dollars), 0), COUNT(*) "
+            "FROM episodes e JOIN goals g ON e.goal_id = g.id "
+            "WHERE e.ended_at >= ? AND e.ended_at < ? AND substr(g.owner, 1, 6) = 'agent:' "
+            "AND length(g.owner) > 6 GROUP BY g.owner, g.domain, month",
+            (since, until),
+        )
+        return [AgentSpendGroup(*row) for row in rows]
 
     # ----- goal events -----
     def append_event(self, goal_id: int, agent: str, kind: str, content: str) -> int:
