@@ -584,20 +584,22 @@ class TeamsBot:
 
     def _current_card(self, parsed, approval_id: int, decisions) -> dict:
         principal = self.principal_for(parsed)
-        if principal and self._may_see(decisions, approval_id, principal):
-            view = decisions.approval_view(approval_id, world=self._world())
+        world = self._world()
+        if principal and self._visible_approval(world, decisions, approval_id, principal) is not None:
+            view = decisions.approval_view(approval_id, world=world)
             if view is not None:
                 return teams_cards.card_response(self._render(view))
         return teams_cards.message_response("This was already received.")
 
-    def _may_see(self, decisions, approval_id: int, principal: str) -> bool:
-        world = self._world()
+    @staticmethod
+    def _visible_approval(world, decisions, approval_id: int, principal: str):
         try:
             approval = world.get_approval(int(approval_id))
-            return approval is not None and principal in decisions.channel_approvers(world, approval, among={principal})
+            if approval is not None and principal in decisions.channel_approvers(world, approval, among={principal}):
+                return approval
         except Exception:  # noqa: BLE001 -- what cannot be checked is not shown
             log.warning("teams: could not check who may see approval #%s", approval_id, exc_info=True)
-            return False
+        return None
 
     def _render(self, view: dict, **options) -> dict:
         return teams_cards.approval_card(view, show_request_detail=show_request_detail(),
@@ -612,14 +614,15 @@ class TeamsBot:
                 "Your Teams account isn't linked to a Second Shift user. Ask an administrator to link it, "
                 "or sign in to Second Shift once so it can be recognised.")
         world = self._world()
-        if not self._may_see(decisions, approval_id, principal):
+        approval = self._visible_approval(world, decisions, approval_id, principal)
+        if approval is None:
             return teams_cards.message_response(
                 "Your Second Shift account can't open this request. Ask an administrator for the "
                 "approver role or for access to it.")
-        view = decisions.approval_view(approval_id, world=world)
-        if view is None:
-            return teams_cards.message_response("This request no longer exists.")
-        if view["approval"]["status"] != "pending":
+        if approval.status != "pending":
+            view = decisions.approval_view(approval_id, world=world)
+            if view is None:
+                return teams_cards.message_response("This request no longer exists.")
             return teams_cards.card_response(self._render(
                 view, note="This request was already decided, so no decision was recorded from this click."))
         ack = data.get("acknowledged")
@@ -635,7 +638,9 @@ class TeamsBot:
             if fresh is not None and fresh["approval"]["status"] == "pending":
                 return teams_cards.card_response(self._render(fresh, note=exc.detail))
             return teams_cards.message_response(exc.detail)
-        fresh = decisions.approval_view(approval_id, world=world) or view
+        fresh = decisions.approval_view(approval_id, world=world)
+        if fresh is None:
+            return teams_cards.message_response("This request no longer exists.")
         return teams_cards.card_response(self._render(fresh, decided=result))
 
 

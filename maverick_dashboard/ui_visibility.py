@@ -28,6 +28,8 @@ Safety invariants (mirror ``maverick_dashboard.rbac``):
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 
 from . import rbac
@@ -467,6 +469,18 @@ def where(path: str, groups: list[dict], finder: list[dict]) -> dict | None:
 # Lockout guard: the pages an admin needs to *undo* a bad matrix save. Always
 # visible + reachable for the admin role, no matter what the store says.
 LOCKED = frozenset({("/settings", "admin"), ("/users", "admin")})
+_DISPLAY_OVERRIDES: ContextVar[list[dict[str, dict[str, bool]]] | None] = ContextVar(
+    "second_shift_display_visibility", default=None)
+
+
+@contextmanager
+def display_visibility_reads():
+    """Use one visibility read for admission and navigation on a read-only page."""
+    token = _DISPLAY_OVERRIDES.set([])
+    try:
+        yield
+    finally:
+        _DISPLAY_OVERRIDES.reset(token)
 
 
 def store_path() -> Path:
@@ -481,6 +495,15 @@ def overrides() -> dict[str, dict[str, bool]]:
     Re-validated on read so a hand-edited / corrupt store can't inject an
     unknown page, an unknown role, or a non-bool value.
     """
+    snapshot = _DISPLAY_OVERRIDES.get()
+    if snapshot is None:
+        return _read_overrides()
+    if not snapshot:
+        snapshot.append(_read_overrides())
+    return snapshot[0]
+
+
+def _read_overrides() -> dict[str, dict[str, bool]]:
     from maverick.record_documents import at
 
     try:

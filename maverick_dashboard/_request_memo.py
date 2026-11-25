@@ -86,6 +86,7 @@ class RequestMemoMiddleware:
             # display roles. Every request opens a new read.
             with kept_reads(), single_read(fresh=True) if display_page else nullcontext():
                 from .auth import bodyless_recorder_poll, display_role_reads, probe_path
+                from .ui_visibility import display_visibility_reads
 
                 # Queue before starting page checks or rendering so a burst
                 # does not fragment the worker pool into too many active reads.
@@ -97,7 +98,8 @@ class RequestMemoMiddleware:
                         from starlette.concurrency import run_in_threadpool
 
                         await run_in_threadpool(_prime_request_configuration)
-                    with display_role_reads() if display_page else nullcontext():
+                    with (display_role_reads() if display_page else nullcontext(),
+                          display_visibility_reads() if display_page else nullcontext()):
                         await self.app(scope, receive, send)
         finally:
             _SCOPE.reset(token)

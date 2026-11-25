@@ -148,6 +148,32 @@ def test_the_sidebar_offers_home_to_everyone_and_approvals_only_to_those_who_may
         assert ('href="/approvals"' in html) == (role in {"admin", "governance_lead", "operator", "approver"}), role
 
 
+def test_page_admission_and_navigation_share_one_current_visibility_read(person, monkeypatch):
+    from maverick import record_documents
+    from maverick_dashboard import ui_visibility
+
+    viewer = person("viewer")
+    path = ui_visibility.store_path()
+    read_text = record_documents.RecordDocument.read_text
+    reads = []
+
+    def count(document):
+        if document.path == path:
+            reads.append(document.path)
+        return read_text(document)
+
+    def sidebar():
+        return _home(viewer).split('<aside class="sidebar"', 1)[1].split("</aside>", 1)[0]
+
+    monkeypatch.setattr(record_documents.RecordDocument, "read_text", count)
+    assert 'href="/external-agents"' in sidebar()
+    assert len(reads) == 1
+    record_documents.at(path).write_text('{"/external-agents":{"viewer":false}}')
+    assert 'href="/external-agents"' not in sidebar()
+    assert len(reads) == 2
+    assert viewer.get("/external-agents").status_code == 403
+
+
 def test_each_item_links_to_where_it_is_fixed(person, installation, monkeypatch):
     _everything_needing_attention(person, installation, monkeypatch)
     html = _home(person("admin"))
