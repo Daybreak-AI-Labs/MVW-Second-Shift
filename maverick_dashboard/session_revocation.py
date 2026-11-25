@@ -160,8 +160,7 @@ def revocation_epoch(principal: str) -> float:
     key = (principal or "").strip()
     if record_documents.using_postgres():
         try:
-            with _keyed().transaction(_migrate) as store:
-                return _epoch(store.rows("people").get(key))
+            return _epoch(_keyed().read_one("people", key, _migrate))
         except OSError as exc:
             raise RevocationStoreError("The sign-out record could not be read.") from exc
     return float(_load().get(key, 0.0) or 0.0)

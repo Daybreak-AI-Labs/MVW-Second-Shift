@@ -1772,3 +1772,22 @@ def test_with_postgres_a_damaged_drift_record_is_refused_and_left_alone(tmp_path
         drift.evaluate(AGENT)
     assert "database" in str(refused.value) and "file" not in str(refused.value)
     assert saved_records(records_in_postgres)["external_agents_drift.json"] == '{"version": 1, "agents": []}'
+
+
+def test_findings_view_skips_agents_without_baselines_and_keeps_their_current_findings(monkeypatch):
+    _baselined("bot-reviewed")
+    _enroll("bot-learning")
+    _seed(_AFTER, "bot-reviewed", runs=40, tools={"crm_update": 14, "research": 5, "new_tool": 1})
+    expected = drift.detail("bot-reviewed", now=_JUDGED)["findings"]
+    recorded = []
+    evaluate = drift._evaluate_record
+
+    def observed(agent_id, *args, **kwargs):
+        recorded.append(agent_id)
+        return evaluate(agent_id, *args, **kwargs)
+
+    monkeypatch.setattr(drift, "_evaluate_record", observed)
+    rows = drift.roster_view(now=_JUDGED, findings_only=True)
+    assert recorded == ["bot-reviewed"]
+    assert [row["agent_id"] for row in rows] == ["bot-reviewed"]
+    assert rows[0]["findings"] == expected

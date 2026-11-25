@@ -55,6 +55,21 @@ class KeyedRecords:
             cursor.execute(_SCHEMA, prepare=False)
         _READY.add(dsn)
 
+    def read_one(self, name: str, key: str, migrate: Callable[[Collection], None]) -> str | None:
+        """Read one indexed entry and its migration marker in one snapshot."""
+        address = records._key(self.path)
+        self._ensure_schema()
+        with records._transaction(read_statement=True) as cursor:
+            records._run(
+                cursor, f"SELECT (SELECT body FROM {TABLE} WHERE address=%s AND name=%s AND key_id=%s) "
+                f"FROM {_SETS} WHERE address=%s", (address, name, _digest(key), address),
+            )
+            row = cursor.fetchone()
+        if row is not None:
+            return row[0]
+        with self.transaction(migrate) as collection:
+            return collection.rows(name).get(key)
+
     @contextmanager
     def transaction(self, migrate: Callable[[Collection], None], *, write: bool = False) -> Iterator[Collection]:
         address = records._key(self.path)

@@ -139,7 +139,7 @@ def _drift(section: dict) -> None:
         names = {row["id"]: _agent_name(row) for row in _roster()}
     except Exception:  # noqa: BLE001 - names are a convenience; the findings do not depend on them
         names = {}
-    rows = [row for row in agent_drift.roster_view() if row["findings_count"] > 0]
+    rows = agent_drift.roster_view(findings_only=True)
     rows.sort(key=lambda row: (-_DRIFT_RANK.get(row["highest_severity"], 0), -float(row["last_observed_at"] or 0)))
     items: list[dict] = []
     total = 0
@@ -148,7 +148,7 @@ def _drift(section: dict) -> None:
         if len(items) >= SHOWN * 2 or position >= DRIFT_AGENTS_READ:
             continue
         agent_id = row["agent_id"]
-        for finding in agent_drift.detail(agent_id)["findings"]:
+        for finding in row["findings"]:
             if finding.get("acknowledged"):
                 continue
             items.append({

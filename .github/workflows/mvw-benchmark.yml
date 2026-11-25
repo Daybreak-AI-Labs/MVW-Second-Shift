@@ -16,12 +16,16 @@ permissions:
   contents: read
 
 concurrency:
-  group: mvw-benchmark-${{ github.ref }}-${{ contains(github.event.head_commit.message, 'Measure recorder hour') && 'recorder-hour' || contains(github.event.head_commit.message, 'Measure burst') && 'quick' || 'comparison' }}
+  group: mvw-benchmark-${{ github.ref }}-${{ contains(github.event.head_commit.message, 'Measure final recorder hour') && 'final-hour' || contains(github.event.head_commit.message, 'Measure recorder hour') && 'recorder-hour' || contains(github.event.head_commit.message, 'Measure burst') && 'quick' || 'comparison' }}
   cancel-in-progress: true
 
 jobs:
   benchmark:
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario: ${{ fromJSON(contains(github.event.head_commit.message, 'Measure final recorder hour') && '["requested","comparison"]' || '["requested"]') }}
     timeout-minutes: 85
     services:
       postgres:
@@ -49,6 +53,7 @@ jobs:
       - name: Measure and profile the app at the Azure CPU and memory limits
         env:
           BENCHMARK_TITLE: ${{ github.event.head_commit.message }}
+          BENCHMARK_SCENARIO: ${{ matrix.scenario }}
           POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
           SECOND_SHIFT_LOAD_DSN: postgresql://postgres:local-benchmark-only@127.0.0.1:${{ job.services.postgres.ports['5432'] }}/postgres
         run: |
@@ -61,10 +66,11 @@ jobs:
           args=()
           if [ "$GITHUB_REF_NAME" = codex/load-check-mvw ]; then
             args=(--mvw --population 20000 --seconds 120 --require-targets)
-            case "$BENCHMARK_TITLE" in
-              *"Measure recorder hour"*) args=(--recorders 2000 --population 20000 --seconds 3600) ;;
-              *"Measure recorder pilot"*) args=(--recorders 2000 --population 20000 --seconds 65) ;;
-              *"Measure burst"*) args=(--quick --population 20000) ;;
+            case "$BENCHMARK_SCENARIO:$BENCHMARK_TITLE" in
+              requested:*"Measure recorder hour"*|requested:*"Measure final recorder hour"*)
+                args=(--recorders 2000 --population 20000 --seconds 3600) ;;
+              requested:*"Measure recorder pilot"*) args=(--recorders 2000 --population 20000 --seconds 65) ;;
+              requested:*"Measure burst"*) args=(--quick --population 20000) ;;
             esac
           fi
           docker exec "$POSTGRES_CONTAINER" cat /sys/fs/cgroup/cpu.max /sys/fs/cgroup/memory.max

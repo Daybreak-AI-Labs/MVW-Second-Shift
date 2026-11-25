@@ -286,8 +286,12 @@ def principal_for(*ids: object) -> str | None:
     if not candidates:
         return None
     if record_documents.using_postgres():
-        with _keyed().transaction(_migrate) as store:
-            return _principal_in(_SavedRows(store, "links"), candidates)
+        store = _keyed()
+        for key in candidates:
+            saved = store.read_one("links", key, _migrate)
+            if saved is not None and (principal := _decode_saved(saved).get("principal")):
+                return str(principal)
+        return None
     with _LOCK:
         return _principal_in(_load_legacy()["links"], candidates)
 
