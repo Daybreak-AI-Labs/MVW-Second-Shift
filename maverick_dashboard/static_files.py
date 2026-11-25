@@ -12,18 +12,23 @@ from pathlib import Path
 from fastapi import APIRouter
 from fastapi.responses import FileResponse
 
+from .auth import PUBLIC_STATIC_PATHS
+
 router = APIRouter()
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 
-def _serve(path: Path):
+def _serve(path: Path, route_path: str):
+    # The security middleware keeps every other response private. The static
+    # version middleware upgrades matching public bundle URLs to immutable.
+    headers = {"Cache-Control": "public, max-age=3600"} if route_path in PUBLIC_STATIC_PATHS else None
+
     async def static_file() -> FileResponse:
-        return FileResponse(path)
+        return FileResponse(path, headers=headers)
 
     return static_file
 
 
 for _path in sorted(p for p in STATIC_DIR.rglob("*") if p.is_file()):
-    router.add_api_route(
-        "/static/" + _path.relative_to(STATIC_DIR).as_posix(), _serve(_path), methods=["GET"], include_in_schema=False,
-    )
+    _route_path = "/static/" + _path.relative_to(STATIC_DIR).as_posix()
+    router.add_api_route(_route_path, _serve(_path, _route_path), methods=["GET"], include_in_schema=False)

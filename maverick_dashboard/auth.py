@@ -100,9 +100,8 @@ SELF_AUTH_WEBHOOK_PATHS = frozenset(
     }
 )
 
-# Files the signed-out pages (sign-in, owner setup, invitation, public rights
-# form, vendor questionnaire, shared result, sign-in error) load before any
-# session exists. Each is public product code or branding and carries no data.
+# Bundled assets shared by the dashboard and its signed-out pages. Each is
+# static product code or branding and carries no customer or session data.
 # Exact files only, never a folder: everything else under /static/ stays behind
 # sign-in. Both gates (app._AUTH_EXEMPT and this dependency) read this one set.
 PUBLIC_STATIC_PATHS = frozenset(
@@ -111,6 +110,10 @@ PUBLIC_STATIC_PATHS = frozenset(
         # unstyled (system serif font, full-size logo, sideways scrolling).
         "/static/second-shift.css",
         "/static/second-shift-mark.svg",
+        "/static/second-shift-glass.webp",
+        "/static/second-shift-ui.js",
+        "/static/second-shift-approvals.js",
+        "/static/second-shift-outside-agents.js",
         # The self-hosted fonts second-shift.css references.
         "/static/fonts/manrope-var.woff2",
         "/static/fonts/jbm-400.woff2", "/static/fonts/jbm-500.woff2",

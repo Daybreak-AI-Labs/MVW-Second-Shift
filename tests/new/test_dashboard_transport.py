@@ -74,3 +74,28 @@ async def test_security_headers_cover_pages_and_middleware_refusals(monkeypatch)
         assert refused.status_code == 401
         assert refused.headers["x-frame-options"] == "DENY"
         assert "strict-transport-security" in refused.headers
+
+
+@pytest.mark.asyncio
+async def test_versioned_dashboard_scripts_cache_without_browser_authority(monkeypatch):
+    from maverick_dashboard.app import app, static_version
+
+    monkeypatch.setenv("MAVERICK_DASHBOARD_TOKEN", "synthetic-operator-key")
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1") as client:
+        for name in ("second-shift.css", "second-shift-ui.js", "second-shift-approvals.js",
+                     "second-shift-outside-agents.js"):
+            path = f"/static/{name}"
+            version = static_version(name)
+            assert version
+            bundle = await client.get(path, params={"v": version})
+            assert bundle.status_code == 200
+            assert bundle.headers["cache-control"] == "public, max-age=31536000, immutable"
+            canonical = await client.get(path)
+            assert canonical.headers["cache-control"] == "public, no-cache"
+            unchanged = await client.get(path, headers={"If-None-Match": canonical.headers["etag"]})
+            assert unchanged.status_code == 304 and not unchanged.content
+        artwork = await client.get("/static/second-shift-glass.webp")
+        assert artwork.status_code == 200 and artwork.headers["content-type"] == "image/webp"
+        assert artwork.headers["cache-control"] == "public, max-age=3600"
+        assert (await client.get("/static/second-shift-decisions.js")).status_code == 401
+        assert (await client.get("/approvals")).status_code == 401
