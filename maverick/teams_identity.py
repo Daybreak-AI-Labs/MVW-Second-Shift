@@ -114,6 +114,16 @@ def _migrate(collection: keyed_records.Collection) -> None:
             collection.rows("upns").seed((entry, "true", "", 0.0) for entry in entries if _is_upn(entry))
 
 
+def _decode_saved(body: str) -> dict:
+    try:
+        result = json.loads(body)
+        if not isinstance(result, dict):
+            raise ValueError
+        return result
+    except (TypeError, ValueError) as exc:
+        raise TeamsIdentityError("The Teams account links are damaged.") from exc
+
+
 class _SavedRows(MutableMapping):
     """The existing Teams actions read and change only their addressed rows."""
 
@@ -125,7 +135,7 @@ class _SavedRows(MutableMapping):
         saved = self.values_store.get(key)
         if saved is None:
             raise KeyError(key)
-        return json.loads(saved)
+        return _decode_saved(saved)
 
     def __setitem__(self, key: str, value: dict) -> None:
         self.values_store.put(key, json.dumps(value), tag=str(value.get("principal") or ""))
@@ -145,13 +155,13 @@ class _SavedRows(MutableMapping):
         return self.values_store.count()
 
     def items(self):
-        return self.values_store.json_items().items()
+        return {key: _decode_saved(value) for key, value in self.values_store.select().items()}.items()
 
 
 def _load() -> dict:
     if record_documents.using_postgres():
         with _keyed().transaction(_migrate) as store:
-            return {name: store.rows(name).json_items() for name in ("links", "codes", "conversations")}
+            return {name: dict(_SavedRows(store, name).items()) for name in ("links", "codes", "conversations")}
     return _load_legacy()
 
 
@@ -247,10 +257,10 @@ def links_for_principal(principal: object) -> list[dict]:
     who = normalize_principal(principal)
     if record_documents.using_postgres():
         with _keyed().transaction(_migrate) as store:
-            links = store.rows("links").json_items(tag=who)
+            links = {key: _decode_saved(value) for key, value in store.rows("links").select(tag=who).items()}
             conversations = store.rows("conversations")
             out = [_describe_link(key, row, conversations.get(key) is not None)
-                   for key, row in links.items() if isinstance(row, dict) and row.get("principal") == who]
+                   for key, row in links.items() if row.get("principal") == who]
         return sorted(out, key=lambda item: item["linked_at"])
     return [item for item in list_links() if item["principal"] == who]
 

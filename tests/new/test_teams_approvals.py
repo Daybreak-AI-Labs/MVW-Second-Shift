@@ -1092,17 +1092,26 @@ def test_the_teams_app_package_is_built_from_the_template(tmp_path):
 
 
 def test_with_postgres_links_are_kept_there_and_a_damaged_record_is_refused(env, records_in_postgres):
-    from maverick import record_documents, teams_identity
-    from tests.new.conftest import saved_records
+    import psycopg
+
+    from maverick import teams_identity
 
     teams_identity.link(AAD["alice"], "user:alice", actor="admin")
     assert teams_identity.principal_for(AAD["alice"]) == "user:alice"
     assert not teams_identity.store_path().exists()
-    assert "teams-identities.json" in saved_records(records_in_postgres)
-    record_documents.at(teams_identity.store_path()).write_text("[1]")
+    with psycopg.connect(records_in_postgres) as db:
+        cur = db.execute(
+            "UPDATE second_shift_keyed_records SET body='[1]' WHERE address='teams-identities.json' "
+            "AND name='links' AND entry_key=%s", (AAD["alice"],),
+        )
+        assert cur.rowcount == 1
     with pytest.raises(teams_identity.TeamsIdentityError):
         teams_identity.list_links()
-    assert saved_records(records_in_postgres)["teams-identities.json"] == "[1]"
+    with pytest.raises(teams_identity.TeamsIdentityError):
+        teams_identity.principal_for(AAD["alice"])
+    with psycopg.connect(records_in_postgres) as db:
+        assert db.execute("SELECT body FROM second_shift_keyed_records WHERE address='teams-identities.json' "
+                          "AND name='links' AND entry_key=%s", (AAD["alice"],)).fetchone() == ("[1]",)
 
 
 def test_with_postgres_the_cards_the_bot_posted_are_kept_there(env, records_in_postgres):

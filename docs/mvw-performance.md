@@ -155,3 +155,26 @@ Under steady traffic, 1,000/1,000 pages finished under 1 second (highest page p9
 108 ms) with 0 page or Teams failures. All serial requests finished under 200 ms.
 In the burst, 26/100 pages finished under 2 seconds. The burst target remains
 open.
+
+### Size of the old identity records
+
+The sample uses one fixed-length synthetic person, sign-in name, name and
+revocation timestamp per employee. Each person has two subject identifiers
+(an Entra object ID and an email) and one Teams link. Sizes use the old JSON
+formatters and measure the payload before any account profile encryption.
+
+| Record | Bytes per additional person | Serialized bytes at 20,000 people |
+| --- | ---: | ---: |
+| Account names | 148 | 2,960,027 |
+| Sign-in subject identifiers | 300 | 6,000,000 |
+| Teams links | 240 | 4,800,057 |
+| Signed-out sessions | 74 | 1,480,002 |
+
+The old subject directory accepted 13,981 such people (4,194,300 bytes).
+It refused at 13,982 (4,194,600 bytes). The old Teams limit allowed 5,000
+links (1,200,057 bytes) and refused the 5,001st link.
+
+PostgreSQL now updates individual records. Sign-in uses the same indexed
+statements and touches the same number of rows with 25 or 25,000 people
+already recorded. The sign-in directory and Teams each support at least
+50,000 people in PostgreSQL.
