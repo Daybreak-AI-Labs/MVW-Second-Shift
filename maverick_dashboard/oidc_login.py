@@ -217,7 +217,7 @@ def _shared_consume_tx(tx_id: str) -> bool | None:
         # True == first writer (not previously consumed) -> allow this callback.
         return bool(world.mark_message_processed(_OIDC_TX_CHANNEL, tx_id))
     except Exception:  # pragma: no cover - shared store must never gate login hard
-        log.warning("OIDC replay guard: shared store unavailable, using in-process guard")
+        log.warning("OIDC replay guard: shared store unavailable")
         return None
 
 
@@ -244,6 +244,10 @@ async def _consume_tx_once(tx_id: str, expires_at: int) -> bool:
     )
     if shared is not None:
         return shared
+    from .worker_coordination import active_root
+
+    if active_root() is not None:
+        return False  # the local replay map cannot speak for other workers
 
     now = _now()
     async with _CONSUMED_TX_LOCK:

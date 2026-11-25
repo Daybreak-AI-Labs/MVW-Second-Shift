@@ -351,6 +351,8 @@ def deliver_due() -> None:
 
 async def delivery_loop() -> None:
     """Keep the durable queue moving while the dashboard is running."""
+    from .control_plane_lease import finish_background_call
+
     while True:
-        await asyncio.to_thread(deliver_due)
+        await finish_background_call(deliver_due)
         await asyncio.sleep(30)

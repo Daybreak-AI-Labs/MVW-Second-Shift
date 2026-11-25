@@ -18,7 +18,7 @@ import secrets
 import threading
 import time
 import weakref
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from urllib.parse import unquote
 
@@ -384,10 +384,11 @@ async def _drift_check_loop() -> None:
         minutes = 15
         try:
             from maverick import agent_drift
+            from maverick.control_plane_lease import finish_background_call
 
             minutes = agent_drift.settings().get("check_minutes", 15)
             if agent_drift.enabled():
-                await run_in_threadpool(agent_drift.check_all)
+                await finish_background_call(agent_drift.check_all)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -408,10 +409,11 @@ async def _platform_check_loop() -> None:
         minutes = 60
         try:
             from maverick import agent_watch
+            from maverick.control_plane_lease import finish_background_call
 
             minutes = agent_watch.settings().get("sync_minutes", 60)
             if agent_watch.enabled():
-                await run_in_threadpool(agent_watch.sync)
+                await finish_background_call(agent_watch.sync)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -428,8 +430,9 @@ async def _expiry_reminder_loop() -> None:
     while True:
         try:
             from maverick import expiry_reminders
+            from maverick.control_plane_lease import finish_background_call
 
-            await run_in_threadpool(expiry_reminders.check_all)
+            await finish_background_call(expiry_reminders.check_all)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -446,8 +449,9 @@ async def _owner_note_loop() -> None:
     while True:
         try:
             from maverick import owner_note
+            from maverick.control_plane_lease import finish_background_call
 
-            await run_in_threadpool(owner_note.run_due)
+            await finish_background_call(owner_note.run_due)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -457,13 +461,7 @@ async def _owner_note_loop() -> None:
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
-    """Start-up and shut-down for the web app.
-
-    Two start-up checks abort on purpose: a second process must not write the
-    same data folder (records are hash-chained and assume one writer), and the
-    app must not serve without sign-in configured.
-    """
-    import contextlib
+    """Check sign-in and start timers under the single deployment lease."""
     from functools import partial
 
     from maverick.control_plane_lease import acquire as _acquire_control_plane
@@ -471,11 +469,17 @@ async def _lifespan(app: FastAPI):
     from maverick.postgres_transactions import close_postgres_pools, open_postgres_pools
     from maverick.servicenow_incidents import delivery_loop
 
-    owns_lease = current() is None
-    _acquire_control_plane(role="dashboard")
+    from .worker_coordination import active_root, lead_timers, timers
+
+    root = active_root()
+    owns_lease = root is None and current() is None
+    if root is None:
+        _acquire_control_plane(role="dashboard")
     try:
         _assert_dashboard_auth_configured()
         open_postgres_pools()
+        if root is not None:
+            await run_in_threadpool(_world)
         try:
             from maverick.proxy_auth import warn_if_untrusted_proxy_config
 
@@ -488,17 +492,18 @@ async def _lifespan(app: FastAPI):
             warn_if_alerts_cannot_reach_anyone()
         except Exception:  # pragma: no cover -- a warning must never block startup
             pass
-        timers = [asyncio.create_task(_drift_check_loop()), asyncio.create_task(_platform_check_loop()),
-                  asyncio.create_task(_expiry_reminder_loop()), asyncio.create_task(_owner_note_loop()),
-                  asyncio.create_task(delivery_loop())]
-        try:
-            yield
-        finally:
-            for timer in timers:
-                timer.cancel()
-            for timer in timers:
-                with contextlib.suppress(asyncio.CancelledError):
-                    await timer
+        factories = (_drift_check_loop, _platform_check_loop, _expiry_reminder_loop, _owner_note_loop, delivery_loop)
+        if root is None:
+            async with timers(factories):
+                yield
+        else:
+            leader = asyncio.create_task(lead_timers(root, factories))
+            try:
+                yield
+            finally:
+                leader.cancel()
+                with suppress(asyncio.CancelledError):
+                    await leader
     finally:
         await run_in_threadpool(partial(close_postgres_pools, timeout=5))
         if owns_lease:
@@ -924,7 +929,19 @@ async def _bounded_external_body(request: Request) -> bytes:
         raise HTTPException(408, "external request body timed out") from exc
 
 
-async def _take_external_body_slot(needs_body_to_authenticate: bool) -> asyncio.Semaphore:
+async def _take_external_body_slot(needs_body_to_authenticate: bool):
+    from .worker_coordination import active_root, take_slot
+
+    root = active_root()
+    if root is not None:
+        limit = _EXTERNAL_UNSIGNED_BODY_SLOTS if needs_body_to_authenticate else _EXTERNAL_BODY_SLOTS
+        namespace = "pending-agent" if needs_body_to_authenticate else "admitted-agent"
+        deadline = time.monotonic() + 1.0
+        while (slot := take_slot(root, namespace, limit)) is None:
+            if time.monotonic() >= deadline:
+                raise HTTPException(503, "external request capacity is busy")
+            await asyncio.sleep(0.02)
+        return slot
     limiter = _external_body_limiter(needs_body_to_authenticate)
     try:
         await asyncio.wait_for(limiter.acquire(), timeout=1.0)
@@ -2106,7 +2123,12 @@ def main() -> None:
         proxy_kwargs = uvicorn_launch_kwargs()
     except Exception:  # pragma: no cover - never block startup on a config read
         proxy_kwargs = {}
-    uvicorn.run(app, host=args.host, port=args.port, log_level="info", **proxy_kwargs)
+    from .worker_coordination import supervisor, worker_count
+
+    count = worker_count()
+    with supervisor(count):
+        target = app if count == 1 else "maverick_dashboard.app:app"
+        uvicorn.run(target, host=args.host, port=args.port, log_level="info", workers=count, **proxy_kwargs)
 
 
 # This must remain after every route declaration so lazy included-router

@@ -35,7 +35,7 @@ class _StartupPipe:
 
 def inside():
     """Run only inside the local benchmark container. Credentials travel over pipes."""
-    dsn, people, pool_size, profile, expected_cpu, expected_memory = json.loads(sys.stdin.readline())
+    dsn, people, pool_size, profile, expected_cpu, expected_memory, workers = json.loads(sys.stdin.readline())
     quota, period = Path("/sys/fs/cgroup/cpu.max").read_text().split()
     memory = Path("/sys/fs/cgroup/memory.max").read_text().strip()
     if quota == "max" or int(quota) / int(period) != expected_cpu or memory != str(expected_memory):
@@ -45,7 +45,7 @@ def inside():
         with TemporaryDirectory(prefix="second-shift-mvw-") as directory:
             if profile:
                 recorder.enable()
-            run_app(_StartupPipe(), directory, dsn, people, pool_size)
+            run_app(_StartupPipe(), directory, dsn, people, pool_size, workers)
     finally:
         if profile:
             recorder.disable()
@@ -188,6 +188,7 @@ def main():
     parser.add_argument("--cpus", type=float, required=True)
     parser.add_argument("--memory-gib", type=int, required=True)
     parser.add_argument("--pool-size", type=int, default=8)
+    parser.add_argument("--workers", type=int, default=1)
     parser.add_argument("--people", type=int, default=500)
     parser.add_argument("--agents", type=int, default=100)
     parser.add_argument("--burst", type=int, default=100)
@@ -195,7 +196,7 @@ def main():
     parser.add_argument("--profile", action="store_true")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
-    if not 1 <= args.burst <= args.people or min(args.agents, args.pool_size, args.seconds) < 1:
+    if not 1 <= args.burst <= args.people or min(args.agents, args.pool_size, args.seconds, args.workers) < 1:
         parser.error("Choose positive workload counts and a burst no larger than the number of people.")
     dsn = os.environ.get("SECOND_SHIFT_LOAD_DSN")
     if not dsn:
@@ -216,7 +217,7 @@ def main():
             try:
                 process.stdin.write(json.dumps([
                     isolated_dsn, 1 if args.profile else args.people, args.pool_size, args.profile,
-                    args.cpus, args.memory_gib * 1024 ** 3,
+                    args.cpus, args.memory_gib * 1024 ** 3, args.workers,
                 ]) + "\n")
                 process.stdin.close()
                 startup = process.stdout.readline()

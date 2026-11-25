@@ -116,6 +116,10 @@ def _over_limit(key: str, action: str, *, count: bool = True) -> bool:
     """
     now = time.monotonic()
     bucket = (action, key)
+    from .worker_coordination import active_root, rate_allowed
+
+    if (root := active_root()) is not None:
+        return not rate_allowed(root, "ekko", bucket, _RATE_LIMITS[action], _RATE_BUCKET_CAP, count_hit=count)
     with _rate_lock:
         if bucket not in _rate_times and len(_rate_times) >= _RATE_BUCKET_CAP:
             for candidate, window in tuple(_rate_times.items()):

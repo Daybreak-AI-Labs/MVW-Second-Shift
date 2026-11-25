@@ -57,6 +57,7 @@ use the supported local volume and retain the deployment singleton guard.
 
 from __future__ import annotations
 
+import asyncio
 import errno
 import json
 import logging
@@ -285,6 +286,18 @@ class Lease:
 #: The lease this process holds, if any. One control plane per process.
 _held: Lease | None = None
 _admission_lock = threading.RLock()
+
+
+async def finish_background_call(function):
+    """Drain in-flight timer work before its owner lets a replacement take over."""
+    call = asyncio.create_task(asyncio.to_thread(function))
+    try:
+        return await asyncio.shield(call)
+    except asyncio.CancelledError:
+        try:
+            await call
+        finally:
+            raise
 
 
 def _require_single_replica() -> None:

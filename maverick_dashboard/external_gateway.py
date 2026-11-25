@@ -66,6 +66,13 @@ def _rate_limit(key: str, action: str) -> None:
     now = time.monotonic()
     limit = _RATE_LIMITS[action]
     bucket = (action, key)
+    from .worker_coordination import active_root, rate_allowed
+
+    if (root := active_root()) is not None:
+        if not rate_allowed(root, "external", bucket, limit, _RATE_BUCKET_CAP):
+            raise HTTPException(status_code=429, detail="This agent must wait before sending more requests.",
+                                headers={"Retry-After": "60"})
+        return
     with _rate_lock:
         if bucket not in _rate_times and len(_rate_times) >= _RATE_BUCKET_CAP:
             for candidate, window in tuple(_rate_times.items()):
