@@ -140,6 +140,7 @@ def run_app(pipe, directory, dsn, people, pool_size, workers=1):
         from maverick_dashboard.oidc_login import mint_browser_session
         from maverick_dashboard.worker_coordination import supervisor
 
+        signing_key = os.environ["MAVERICK_AUDIT_SIGNING_KEY"]
         world = _world()
         world.ping()
         record_documents.at(rbac.store_path()).write_text(json.dumps({"user:load-teams": "approver"}))
@@ -156,6 +157,9 @@ def run_app(pipe, directory, dsn, people, pool_size, workers=1):
         pipe.send((origin, session("load-admin", "Load.Admin"),
                    [session(f"load-person-{idx}", "Load.Operator") for idx in range(people)], teams_token))
         pipe.close()
+        # The setup process uses the same synthetic signer as its fresh workers.
+        if workers > 1:
+            os.environ["MAVERICK_AUDIT_SIGNING_KEY"] = signing_key
         with supervisor(workers):
             uvicorn.run("tools.load_check:benchmark_app", factory=True, workers=workers, fd=listener.fileno(),
                         backlog=4096, access_log=False, log_level="error", lifespan="on")

@@ -82,3 +82,48 @@ def test_admission_limit_is_shared_and_worker_exit_frees_its_slots(tmp_path):
                 process.kill()
                 process.join(5)
         notices.close()
+
+
+def _finish_job(root, notices, done):
+    from maverick_dashboard.ops_jobs import _Store
+    from maverick_dashboard.worker_coordination import WORKER_ROOT
+
+    os.environ[WORKER_ROOT] = root
+    jobs = _Store()
+    job_id = jobs.start(owner="person", tenant="workspace", kind="test", work=lambda: {"_private": "result"})
+    notices.put(job_id)
+    done.wait(10)
+
+
+def test_one_worker_can_consume_another_workers_result_once(tmp_path, monkeypatch):
+    import time
+
+    from maverick_dashboard.ops_jobs import _Store
+    from maverick_dashboard.worker_coordination import WORKER_ROOT
+
+    monkeypatch.setenv(WORKER_ROOT, str(tmp_path))
+    ctx = multiprocessing.get_context("spawn")
+    notices = ctx.Queue()
+    done = ctx.Event()
+    process = ctx.Process(target=_finish_job, args=(str(tmp_path), notices, done))
+    try:
+        process.start()
+        job_id = notices.get(timeout=10)
+        jobs = _Store()
+        owner = {"owner": "person", "tenant": "workspace", "kind": "test"}
+        for _ in range(80):
+            status = jobs.get(job_id, **owner)
+            if status and status["state"] == "done":
+                break
+            time.sleep(0.02)
+        assert status and status["result"] == {}
+        assert jobs.consume(job_id, **{**owner, "tenant": "another workspace"}) is None
+        assert jobs.consume(job_id, **owner) == {"_private": "result"}
+        assert jobs.consume(job_id, **owner) is None
+    finally:
+        done.set()
+        process.join(5)
+        if process.is_alive():
+            process.kill()
+            process.join(5)
+        notices.close()
