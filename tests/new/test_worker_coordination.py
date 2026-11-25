@@ -231,6 +231,55 @@ def test_recorder_counters_can_write_while_the_agent_counter_is_busy(monkeypatch
             assert not coordination.rate_allowed(root, "ekko", ("instructions", "device"), 1, 10_000)
 
 
+def test_agent_rates_distribute_buckets_while_preserving_per_agent_quota(monkeypatch, tmp_path):
+    from contextlib import closing
+
+    from maverick_dashboard import worker_coordination as coordination
+
+    coordination._initialize_rates(tmp_path)
+    filenames = []
+    connect = coordination.sqlite3.connect
+
+    def track(file, *args, **kwargs):
+        filenames.append(file)
+        return connect(file, *args, **kwargs)
+
+    monkeypatch.setattr(coordination.sqlite3, "connect", track)
+    try:
+        first = ("screen", "first")
+        second = ("screen", "second")
+        assert coordination.rate_allowed(tmp_path, "external", first, 1, 10_000)
+        with closing(connect(filenames[0])) as writer, writer:
+            writer.execute("BEGIN IMMEDIATE")
+            assert coordination.rate_allowed(tmp_path, "external", second, 1, 10_000)
+        assert not coordination.rate_allowed(tmp_path, "external", first, 1, 10_000)
+        assert len(filenames) == 2
+        assert filenames[0] != filenames[1]
+    finally:
+        coordination.close_rate_connections()
+
+
+def test_busy_agent_rate_store_tells_client_to_retry_before_action(monkeypatch, tmp_path):
+    import sqlite3
+
+    from fastapi import HTTPException
+
+    from maverick_dashboard import external_gateway, worker_coordination
+
+    error = sqlite3.OperationalError("database is locked")
+    error.sqlite_errorcode = sqlite3.SQLITE_BUSY
+
+    def busy(*args):
+        raise error
+
+    monkeypatch.setattr(worker_coordination, "active_root", lambda: tmp_path)
+    monkeypatch.setattr(worker_coordination, "rate_allowed", busy)
+    with pytest.raises(HTTPException) as refusal:
+        external_gateway._rate_limit("test-agent", "screen")
+    assert refusal.value.status_code == 503
+    assert refusal.value.headers == {"Retry-After": "1", "X-Second-Shift-Admission": "busy"}
+
+
 def test_workers_can_install_postgres_row_policies_together(records_in_postgres, monkeypatch):
     from concurrent.futures import ThreadPoolExecutor
     from threading import Barrier

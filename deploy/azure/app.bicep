@@ -6,6 +6,9 @@ param dashboardWorkers int = 4
 param prefix string
 param vaultName string
 param entraClientId string
+@maxLength(253)
+@description('Public hostname without a scheme, port or path. Leave empty to use the Container Apps hostname.')
+param publicHostname string = ''
 @description('Registry-relative image pinned by digest, such as second-shift@sha256:...')
 param image string
 @description('Optional non-secret platform-check settings and an existing SECOND_SHIFT_CLIENT_ID.')
@@ -25,7 +28,7 @@ var tenantId = subscription().tenantId
 var entraOrigin = uri(environment().authentication.loginEndpoint, tenantId)
 var issuer = '${entraOrigin}/v2.0'
 var loginBase = '${entraOrigin}/oauth2/v2.0'
-var publicOrigin = 'https://${prefix}.${appsEnvironment.properties.defaultDomain}'
+var publicOrigin = empty(publicHostname) ? 'https://${prefix}.${appsEnvironment.properties.defaultDomain}' : 'https://${publicHostname}'
 var vaultUri = vault.properties.vaultUri
 var storageName = 'second-shift-data'
 var teamsVaultReferences = enableTeams ? { SECOND_SHIFT_TEAMS_BOT_SECRET: 'teams-bot-secret' } : {}
@@ -193,4 +196,4 @@ module teams 'teams.bicep' = if (enableTeams) {
   }
 }
 
-output publicOrigin string = 'https://${app.properties.configuration.ingress.fqdn}'
+output publicOrigin string = publicOrigin

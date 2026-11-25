@@ -245,6 +245,11 @@ curl --fail "$origin/livez"
 curl --fail "$origin/readyz"
 ```
 
+`/livez` checks that the service responds. `/readyz` also checks PostgreSQL
+connectivity, the configured workspace ID and whether the database login
+bypasses row-level security. If readiness returns HTTP 503, check the
+workspace binding and database login as well as the connection.
+
 Include `--parameters @<parameter-file.json>` when supplying the versions or
 platform settings. The template uses `prefix` as `SECOND_SHIFT_CLIENT_ID`
 for PostgreSQL row-level security and workspace storage. If you already have
@@ -371,8 +376,17 @@ or raw responses. Remove the short-lived vault credential when finished.
 
 For Internet-facing deployments, put Azure Front Door Premium with a WAF
 policy in front of Container Apps. Restrict direct ingress to the trusted
-Front Door path. Set `SECOND_SHIFT_PUBLIC_URL` and the Entra redirect to
-the public HTTPS host. Add a rate-limit rule for `/api/v1/external/` using
+Front Door path. Set `origin` to the public HTTPS origin before step 3 and
+pass `publicHostname="${origin#https://}"` in the app deployment in step 4.
+Use the hostname alone for this parameter. The template uses the same origin
+for generated links, the Entra callback and the Teams messaging endpoint.
+If you are switching an existing deployment, update its Entra registration
+using `--app-id "$entra_client"` with the new origin, then rerun the app
+deployment with the hostname parameter. Use the new hostname when building
+the Teams package and running the deployment checks.
+[Configure a Front Door custom domain](https://learn.microsoft.com/en-us/azure/frontdoor/standard-premium/how-to-add-custom-domain)
+
+Add a rate-limit rule for `/api/v1/external/` using
 its host and path, with a separate threshold for the public schema. Size
 the rule to accommodate agents that share a NAT address. Set body-size,
 header-size, connection and request timeout limits on the edge products
@@ -484,7 +498,11 @@ steady target. Confirm the speed gates on the target hardware.
 
 The gateway admits up to 32 authenticated requests across the
 replica. If a slot stays busy for a second, it tells the client to retry.
-Both connection kits honor that hint and bound retries. Each worker admits
+The workers share each agent's rate counter, with unrelated counters spread
+across 32 local database files. Each file has a share of the gateway's
+counter capacity. A busy counter also returns a retry response before
+the request reaches the agent operation. Both connection kits honor that
+hint and bound retries. Each worker admits
 up to eight bodyless recorder polls and 40 other recorder requests. Per-key
 recorder quotas apply across the replica. Each worker queues Home,
 Outside agents and Approvals requests before more than eight begin processing.

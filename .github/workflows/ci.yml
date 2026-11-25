@@ -87,7 +87,19 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
-      - run: docker build -f deploy/azure/Dockerfile .
+      - run: docker build -f deploy/azure/Dockerfile -t second-shift:ci .
+      - name: Run the image and check both health endpoints
+        run: |
+          SECOND_SHIFT_DASHBOARD_TOKEN=$(openssl rand -hex 32)
+          export SECOND_SHIFT_DASHBOARD_TOKEN
+          container=$(docker run --rm -d --env SECOND_SHIFT_DASHBOARD_TOKEN \
+            --publish 127.0.0.1::8000 second-shift:ci)
+          trap 'docker rm -f "$container" >/dev/null 2>&1 || true' EXIT
+          address=$(docker port "$container" 8000/tcp)
+          for probe in livez readyz; do
+            curl --fail --silent --show-error --retry 10 --retry-delay 1 --retry-all-errors \
+              --max-time 3 "http://$address/$probe" | jq -e '.status == "ok"'
+          done
       - name: Compile Azure deployment templates
         # https://learn.microsoft.com/en-us/cli/azure/bicep#az-bicep-install
         # https://learn.microsoft.com/en-us/cli/azure/bicep#az-bicep-build

@@ -35,6 +35,7 @@ import base64
 import json
 import logging
 import re
+import sqlite3
 import threading
 import time
 from collections import deque
@@ -63,6 +64,11 @@ _rate_times: dict[tuple[str, str], deque[float]] = {}
 _rate_lock = threading.Lock()
 
 
+def _gateway_busy() -> HTTPException:
+    return HTTPException(503, "external request capacity is busy",
+                         headers={"Retry-After": "1", "X-Second-Shift-Admission": "busy"})
+
+
 def _rate_limit(key: str, action: str) -> None:
     now = time.monotonic()
     limit = _RATE_LIMITS[action]
@@ -70,7 +76,15 @@ def _rate_limit(key: str, action: str) -> None:
     from .worker_coordination import active_root, rate_allowed
 
     if (root := active_root()) is not None:
-        if not rate_allowed(root, "external", bucket, limit, _RATE_BUCKET_CAP):
+        try:
+            allowed = rate_allowed(root, "external", bucket, limit, _RATE_BUCKET_CAP)
+        except sqlite3.OperationalError as exc:
+            code = getattr(exc, "sqlite_errorcode", 0) & 0xff
+            if code in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
+                # Admission stops here, before the handler calls the agent operation.
+                raise _gateway_busy() from exc
+            raise
+        if not allowed:
             raise HTTPException(status_code=429, detail="This agent must wait before sending more requests.",
                                 headers={"Retry-After": "60"})
         return

@@ -1,11 +1,13 @@
 """The benchmark reports all required performance failures to its caller."""
 from __future__ import annotations
 
+import asyncio
+
 import httpx
 import pytest
 
 from tools.load_check import OP_NAMES
-from tools.mvw_benchmark import Workload, target_failures
+from tools.mvw_benchmark import Workload, _TrafficClient, target_failures
 
 
 def _sample(count, under, maximum=1, errors=None):
@@ -43,3 +45,26 @@ async def test_quick_error_does_not_count_as_a_page_under_target():
     assert result["count"] == 2
     assert result["errors"] == {"503": 1}
     assert result["under_target"] == 1
+
+
+@pytest.mark.asyncio
+async def test_load_driver_distinguishes_a_truncated_response_from_other_errors():
+    pytest.importorskip("aiohttp")
+
+    async def reply(reader, writer):
+        try:
+            await reader.readuntil(b"\r\n\r\n")
+            writer.write(b"HTTP/1.1 200 OK\r\nContent-Length: 12\r\nConnection: close\r\n\r\nshort")
+            await writer.drain()
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    server = await asyncio.start_server(reply, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    async with server, _TrafficClient(f"http://127.0.0.1:{port}", connections=1) as client:
+        workload = Workload(client, "")
+        assert not await workload.request("Home", "GET", "/", {})
+    result = workload.report(1_000_000)["Home"]
+    assert result["errors"] == {"ReadError": 1}
+    assert result["under_target"] == 0
