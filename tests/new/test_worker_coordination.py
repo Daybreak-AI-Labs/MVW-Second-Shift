@@ -189,6 +189,21 @@ def test_shared_rate_caps_count_active_buckets_and_only_recent_hits(monkeypatch)
         assert not coordination.rate_allowed(root, "ekko", first, 2, 1, count_hit=False)
 
 
+def test_recorder_counters_can_write_while_the_agent_counter_is_busy(monkeypatch):
+    from maverick import control_plane_lease, world_model_backends
+    from maverick_dashboard import worker_coordination as coordination
+
+    monkeypatch.setattr(world_model_backends, "is_postgres_configured", lambda: True)
+    monkeypatch.setattr(control_plane_lease, "acquire", lambda **_: object())
+    monkeypatch.setattr(control_plane_lease, "release", lambda: None)
+    with coordination.supervisor(4):
+        root = coordination.active_root()
+        with coordination._rate_connection(root) as writer:
+            writer.execute("BEGIN IMMEDIATE")
+            assert coordination.rate_allowed(root, "ekko", ("instructions", "device"), 1, 10_000)
+            assert not coordination.rate_allowed(root, "ekko", ("instructions", "device"), 1, 10_000)
+
+
 def test_workers_can_install_postgres_row_policies_together(records_in_postgres, monkeypatch):
     from concurrent.futures import ThreadPoolExecutor
     from threading import Barrier
@@ -242,6 +257,10 @@ async def test_recorder_traffic_has_bounded_slots_separate_from_agent_requests(t
     monkeypatch.setattr(dashboard, "_RECORDER_BODY_SLOTS", 1, raising=False)
     agent = await dashboard._take_external_body_slot(False)
     try:
+        def no_kernel_slot(*_args):
+            pytest.fail("Recorder admission polled process locks.")
+
+        monkeypatch.setattr(coordination, "take_slot", no_kernel_slot)
         recorder = await dashboard._take_external_body_slot(False, recorder=True)
         try:
             with pytest.raises(HTTPException) as failure:

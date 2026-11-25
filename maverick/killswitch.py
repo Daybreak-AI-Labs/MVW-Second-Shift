@@ -23,7 +23,7 @@ import stat
 import threading
 import time
 from collections.abc import Callable
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from contextvars import ContextVar
 from pathlib import Path
 
@@ -94,6 +94,7 @@ _last_shared_halt: tuple[str, str] | None = None
 # config health seam, so a fail-closed caller may not reuse its result.
 _last_shared_strict_ok: bool = False
 _shared_world = None  # cached world handle for the shared-halt consult
+_shared_world_lock = threading.Lock()
 
 _HALT_REPARSE_ATTRIBUTE = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 _HALT_GENERATION_ATTEMPTS = 3
@@ -393,6 +394,7 @@ def _shared_halt_active(
         return _last_shared_halt
     _last_shared_check_ts = now
     _last_shared_strict_ok = False
+    world = None
     try:
         if fail_closed:
             # ``is_postgres_configured`` deliberately fails soft when config is
@@ -411,17 +413,27 @@ def _shared_halt_active(
             _last_shared_halt = None
             _last_shared_strict_ok = fail_closed
             return None
-        if _shared_world is None:
-            from .world_model import open_world
-            _shared_world = open_world()
-        state = _shared_world.active_halt()
-        _last_shared_halt = (
+        with _shared_world_lock:
+            if _shared_world is None:
+                from .world_model import open_world
+                _shared_world = open_world()
+            world = _shared_world
+        state = world.active_halt()
+        current = (
             (state.get("reason") or "cluster halt", state.get("source") or "shared")
             if state else None
         )
+        _last_shared_halt = current
         _last_shared_strict_ok = fail_closed
+        return current
     except Exception as exc:  # reconnect next time; posture is caller-selected
-        _shared_world = None
+        close = None
+        with _shared_world_lock:
+            if world is not None and world is _shared_world:
+                close, _shared_world = _shared_world, None
+        if close is not None:
+            with suppress(Exception):
+                close.close()
         if fail_closed:
             raise Halted(
                 "cluster HALT authority unavailable", "shared-error",

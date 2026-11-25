@@ -110,6 +110,8 @@ class Workload:
                 self.errors[name]["recording not active"] += 1
             elif name == "Recorder hand-over" and reply.json().get("accepted") != 1:
                 self.errors[name]["activity not accepted"] += 1
+            else:
+                return True
         except asyncio.CancelledError:
             self.errors[name]["measurement deadline"] += 1
             raise
@@ -117,6 +119,7 @@ class Workload:
             self.errors[name][type(error).__name__] += 1
         finally:
             self.timings[name].append((time.perf_counter() - began) * 1000)
+        return False
 
     async def page(self, cookie, page_index):
         name, path = PAGES[page_index % len(PAGES)]
@@ -201,6 +204,7 @@ async def recorder_hour(client, token, recorders, seconds):
     starts = loop.time()
     wall_start = time.time()
     flush_turns = round(FLUSH_SECONDS / poll)
+    instructed, handed_over = set(), set()
 
     async def recorder(index, key, session):
         offset = index * poll / len(recorders)
@@ -211,13 +215,16 @@ async def recorder_hour(client, token, recorders, seconds):
             if when >= seconds:
                 break
             await asyncio.sleep(max(0, starts + when - loop.time()))
-            await work.request("Recorder instructions", "GET", "/api/v1/external/ekko/instructions", headers)
+            if await work.request("Recorder instructions", "GET", "/api/v1/external/ekko/instructions", headers):
+                instructed.add(index)
             if turn >= first_flush and (turn - first_flush) % flush_turns == 0:
-                await work.request("Recorder hand-over", "POST", "/api/v1/external/ekko/handover", headers, {
+                batch = {
                     "session_id": session, "batch_id": f"batch-{turn:04d}", "account": f"{index:064x}",
                     "activities": [{"app": "excel" if turn % 12 else "word", "action": "switch",
                                     "duration_seconds": FLUSH_SECONDS, "occurred_at": wall_start + when}],
-                })
+                }
+                if await work.request("Recorder hand-over", "POST", "/api/v1/external/ekko/handover", headers, batch):
+                    handed_over.add(index)
 
     try:
         async with asyncio.timeout(seconds + 30):
@@ -238,6 +245,8 @@ async def recorder_hour(client, token, recorders, seconds):
             item["scheduled"] = expected
             if expected > item["count"]:
                 item["errors"]["not sent"] = expected - item["count"]
+    result["Recorder instructions"]["devices"] = len(instructed)
+    result["Recorder hand-over"]["devices"] = len(handed_over)
     return result
 
 

@@ -9,6 +9,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import sqlite3
+import threading
 from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
 
@@ -86,23 +87,27 @@ class ScopedStore:
         self.lookup_policies = lookup_policies or {}
         self._created: set[str] = set()
         self._imported: set[tuple[str, str]] = set()
+        self._setup_lock = threading.Lock()
 
     def _ensure_schema(self, transactions, dsn: str) -> None:
         if dsn in self._created:
             return
-        with transactions.transaction() as cursor:
-            _lock(cursor, "schema")
-            cursor.execute(f"CREATE TABLE IF NOT EXISTS {_MIGRATIONS} (name text PRIMARY KEY)")
-            cursor.execute(self.schema, prepare=False)
-            for table, rule in self.policies.items():
-                cursor.execute(f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY")
-                cursor.execute(f"ALTER TABLE {table} FORCE ROW LEVEL SECURITY")
-                cursor.execute(f"DROP POLICY IF EXISTS second_shift_scope ON {table}")
-                cursor.execute(f"CREATE POLICY second_shift_scope ON {table} USING ({rule}) WITH CHECK ({rule})")
-                if lookup := self.lookup_policies.get(table):
-                    cursor.execute(f"DROP POLICY IF EXISTS second_shift_lookup ON {table}")
-                    cursor.execute(f"CREATE POLICY second_shift_lookup ON {table} FOR SELECT USING ({lookup})")
-        self._created.add(dsn)
+        with self._setup_lock:
+            if dsn in self._created:
+                return
+            with transactions.transaction() as cursor:
+                _lock(cursor, "schema")
+                cursor.execute(f"CREATE TABLE IF NOT EXISTS {_MIGRATIONS} (name text PRIMARY KEY)")
+                cursor.execute(self.schema, prepare=False)
+                for table, rule in self.policies.items():
+                    cursor.execute(f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY")
+                    cursor.execute(f"ALTER TABLE {table} FORCE ROW LEVEL SECURITY")
+                    cursor.execute(f"DROP POLICY IF EXISTS second_shift_scope ON {table}")
+                    cursor.execute(f"CREATE POLICY second_shift_scope ON {table} USING ({rule}) WITH CHECK ({rule})")
+                    if lookup := self.lookup_policies.get(table):
+                        cursor.execute(f"DROP POLICY IF EXISTS second_shift_lookup ON {table}")
+                        cursor.execute(f"CREATE POLICY second_shift_lookup ON {table} FOR SELECT USING ({lookup})")
+            self._created.add(dsn)
 
     @contextlib.contextmanager
     def transaction(self, scope: str, *, lookup: str = "", writing: str | None = None,
@@ -134,17 +139,20 @@ class ScopedStore:
             return
         # The deployment lease excludes a legacy writer during the upgrade.
         # Probe the marker before trying to read an already imported file.
-        with transactions.transaction() as cursor:
-            _lock(cursor, f"import:{marker}")
-            cursor.execute(f"SELECT 1 FROM {_MIGRATIONS} WHERE name = %s", (marker,))
-            if not cursor.fetchone():
-                with _legacy_database(path) as previous:
-                    if previous is not None:
-                        import_records(previous, cursor)
-                cursor.execute(f"INSERT INTO {_MIGRATIONS} (name) VALUES (%s)", (marker,))
-        if len(self._imported) >= 8192:
-            self._imported.clear()
-        self._imported.add(cache_key)
+        with self._setup_lock:
+            if cache_key in self._imported:
+                return
+            with transactions.transaction() as cursor:
+                _lock(cursor, f"import:{marker}")
+                cursor.execute(f"SELECT 1 FROM {_MIGRATIONS} WHERE name = %s", (marker,))
+                if not cursor.fetchone():
+                    with _legacy_database(path) as previous:
+                        if previous is not None:
+                            import_records(previous, cursor)
+                    cursor.execute(f"INSERT INTO {_MIGRATIONS} (name) VALUES (%s)", (marker,))
+            if len(self._imported) >= 8192:
+                self._imported.clear()
+            self._imported.add(cache_key)
 
 
 @contextlib.contextmanager

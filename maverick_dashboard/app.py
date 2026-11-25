@@ -875,7 +875,7 @@ _AUTH_EXEMPT = {
 }
 _EXTERNAL_BODY_SLOTS = 32
 _EXTERNAL_UNSIGNED_BODY_SLOTS = 4
-_RECORDER_BODY_SLOTS = 64
+_RECORDER_BODY_SLOTS = 48  # Per worker. Recorder key quotas remain shared across workers.
 _EXTERNAL_BODY_TIMEOUT_SECONDS = 10.0
 _external_body_limiters: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 _external_body_limiter_lock = threading.Lock()
@@ -961,7 +961,10 @@ async def _take_external_body_slot(needs_body_to_authenticate: bool, *, recorder
         namespace, limit = "pending-agent", _EXTERNAL_UNSIGNED_BODY_SLOTS
     else:
         namespace, limit = "admitted-agent", _EXTERNAL_BODY_SLOTS
-    root = active_root()
+    # A worker's recorder queue sleeps on its semaphore. At the recorder's
+    # polling rate, sweeping every shared slot for each waiter saturates the
+    # event loop. Agent and unsigned-body limits remain replica-wide.
+    root = None if recorder else active_root()
     if root is not None:
         deadline = time.monotonic() + 1.0
         while (slot := take_slot(root, namespace, limit)) is None:

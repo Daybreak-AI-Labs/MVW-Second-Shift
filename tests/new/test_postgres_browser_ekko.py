@@ -193,3 +193,40 @@ def test_postgres_refuses_unavailable_records_without_falling_back(records_in_po
         ekko_device_keys.find(key)
     with pytest.raises(WorkDiscoveryStoreError):
         WorkDiscoveryStore("person", "desk", tenant="alpha").get_enrollment()
+
+
+def test_first_access_prepares_a_scoped_store_once_per_worker(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    from contextlib import contextmanager
+    from threading import Barrier
+
+    from maverick.postgres_scoped_sql import ScopedStore
+
+    opens = []
+    waiting = Barrier(6, timeout=5)
+
+    class Cursor:
+        def execute(self, *args, **kwargs):
+            pass
+
+        def fetchone(self):
+            return (1,)
+
+    class Transactions:
+        @contextmanager
+        def transaction(self):
+            opens.append(1)
+            time.sleep(.05)
+            yield Cursor()
+
+    store = ScopedStore("test", "", {})
+    transactions = Transactions()
+
+    def first_access(_):
+        waiting.wait()
+        store._ensure_schema(transactions, "database")
+        store._import(transactions, "database", tmp_path / "legacy.sqlite3", "workspace", lambda *_: None)
+
+    with ThreadPoolExecutor(max_workers=6) as workers:
+        list(workers.map(first_access, range(6)))
+    assert len(opens) == 2
