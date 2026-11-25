@@ -1132,12 +1132,12 @@ def _notify_approval_decided(world, approval_id: int) -> None:
         logging.getLogger(__name__).warning("approval decision notification failed", exc_info=True)
 
 
-def _approval_from_row(row) -> Approval:
+def _approval_from_row(row, *, at_rest=None, key_cache=None) -> Approval:
     """Build an Approval from a row, decrypting the sealed action/scope/detail."""
     d = dict(row)
-    d["action"] = _dec_field(d.get("action"), context="approvals.action")
-    d["scope"] = _dec_field(d.get("scope"), context="approvals.scope")
-    d["detail"] = _dec_field(d.get("detail"), context="approvals.detail")
+    for field in ("action", "scope", "detail"):
+        d[field] = _dec_field(d.get(field), context=f"approvals.{field}",
+                              at_rest=at_rest, key_cache=key_cache)
     return Approval(**_row_for(Approval, d))
 
 
@@ -2244,12 +2244,28 @@ class WorldModel:
         )
         return _approvals_from_rows(rows)
 
-    def pending_unattached_approval_ids(self, owner: str, *, limit: int) -> list[int]:
+    def pending_unattached_approvals(
+        self, owner: str, *, limit: int, since: float,
+    ) -> tuple[list[Approval], bool]:
+        """Read one bounded snapshot, stopping at the first old request."""
+        from .crypto_at_rest import at_rest_enabled
+
         rows = self._read_all(
-            "SELECT id FROM approvals WHERE status='pending' AND goal_id IS NULL "
-            "AND requested_by=? ORDER BY id DESC LIMIT ?", (owner, max(1, int(limit))),
+            "SELECT * FROM approvals WHERE status='pending' AND goal_id IS NULL "
+            "AND requested_by=? ORDER BY id DESC LIMIT ?", (owner, limit + 1),
         )
-        return [int(row[0]) for row in rows]
+        for index, row in enumerate(rows[:limit]):
+            if float(row["requested_at"] or 0) <= since:
+                rows = rows[:index]
+                break
+        else:
+            if len(rows) > limit:
+                return [], False
+        if not rows:
+            return [], True
+        at_rest = at_rest_enabled()
+        key_cache: dict[tuple[str, bytes], object] = {}
+        return [_approval_from_row(row, at_rest=at_rest, key_cache=key_cache) for row in rows], True
 
     def pending_approvals(self) -> list[Approval]:
         rows = self._read_all(

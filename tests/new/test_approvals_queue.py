@@ -87,6 +87,64 @@ def test_postgres_queue_opens_its_encryption_key_once_per_read(records_in_postgr
         world.close()
 
 
+@pytest.mark.parametrize("backend", ["sqlite", "postgres"])
+def test_screening_backlog_reads_pending_approvals_together(backend, request, monkeypatch, tmp_path):
+    from maverick import external_agents, paths
+    from maverick.approval_cards import encode_operation_approval_detail
+    from maverick.world_model import WorldModel
+
+    if backend == "postgres":
+        from maverick.world_model_backends.postgres import PostgresWorldModel
+
+        world = PostgresWorldModel(dsn=request.getfixturevalue("records_in_postgres"))
+        query_context = "_tx"
+    else:
+        world = WorldModel(tmp_path / "approval-window.db")
+        query_context = "_read_all"
+
+    def add(owner, value):
+        return world.create_approval(
+            "external:helpdesk:send_contract", risk="high", detail=value,
+            requested_by=owner, provenance="external_agents",
+        )
+
+    with world:
+        pin = paths.set_tenant("approval-workspace")
+        try:
+            detail = encode_operation_approval_detail(
+                action="external:helpdesk:send_contract", summary="Review the request",
+                target_label="Synthetic record", target={}, parameters={},
+                actor="agent:helpdesk", role="external_agent_operator",
+                parameter_summary=["Read a synthetic record"],
+                known_effects=["Read one record"], unresolved_assumptions=["None declared"],
+                before="Waiting", after="Decided", irreversible=False,
+            )
+            add("agent:helpdesk", detail)
+            add("agent:someone-else", detail)
+            add("agent:helpdesk", "Legacy plain detail")
+            if backend == "postgres":
+                other_workspace = paths.set_tenant("another-workspace")
+                try:
+                    add("agent:helpdesk", detail)
+                finally:
+                    paths.reset_tenant(other_workspace)
+            queries = []
+            original = getattr(world, query_context)
+
+            def count(*args, **kwargs):
+                queries.append(1)
+                return original(*args, **kwargs)
+
+            monkeypatch.setattr(world, query_context, count)
+            monkeypatch.setattr(world, "get_approval", lambda *a, **kw: pytest.fail("per-card read"))
+            assert external_agents._live_screening_approvals(world, "helpdesk", window=1800) == 1
+            assert len(queries) == 1
+            monkeypatch.setattr(external_agents, "_SCREEN_BACKLOG_SCAN", 1)
+            assert external_agents._live_screening_approvals(world, "helpdesk", window=1800) is None
+        finally:
+            paths.reset_tenant(pin)
+
+
 @pytest.fixture
 def agent(app, client):
     """An enrolled outside agent's own view: a client that carries only its access key."""

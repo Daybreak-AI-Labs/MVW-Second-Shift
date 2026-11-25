@@ -2572,21 +2572,29 @@ class PostgresWorldModel:
             row = cur.fetchone()
         return _dec_approval_row(row) if row else None
 
-    def pending_unattached_approval_ids(self, owner: str, *, limit: int) -> list[int]:
+    def pending_unattached_approvals(self, owner: str, *, limit: int, since: float) -> tuple[list, bool]:
+        """Read one bounded snapshot in the exact workspace."""
         tenant = _active_tenant()
         scope, params = ("tenant_id = %s", [tenant]) if tenant is not None else ("tenant_id IS NULL", [])
         with self._tx() as cur:
             cur.execute(
-                "SELECT id FROM approvals WHERE status='pending' AND goal_id IS NULL "
+                "SELECT id, action, risk, scope, detail, provenance, status, "
+                "requested_at, decided_at, claimed_by, claimed_at, decided_by, "
+                "approvals_required, requested_by, goal_id, department, undo_hold, "
+                "tenant_id IS NULL "
+                "FROM approvals WHERE status='pending' AND goal_id IS NULL "
                 f"AND requested_by=%s AND {scope} ORDER BY id DESC LIMIT %s",
-                tuple([owner, *params, max(1, int(limit))]),
+                tuple([owner, *params, limit + 1]),
             )
             rows = cur.fetchall()
-        return [int(row[0]) for row in rows]
+        for index, row in enumerate(rows[:limit]):
+            if float(row[7] or 0) <= since:  # requested_at
+                return self._decode_approval_rows(rows[:index]), True
+        if len(rows) > limit:
+            return [], False
+        return self._decode_approval_rows(rows), True
 
     def pending_approvals(self) -> list:
-        from ..crypto_at_rest import at_rest_enabled
-
         frag, params = _tenant_scope()
         sql = (
             "SELECT id, action, risk, scope, detail, provenance, status, "
@@ -2601,6 +2609,12 @@ class PostgresWorldModel:
         with self._tx() as cur:
             cur.execute(sql, tuple(params))
             rows = cur.fetchall()
+        return self._decode_approval_rows(rows)
+
+    @staticmethod
+    def _decode_approval_rows(rows) -> list:
+        from ..crypto_at_rest import at_rest_enabled
+
         at_rest = at_rest_enabled() if rows else False
         key_cache: dict[tuple[str, bytes], object] = {}
         return [_dec_approval_row(r, at_rest=at_rest, key_cache=key_cache) for r in rows]
