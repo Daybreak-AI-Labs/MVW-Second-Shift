@@ -2296,14 +2296,18 @@ class WorkDiscoveryStore:
                 " LIMIT ?",
                 params,
             ).fetchall()
+            if not rows:
+                return []
             rows.reverse()
+            session_filter = " AND session_id=?" if session_id is not None else ""
+            session_params = (*self._scope, session_id) if session_id is not None else self._scope
             session_rows = {
                 str(row["session_id"]): row
                 for row in conn.execute(
                     "SELECT session_id,state,policy_digest,started_at,updated_at,"
                     "ended_at,last_sequence,session_blob FROM ekko_sessions "
-                    "WHERE tenant_key=? AND owner_key=? AND device_key=?",
-                    self._scope,
+                    "WHERE tenant_key=? AND owner_key=? AND device_key=?" + session_filter,
+                    session_params,
                 ).fetchall()
             }
             enrollment_row = conn.execute(

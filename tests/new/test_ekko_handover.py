@@ -676,8 +676,8 @@ def test_a_different_computer_account_is_refused_and_recorded_once(app, recordin
 
 
 def test_instruction_poll_uses_the_recorders_own_credential_in_one_worker(recording, monkeypatch):
+    from maverick_dashboard import _request_memo, auth
     from maverick_dashboard import app as dashboard
-    from maverick_dashboard import auth
 
     offloads = []
     run = dashboard.run_in_threadpool
@@ -693,6 +693,13 @@ def test_instruction_poll_uses_the_recorders_own_credential_in_one_worker(record
 
     monkeypatch.setattr(dashboard, "run_in_threadpool", track)
     monkeypatch.setattr(auth, "_verify_off_loop", track_browser)
+    prime = _request_memo._prime_request_configuration
+
+    def track_prime():
+        offloads.append("configuration primer")
+        return prime()
+
+    monkeypatch.setattr(_request_memo, "_prime_request_configuration", track_prime)
     response = recording.recorder.get(INSTRUCTIONS)
     assert response.status_code == 200 and response.json()["record"] is True
     assert offloads == []
@@ -743,6 +750,23 @@ def test_instruction_poll_resolves_each_tenant_key_policy_once(recording, monkey
         reads.clear()
         assert recording.recorder.get(INSTRUCTIONS).json()["record"] is True
         assert reads and set(reads.values()) == {1}
+
+
+def test_handover_uses_the_policy_from_the_enrollment_that_matched_the_key(recording, monkeypatch):
+    from maverick.work_discovery_store import WorkDiscoveryStore
+
+    original = WorkDiscoveryStore.enrollment_and_policy
+    snapshots = []
+
+    def observe(self):
+        result = original(self)
+        snapshots.append(result)
+        return result
+
+    monkeypatch.setattr(WorkDiscoveryStore, "enrollment_and_policy", observe)
+    response = recording.recorder.post(HANDOVER, json=_batch(recording.session, [_switch("excel")]))
+    assert response.status_code == 200 and response.json()["accepted"] == 1
+    assert len(snapshots) == 1
 
 
 def test_a_recorder_that_keeps_asking_stays_attached(recording, monkeypatch):

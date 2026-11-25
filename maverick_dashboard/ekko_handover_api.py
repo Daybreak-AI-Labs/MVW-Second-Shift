@@ -275,7 +275,7 @@ class _Device:
     key: keys.DeviceKey
     store: WorkDiscoveryStore
     collector_id: str
-    instruction_policy: CapturePolicy | None = None
+    policy: CapturePolicy
 
 
 def _open_store(key: keys.DeviceKey) -> WorkDiscoveryStore:
@@ -349,14 +349,10 @@ def _device(request: Request, action: str) -> Iterator[_Device]:
         raise _too_many()
     with _in_workspace(key):
         store = _open_store(key)
-        instruction_policy = None
+        enrollment, policy = None, None
         try:
-            if not store.has_storage():
-                enrollment = None
-            elif action == "instructions":
-                enrollment, instruction_policy = store.enrollment_and_policy()
-            else:
-                enrollment = store.get_enrollment()
+            if store.has_storage():
+                enrollment, policy = store.enrollment_and_policy()
         except EnrollmentRequired:
             enrollment = None
         except WorkDiscoveryStoreError as exc:
@@ -365,9 +361,11 @@ def _device(request: Request, action: str) -> Iterator[_Device]:
             _drop(key)
             _over_limit(request.client.host if request.client else "unknown", "refused")
             raise _invalid_key()
+        if policy is None:
+            raise _invalid_key()
         collector = "handover-" + hashlib.sha256(
             f"ekko:handover-collector:v1:{key.tenant or ''}:{key.owner}:{key.device_id}".encode()).hexdigest()[:40]
-        yield _Device(key=key, store=store, collector_id=collector, instruction_policy=instruction_policy)
+        yield _Device(key=key, store=store, collector_id=collector, policy=policy)
 
 
 def _settings_readable() -> None:
@@ -394,12 +392,7 @@ def _enrolled_policy(device: _Device) -> tuple[bool, CapturePolicy, bool]:
 
     settings = get_ekko()
     on = bool(settings.get("enable")) and bool(settings.get("allowed_apps"))
-    try:
-        policy = device.instruction_policy or device.store.get_policy()
-    except WorkDiscoveryStoreError as exc:
-        raise _not_accepted("The enrollment") from exc
-    if policy is None:
-        raise _invalid_key()
+    policy = device.policy
     try:
         validate_ekko_policy_ceiling(policy)
     except (TypeError, ValueError):

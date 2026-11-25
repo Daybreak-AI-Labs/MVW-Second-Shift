@@ -299,6 +299,20 @@ async def test_recorder_traffic_has_bounded_slots_separate_from_agent_requests(t
         agent.release()
 
 
+@pytest.mark.asyncio
+async def test_poll_admission_leaves_room_for_recorder_handovers(monkeypatch):
+    from maverick_dashboard import app as dashboard
+
+    monkeypatch.setattr(dashboard, "_RECORDER_POLL_SLOTS", 1, raising=False)
+    monkeypatch.setattr(dashboard, "_RECORDER_BODY_SLOTS", 1)
+    poll = await dashboard._take_external_body_slot(False, recorder=True, poll=True)
+    try:
+        handover = await dashboard._take_external_body_slot(False, recorder=True)
+        handover.release()
+    finally:
+        poll.release()
+
+
 def test_worker_warms_imported_page_templates_and_the_session_store(monkeypatch):
     from maverick import record_documents
     from maverick_dashboard import app as dashboard

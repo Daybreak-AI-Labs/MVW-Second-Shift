@@ -59,14 +59,21 @@ class RequestSizeLimitMiddleware:
     async def __call__(self, scope, receive, send):
         if scope.get("type") != "http":
             return await self.app(scope, receive, send)
-        limit = self.limit if self.limit is not None else max_request_bytes()
+        limit = self.limit
+
+        def exceeds_limit(size: int) -> bool:
+            nonlocal limit
+            if limit is None:
+                limit = max_request_bytes()
+            return size > limit
+
         for name, value in scope.get("headers") or ():
             if name == b"content-length":
                 try:
                     declared = int(value)
                 except ValueError:
                     declared = -1
-                if declared < 0 or declared > limit:
+                if declared < 0 or (declared and exceeds_limit(declared)):
                     return await _refuse(send, 400 if declared < 0 else 413)
         seen = 0
         started = False
@@ -76,7 +83,7 @@ class RequestSizeLimitMiddleware:
             message = await receive()
             if message.get("type") == "http.request":
                 seen += len(message.get("body") or b"")
-                if seen > limit:
+                if seen and exceeds_limit(seen):
                     raise _TooLarge
             return message
 
