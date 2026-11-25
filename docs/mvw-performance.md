@@ -279,3 +279,35 @@ remaining attempts at the deadline and left 100,371 hand-overs
 unattempted.
 
 [One-hour recorder run](https://github.com/Daybreak-AI-Labs/MVW-Second-Shift/actions/runs/45547283337/job/138979818081)
+
+### Recorder throughput follow-up
+
+These runs use the same app limit of 4 vCPU and 8 GiB, four workers, eight
+connections per database pool, 2,000 synthetic recorders, and 20,000 saved
+people. PostgreSQL is capped at 2 vCPU and 8 GiB. The driver schedules
+instruction polls every five seconds and hand-overs every 30 seconds. It
+exercises both endpoints under load, including sending a scheduled hand-over
+when the associated poll fails. A recorder follows its own fail-closed
+behavior when it cannot read instructions.
+
+| 90-second run | Successful polls | Successful hand-overs | Poll p95 | Hand-over p95 |
+| --- | ---: | ---: | ---: | ---: |
+| Round 4 baseline | 7,236/36,000 | 536/4,000 | 13.23 s | 10.50 s |
+| Recorder changes | 14,427/36,000 | 3,782/4,000 | 5.26 s | 8.56 s |
+
+Hand-over success rose from 13.4% to 94.6% in this workload. Poll success
+rose from 20.1% to 40.1%. The p95s include failed attempts. The workflow
+checks that reported counts agree with the configured schedule.
+[Capped baseline](https://github.com/Daybreak-AI-Labs/MVW-Second-Shift/actions/runs/45578940661/job/139083787047) ·
+[Capped recorder changes](https://github.com/Daybreak-AI-Labs/MVW-Second-Shift/actions/runs/45580352091/job/139088544324)
+
+In the five-minute run, 13,833 of 18,000 scheduled hand-overs succeeded
+(76.9%), and all 2,000 devices delivered a batch. The hand-over p95 was
+11.84 seconds. Only 14,640 of 120,000 instruction polls succeeded (12.2%).
+The app remains capacity-limited at this request rate.
+[Five-minute run](https://github.com/Daybreak-AI-Labs/MVW-Second-Shift/actions/runs/45580352091/job/139088544668)
+
+The paired browser and agent run also passed. The slowest serial request
+was 151 ms, all 100 burst pages finished under two seconds, and all 2,000
+steady pages finished under one second with zero page or Teams failures.
+[Paired browser and agent run](https://github.com/Daybreak-AI-Labs/MVW-Second-Shift/actions/runs/45580352091/job/139088544754)

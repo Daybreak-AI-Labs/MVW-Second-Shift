@@ -733,6 +733,11 @@ def test_polls_only_renew_an_existing_due_lease(recording, monkeypatch):
     assert renewals == [clock.now]
 
 
+def test_a_poll_with_a_framed_body_still_has_a_size_limit(recording):
+    result = recording.recorder.request("GET", INSTRUCTIONS, content=b"x" * (256 * 1024 + 1))
+    assert result.status_code == 413
+
+
 def test_instruction_poll_resolves_each_tenant_key_policy_once(recording, monkeypatch):
     from collections import Counter
 

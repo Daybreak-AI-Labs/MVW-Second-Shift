@@ -474,15 +474,15 @@ steady target. Confirm the speed gates on the target hardware.
 
 The gateway admits up to 32 authenticated requests across the
 replica. If a slot stays busy for a second, it tells the client to retry.
-Both connection kits honor that hint and bound retries. Recorder traffic
-has up to 48 in-flight requests per worker and shares per-key quotas
-across the replica. Each worker queues Home, Outside agents and Approvals
-requests before more than eight begin processing.
+Both connection kits honor that hint and bound retries. Each worker admits
+up to eight bodyless recorder polls and 40 other recorder requests. Per-key
+recorder quotas apply across the replica. Each worker queues Home,
+Outside agents and Approvals requests before more than eight begin processing.
 
-The one-hour load driver schedules 2,000 synthetic recorders. Each asks
-for instructions every five seconds and sends one synthetic app switch
-when its 30-second buffer is due. The first flushes are spread across the
-30-second interval.
+The round 4 load driver scheduled 2,000 synthetic recorders for one hour.
+Each asked for instructions every five seconds and sent one synthetic
+app switch when its 30-second buffer was due. The first flushes were
+spread across the 30-second interval.
 
 The hosted output reports 1,440,000 scheduled instruction polls. The
 configured five-second cadence for 2,000 devices over one hour yields
@@ -496,6 +496,10 @@ hand-overs match the configured interval.
 The tested instance could not sustain the recorder workload. It returned
 85,660 capacity refusals. The driver canceled 134 remaining attempts at the
 deadline and left 100,371 scheduled hand-overs unattempted.
+
+The follow-up reduced the work done by each poll and reserved capacity
+for hand-overs. In a five-minute run, 77% of scheduled hand-overs and 12%
+of instruction polls succeeded. [Performance report](mvw-performance.md#recorder-throughput-follow-up)
 
 The browser and agent workload in the table peaked at 62 open database
 connections, 15 active and 15 waiting on locks in the one-second samples.

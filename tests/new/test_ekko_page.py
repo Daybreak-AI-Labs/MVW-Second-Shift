@@ -39,7 +39,6 @@ def settings(tmp_path, monkeypatch, request):
 
     write('[ekko]\nenable = true\nallowed_apps = ["excel", "powerpoint"]\nretention_days = 21\nenrollment_days = 60\n')
     handover._rate_times.clear()
-    handover._lease_renewed.clear()
     yield write
     signing._reset_injected_keypair_cache()
     config.reset_config_cache()
