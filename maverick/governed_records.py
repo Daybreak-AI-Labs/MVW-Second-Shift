@@ -919,79 +919,56 @@ class PostgresGovernedRecordBackend:
 
         return _fail_closed(qual) and _fail_closed(with_check)
 
-    def _rls_policy_is_active_on(self, cur) -> bool:
-        cur.execute(
-            "SELECT relrowsecurity, relforcerowsecurity "
-            "FROM pg_class WHERE oid = 'governed_records'::regclass"
-        )
-        row = cur.fetchone()
-        if not row or not (row[0] and row[1]):
-            return False
-        cur.execute(
-            "SELECT policyname, permissive, roles, cmd, qual, with_check "
-            "FROM pg_policies "
-            "WHERE schemaname = current_schema() "
-            "AND tablename = %s ORDER BY policyname",
-            (_POSTGRES_TABLE,),
-        )
-        return self._rls_policy_rows_are_exact(cur.fetchall())
-
-    @staticmethod
-    def _pg_array(value: object) -> tuple[str, ...]:
-        if isinstance(value, (tuple, list)):
-            return tuple(str(item) for item in value)
-        return tuple(
-            item.strip().strip("\"'")
-            for item in str(value or "").strip("{}").split(",")
-            if item.strip()
-        )
-
     def _schema_status_on(self, cur) -> str:
-        """Return ``missing``, ``ready``, or ``incompatible`` without DDL."""
-        cur.execute(
-            "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname=current_user"
-        )
-        role = cur.fetchone()
-        if not role:
+        """Verify the current role, schema and policies in one catalog snapshot."""
+        cur.execute("""
+            WITH relation AS (
+                SELECT to_regclass(quote_ident(current_schema()) || '.governed_records') AS oid
+            )
+            SELECT roles.rolsuper, roles.rolbypassrls, relation.oid IS NOT NULL,
+                   relation.oid = to_regclass('governed_records'),
+                   c.relrowsecurity, c.relforcerowsecurity,
+                   ARRAY(
+                       SELECT ARRAY[column_name::text, data_type::text, is_nullable::text]
+                       FROM information_schema.columns
+                       WHERE table_schema = current_schema() AND table_name = 'governed_records'
+                       ORDER BY ordinal_position
+                   ),
+                   ARRAY(
+                       SELECT a.attname::text
+                       FROM pg_index i
+                       CROSS JOIN LATERAL unnest(i.indkey) WITH ORDINALITY AS keys(attnum, ordinality)
+                       JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = keys.attnum
+                       WHERE i.indrelid = relation.oid AND i.indisprimary
+                       ORDER BY keys.ordinality
+                   ),
+                   ARRAY(
+                       SELECT pg_get_constraintdef(oid) FROM pg_constraint
+                       WHERE conrelid = relation.oid AND contype = 'c'
+                   ),
+                   (
+                       SELECT jsonb_agg(jsonb_build_array(policyname, permissive, roles, cmd, qual, with_check)
+                                        ORDER BY policyname)
+                       FROM pg_policies
+                       WHERE schemaname = current_schema() AND tablename = 'governed_records'
+                   )
+            FROM pg_roles AS roles
+            CROSS JOIN relation
+            LEFT JOIN pg_class c ON c.oid = relation.oid
+            WHERE roles.rolname = current_user
+        """)
+        row = cur.fetchone()
+        if row is None:
             return "incompatible"
-        if bool(role[0]) or bool(role[1]):
+        superuser, bypass, exists, resolves, rls, forced, columns, primary, checks, policies = row
+        if superuser or bypass:
             return "privileged_login"
-        cur.execute(
-            "SELECT to_regclass(current_schema() || '.governed_records')"
-        )
-        table = cur.fetchone()
-        if not table or table[0] is None:
+        if not exists:
             return "missing"
-        cur.execute(
-            "SELECT column_name, data_type, is_nullable "
-            "FROM information_schema.columns "
-            "WHERE table_schema=current_schema() AND table_name=%s "
-            "ORDER BY ordinal_position",
-            (_POSTGRES_TABLE,),
-        )
-        columns = tuple(tuple(str(item) for item in row) for row in cur.fetchall())
-        if columns != _POSTGRES_COLUMNS:
+        if (not all((resolves, rls, forced)) or tuple(map(tuple, columns)) != _POSTGRES_COLUMNS
+                or tuple(primary) != _POSTGRES_PRIMARY_KEY or not self._rls_policy_rows_are_exact(policies)):
             return "incompatible"
-        cur.execute(
-            "SELECT array_agg(a.attname ORDER BY keys.ordinality) "
-            "FROM pg_index i JOIN pg_class c ON c.oid=i.indrelid "
-            "JOIN unnest(i.indkey) WITH ORDINALITY AS keys(attnum, ordinality) "
-            "ON true JOIN pg_attribute a ON a.attrelid=c.oid "
-            "AND a.attnum=keys.attnum "
-            "WHERE c.oid='governed_records'::regclass AND i.indisprimary "
-            "GROUP BY i.indexrelid"
-        )
-        primary = cur.fetchone()
-        if not primary or self._pg_array(primary[0]) != _POSTGRES_PRIMARY_KEY:
-            return "incompatible"
-        cur.execute(
-            "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
-            "WHERE conrelid='governed_records'::regclass AND contype='c'"
-        )
-        checks = [
-            " ".join(str(row[0]).lower().replace("(", " ").replace(")", " ").split())
-            for row in cur.fetchall()
-        ]
+        checks = [" ".join(check.lower().replace("(", " ").replace(")", " ").split()) for check in checks]
         tenant_check = any(
             "char_length tenant_id between 1 and 201" in check
             or (
@@ -1029,8 +1006,6 @@ class PostgresGovernedRecordBackend:
             revision_check,
             size_check,
         )):
-            return "incompatible"
-        if not self._rls_policy_is_active_on(cur):
             return "incompatible"
         return "ready"
 
