@@ -73,7 +73,13 @@ jobs:
               requested:*"Measure burst"*) args=(--quick --population 20000) ;;
             esac
           fi
-          docker exec "$POSTGRES_CONTAINER" cat /sys/fs/cgroup/cpu.max /sys/fs/cgroup/memory.max
+          lscpu | awk -F: '/^CPU\(s\):|^Model name:/{gsub(/^[[:space:]]+/, "", $2); print $1 ": " $2}'
+          read -r database_quota database_period < <(docker exec "$POSTGRES_CONTAINER" cat /sys/fs/cgroup/cpu.max)
+          database_memory=$(docker exec "$POSTGRES_CONTAINER" cat /sys/fs/cgroup/memory.max)
+          if [ "$database_quota" != 200000 ] || [ "$database_period" != 100000 ] || [ "$database_memory" != 8589934592 ]; then
+            printf 'The PostgreSQL container did not receive the expected 2 vCPU and 8 GiB.\n' >&2
+            exit 1
+          fi
           measured=0
           python -m tools.mvw_benchmark --cpus "$cpu" --memory-gib "$memory" \
             --workers "$workers" --pool-size "$pool" "${args[@]}" --output "$out/measure.json" || measured=$?
