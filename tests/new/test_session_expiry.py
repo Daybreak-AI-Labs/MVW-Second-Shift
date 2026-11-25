@@ -257,3 +257,43 @@ def test_home_renders_outside_the_request_event_loop(client, monkeypatch):
     monkeypatch.setattr(template_runtime._Templates, "TemplateResponse", tracked)
     assert _signed_in(client).get("/").status_code == 200
     assert loops == [None]
+
+
+@pytest.mark.asyncio
+async def test_read_only_page_shares_one_configuration_check_and_sees_the_next_process_write(
+    tmp_path, monkeypatch,
+):
+    import subprocess
+    import sys
+
+    from maverick import config
+    from maverick_dashboard import _request_memo
+
+    location = tmp_path / "config.toml"
+    location.write_text('snapshot_test = "first"\n', encoding="utf-8")
+    monkeypatch.setenv("MAVERICK_HOME", str(tmp_path))
+    monkeypatch.setenv("MAVERICK_CONFIG", str(location))
+    monkeypatch.setattr(_request_memo, "_prime_request_configuration", lambda: None)
+    observations = []
+    witnesses = []
+    read_witness = config._read_witness
+
+    def observe():
+        witnesses.append(1)
+        return read_witness()
+
+    async def endpoint(scope, receive, send):
+        for _ in range(2):
+            with config.single_read(fresh=True):
+                observations.append(config.load_global_config()["snapshot_test"])
+
+    monkeypatch.setattr(config, "_read_witness", observe)
+    page = _request_memo.RequestMemoMiddleware(endpoint)
+    scope = {"type": "http", "method": "GET", "path": "/external-agents"}
+    await page(scope, None, None)
+    subprocess.run([sys.executable, "-c",
+                    "from pathlib import Path; import sys; Path(sys.argv[1]).write_text(sys.argv[2], encoding='utf-8')",
+                    str(location), 'snapshot_test = "replaced"\n'], check=True)
+    await page(scope, None, None)
+    assert observations == ["first", "first", "replaced", "replaced"]
+    assert len(witnesses) == 2

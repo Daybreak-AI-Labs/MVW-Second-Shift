@@ -65,11 +65,15 @@ class RequestMemoMiddleware:
         if scope["type"] not in ("http", "websocket"):
             await self.app(scope, receive, send)
             return
-        from maverick.config import kept_reads
+        from maverick.config import kept_reads, single_read
 
         token = _SCOPE.set({})
         try:
-            with kept_reads():
+            display_page = scope.get("method") == "GET" and scope.get("path") in _READ_ONLY_ROLE_PAGES
+            # These requests only display state. Use the same deployment
+            # configuration for authorization and rendering, as for the
+            # display roles. Every request opens a new read.
+            with kept_reads(), single_read(fresh=True) if display_page else nullcontext():
                 from .auth import display_role_reads, probe_path
 
                 if scope["type"] == "http" and not probe_path(scope):
@@ -77,7 +81,6 @@ class RequestMemoMiddleware:
                     from starlette.concurrency import run_in_threadpool
 
                     await run_in_threadpool(_prime_request_configuration)
-                display_page = scope.get("method") == "GET" and scope.get("path") in _READ_ONLY_ROLE_PAGES
                 with display_role_reads() if display_page else nullcontext():
                     await self.app(scope, receive, send)
         finally:
