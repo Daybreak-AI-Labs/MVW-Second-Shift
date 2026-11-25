@@ -39,7 +39,7 @@ containment, the emergency stop, approvals or the replay ledger across requests.
 any cache, including one that proves a change made by another process is seen on the next
 request.
 
-## 2. Use more than one CPU core in the one copy
+## 2. Use more than one CPU core in the one copy (PR #16)
 
 Branch `codex/worker-processes`. Run the app as several worker processes inside the one
 container. Before you do:
