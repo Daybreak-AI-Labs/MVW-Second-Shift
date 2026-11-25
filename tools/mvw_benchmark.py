@@ -54,17 +54,18 @@ def inside():
 
 
 def summary(timings, errors, threshold):
-    return {
-        name: {
+    results = {}
+    for name, samples in timings.items():
+        times = sorted(elapsed for elapsed, _ in samples)
+        results[name] = {
             "count": len(times),
             "median_ms": round(statistics.median(times), 2),
-            "p95_ms": round(sorted(times)[math.ceil(0.95 * len(times)) - 1], 2),
-            "max_ms": round(max(times), 2),
-            "under_target": sum(delta < threshold for delta in times),
+            "p95_ms": round(times[math.ceil(0.95 * len(times)) - 1], 2),
+            "max_ms": round(times[-1], 2),
+            "under_target": sum(succeeded and elapsed < threshold for elapsed, succeeded in samples),
             "errors": dict(errors[name]),
         }
-        for name, times in timings.items()
-    }
+    return results
 
 
 class Workload:
@@ -87,6 +88,7 @@ class Workload:
     async def request(self, name, method, path, headers, payload=None, *, retry_busy=False,
                       expected=200, check=None):
         began = time.perf_counter()
+        succeeded = False
         try:
             for attempt in range(3):
                 reply = await self.client.request(method, path, headers=headers, json=payload)
@@ -113,6 +115,7 @@ class Workload:
             elif check is not None and not check(reply.json()):
                 self.errors[name]["unexpected reply"] += 1
             else:
+                succeeded = True
                 return True
         except asyncio.CancelledError:
             self.errors[name]["measurement deadline"] += 1
@@ -120,7 +123,7 @@ class Workload:
         except (ValueError, httpx.HTTPError) as error:
             self.errors[name][type(error).__name__] += 1
         finally:
-            self.timings[name].append((time.perf_counter() - began) * 1000)
+            self.timings[name].append(((time.perf_counter() - began) * 1000, succeeded))
         return False
 
     async def page(self, cookie, page_index):

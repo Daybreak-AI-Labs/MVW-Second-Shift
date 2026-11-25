@@ -1,8 +1,11 @@
 """The benchmark reports all required performance failures to its caller."""
 from __future__ import annotations
 
+import httpx
+import pytest
+
 from tools.load_check import OP_NAMES
-from tools.mvw_benchmark import target_failures
+from tools.mvw_benchmark import Workload, target_failures
 
 
 def _sample(count, under, maximum=1, errors=None):
@@ -26,3 +29,17 @@ def test_exact_thresholds_and_transport_failures_are_failures():
     report["steady"]["Teams card"]["errors"] = {"TransportError": 1}
     report["overload"]["Report run"]["errors"] = {"503 gateway busy": 1}
     assert len(target_failures(report)) == 4
+
+
+@pytest.mark.asyncio
+async def test_quick_error_does_not_count_as_a_page_under_target():
+    replies = iter([200, 503])
+    transport = httpx.MockTransport(lambda request: httpx.Response(next(replies)))
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
+        workload = Workload(client, "")
+        await workload.page("test-session", 0)
+        await workload.page("test-session", 0)
+    result = workload.report(1_000_000)["Home"]
+    assert result["count"] == 2
+    assert result["errors"] == {"503": 1}
+    assert result["under_target"] == 1
