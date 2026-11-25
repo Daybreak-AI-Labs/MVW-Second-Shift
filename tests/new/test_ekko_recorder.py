@@ -546,7 +546,6 @@ def installed(tmp_path, monkeypatch, request):
         '[ekko]\nenable = true\nallowed_apps = ["excel", "powerpoint", "word"]\npoll_interval_seconds = 2\n', encoding="utf-8")
     config.reset_config_cache()
     handover._rate_times.clear()
-    handover._lease_renewed.clear()
     from maverick_dashboard.app import app
 
     yield TestClient(app, base_url="http://127.0.0.1", headers={"Origin": "http://127.0.0.1"})

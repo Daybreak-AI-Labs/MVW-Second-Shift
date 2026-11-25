@@ -492,7 +492,7 @@ async def _lifespan(app: FastAPI):
     from maverick.postgres_transactions import close_postgres_pools, open_postgres_pools
     from maverick.servicenow_incidents import delivery_loop
 
-    from .worker_coordination import active_root, guard_supervisor, lead_timers, timers
+    from .worker_coordination import active_root, close_recorder_rate_connections, guard_supervisor, lead_timers, timers
 
     root = active_root()
     owns_lease = root is None and current() is None
@@ -535,6 +535,8 @@ async def _lifespan(app: FastAPI):
                 with suppress(asyncio.CancelledError):
                     await leader
     finally:
+        if root is not None:
+            close_recorder_rate_connections()
         await run_in_threadpool(partial(close_postgres_pools, timeout=5))
         if owns_lease:
             release()
@@ -572,7 +574,7 @@ def enforce_page_visibility(
 async def _page_visibility(request: Request = None) -> None:  # type: ignore[assignment]
     """The app-level page-policy dependency: the check reads the settings, so
     it runs in the worker pool, except for a probe, which is no page."""
-    if request is None or probe_path(request.scope):
+    if request is None or probe_path(request.scope) or route_path(request).startswith("/api/v1/external/ekko/"):
         return
     await run_in_threadpool(enforce_page_visibility, request)
 
@@ -887,7 +889,8 @@ _AUTH_EXEMPT = {
 }
 _EXTERNAL_BODY_SLOTS = 32
 _EXTERNAL_UNSIGNED_BODY_SLOTS = 4
-_RECORDER_BODY_SLOTS = 48  # Per worker. Recorder key quotas remain shared across workers.
+_RECORDER_BODY_SLOTS = 40  # Per worker. Recorder key quotas remain shared across workers.
+_RECORDER_POLL_SLOTS = 8
 _EXTERNAL_BODY_TIMEOUT_SECONDS = 10.0
 _external_body_limiters: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 _external_body_limiter_lock = threading.Lock()
@@ -964,10 +967,12 @@ def _gateway_busy() -> HTTPException:
                          headers={"Retry-After": "1", "X-Second-Shift-Admission": "busy"})
 
 
-async def _take_external_body_slot(needs_body_to_authenticate: bool, *, recorder: bool = False):
+async def _take_external_body_slot(needs_body_to_authenticate: bool, *, recorder: bool = False, poll: bool = False):
     from .worker_coordination import active_root, take_slot
 
-    if recorder:
+    if poll:
+        namespace, limit = "recorder-poll", _RECORDER_POLL_SLOTS
+    elif recorder:
         namespace, limit = "admitted-recorder", _RECORDER_BODY_SLOTS
     elif needs_body_to_authenticate:
         namespace, limit = "pending-agent", _EXTERNAL_UNSIGNED_BODY_SLOTS
@@ -1005,6 +1010,16 @@ async def bound_public_governance_body(request: Request, call_next):
         credential = None
         recorder = path.startswith("/api/v1/external/ekko/")
         if recorder:
+            from .auth import bodyless_recorder_poll
+
+            # A bodyless poll authenticates in its route's blocking worker.
+            # Keep the authenticated body-read path for requests with framing.
+            if bodyless_recorder_poll(request.scope):
+                admitted = await _take_external_body_slot(False, recorder=True, poll=True)
+                try:
+                    return await call_next(request)
+                finally:
+                    admitted.release()
             from .ekko_handover_api import _known_key
 
             key = await run_in_threadpool(_known_key, request)
@@ -1148,7 +1163,6 @@ def _api_key_bearer_present(request: Request) -> bool:
 
 @app.middleware("http")
 async def bearer_auth(request: Request, call_next):
-    expected = _dashboard_token() or None
     path = route_path(request)
     if (
         path in _AUTH_EXEMPT
@@ -1195,6 +1209,7 @@ async def bearer_auth(request: Request, call_next):
         # gated on the consuming POST) in the route, which 404s when invites
         # are disabled.
         return await call_next(request)
+    expected = _dashboard_token() or None
     if not expected:
         # Any configured identity mechanism disables legacy loopback-as-admin,
         # even when the separate startup assertion ``dashboard.require_auth``

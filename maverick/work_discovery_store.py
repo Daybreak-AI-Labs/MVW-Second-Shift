@@ -1493,6 +1493,26 @@ class WorkDiscoveryStore:
         rows = self.list_sessions(limit=1)
         return rows[0] if rows else None
 
+    def recorder_session(self, collector_id: str, *, now: float, renew_before: float) -> tuple[WorkSession | None, bool]:
+        """Read the latest session and see whether a lease renewal is due.
+
+        The renewal hint only avoids unnecessary writes. A renewal still
+        authenticates the sealed lease, current policy and session revision.
+        """
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT s.session_id,s.state,s.policy_digest,s.started_at,s.updated_at,s.ended_at,"
+                "s.last_sequence,s.session_blob, EXISTS ("
+                "SELECT 1 FROM ekko_collector_leases l WHERE l.tenant_key=s.tenant_key "
+                "AND l.owner_key=s.owner_key AND l.device_key=s.device_key AND l.session_id=s.session_id "
+                "AND l.collector_key=? AND l.state IN ('active','paused') AND l.expires_at>? "
+                "AND l.heartbeat_at<=?) AS renew "
+                "FROM ekko_sessions s WHERE s.tenant_key=? AND s.owner_key=? AND s.device_key=? "
+                "ORDER BY s.updated_at DESC LIMIT 1",
+                (_collector_key(collector_id), now, renew_before, *self._scope),
+            ).fetchone()
+        return (self._decode_session_row(row), bool(row["renew"])) if row is not None else (None, False)
+
     def list_sessions(self, *, limit: int = 100) -> list[WorkSession]:
         if not 1 <= int(limit) <= 1000:
             raise ValueError("limit must be between 1 and 1000")
@@ -2276,14 +2296,18 @@ class WorkDiscoveryStore:
                 " LIMIT ?",
                 params,
             ).fetchall()
+            if not rows:
+                return []
             rows.reverse()
+            session_filter = " AND session_id=?" if session_id is not None else ""
+            session_params = (*self._scope, session_id) if session_id is not None else self._scope
             session_rows = {
                 str(row["session_id"]): row
                 for row in conn.execute(
                     "SELECT session_id,state,policy_digest,started_at,updated_at,"
                     "ended_at,last_sequence,session_blob FROM ekko_sessions "
-                    "WHERE tenant_key=? AND owner_key=? AND device_key=?",
-                    self._scope,
+                    "WHERE tenant_key=? AND owner_key=? AND device_key=?" + session_filter,
+                    session_params,
                 ).fetchall()
             }
             enrollment_row = conn.execute(

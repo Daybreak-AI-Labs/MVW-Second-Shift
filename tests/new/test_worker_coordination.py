@@ -189,6 +189,33 @@ def test_shared_rate_caps_count_active_buckets_and_only_recent_hits(monkeypatch)
         assert not coordination.rate_allowed(root, "ekko", first, 2, 1, count_hit=False)
 
 
+def test_recorder_counter_reuses_a_connection_and_sees_other_connections(monkeypatch):
+    from maverick import control_plane_lease, world_model_backends
+    from maverick_dashboard import worker_coordination as coordination
+
+    monkeypatch.setattr(world_model_backends, "is_postgres_configured", lambda: True)
+    monkeypatch.setattr(control_plane_lease, "acquire", lambda **_: object())
+    monkeypatch.setattr(control_plane_lease, "release", lambda: None)
+    calls = []
+    connect = coordination.sqlite3.connect
+
+    def track(file, *args, **kwargs):
+        calls.append(file)
+        return connect(file, *args, **kwargs)
+
+    bucket = ("instructions", "device")
+    with coordination.supervisor(4):
+        root = coordination.active_root()
+        monkeypatch.setattr(coordination.sqlite3, "connect", track)
+        assert coordination.rate_allowed(root, "ekko", bucket, 2, 10_000)
+        assert coordination.rate_allowed(root, "ekko", bucket, 2, 10_000, count_hit=False)
+        assert len(calls) == 1
+        with connect(calls[0]) as other:
+            other.execute("DELETE FROM rate_windows")
+        assert coordination.rate_allowed(root, "ekko", bucket, 1, 10_000)
+        assert not coordination.rate_allowed(root, "ekko", bucket, 1, 10_000)
+
+
 def test_recorder_counters_can_write_while_the_agent_counter_is_busy(monkeypatch):
     from maverick import control_plane_lease, world_model_backends
     from maverick_dashboard import worker_coordination as coordination
@@ -270,6 +297,20 @@ async def test_recorder_traffic_has_bounded_slots_separate_from_agent_requests(t
             recorder.release()
     finally:
         agent.release()
+
+
+@pytest.mark.asyncio
+async def test_poll_admission_leaves_room_for_recorder_handovers(monkeypatch):
+    from maverick_dashboard import app as dashboard
+
+    monkeypatch.setattr(dashboard, "_RECORDER_POLL_SLOTS", 1, raising=False)
+    monkeypatch.setattr(dashboard, "_RECORDER_BODY_SLOTS", 1)
+    poll = await dashboard._take_external_body_slot(False, recorder=True, poll=True)
+    try:
+        handover = await dashboard._take_external_body_slot(False, recorder=True)
+        handover.release()
+    finally:
+        poll.release()
 
 
 def test_worker_warms_imported_page_templates_and_the_session_store(monkeypatch):

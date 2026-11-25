@@ -85,13 +85,15 @@ class RequestMemoMiddleware:
             # configuration for authorization and rendering, as for the
             # display roles. Every request opens a new read.
             with kept_reads(), single_read(fresh=True) if display_page else nullcontext():
-                from .auth import display_role_reads, probe_path
+                from .auth import bodyless_recorder_poll, display_role_reads, probe_path
 
                 # Queue before starting page checks or rendering so a burst
                 # does not fragment the worker pool into too many active reads.
                 async with _display_page_slots() if display_page else nullcontext():
-                    if scope["type"] == "http" and not probe_path(scope):
-                        # A probe answers without configuration or a worker thread.
+                    if (scope["type"] == "http" and not probe_path(scope)
+                            and not bodyless_recorder_poll(scope)):
+                        # Bodyless recorder polls read configuration together with
+                        # their credentials in the route's blocking worker.
                         from starlette.concurrency import run_in_threadpool
 
                         await run_in_threadpool(_prime_request_configuration)
