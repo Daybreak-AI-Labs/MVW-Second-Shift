@@ -141,3 +141,34 @@ def test_admin_operation_refuses_concurrent_worker(tmp_path, monkeypatch):
         held.release()
     with try_dashboard_operation(threading.Lock(), "platform-check") as acquired:
         assert acquired
+
+
+def test_worker_cannot_serve_after_supervisor_has_left(monkeypatch):
+    from maverick_dashboard.worker_coordination import guard_supervisor
+
+    monkeypatch.setenv("MAVERICK_DASHBOARD_WORKER_PARENT", str(os.getpid()))
+    with pytest.raises(RuntimeError, match="supervisor"):
+        guard_supervisor()
+
+
+def test_workers_can_install_postgres_row_policies_together(records_in_postgres, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    from maverick.world_model_backends.postgres import PostgresWorldModel
+
+    monkeypatch.setenv("MAVERICK_PG_RLS", "1")
+    opening = Barrier(4, timeout=10)
+    fill = PostgresWorldModel._fill_stamped_tenants
+
+    def synchronized_fill(world):
+        opening.wait()
+        fill(world)
+
+    monkeypatch.setattr(PostgresWorldModel, "_fill_stamped_tenants", synchronized_fill)
+
+    def boot(_):
+        PostgresWorldModel(dsn=records_in_postgres).close()
+
+    with ThreadPoolExecutor(max_workers=4) as workers:
+        list(workers.map(boot, range(4)))

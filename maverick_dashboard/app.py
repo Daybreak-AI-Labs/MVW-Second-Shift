@@ -469,12 +469,14 @@ async def _lifespan(app: FastAPI):
     from maverick.postgres_transactions import close_postgres_pools, open_postgres_pools
     from maverick.servicenow_incidents import delivery_loop
 
-    from .worker_coordination import active_root, lead_timers, timers
+    from .worker_coordination import active_root, guard_supervisor, lead_timers, timers
 
     root = active_root()
     owns_lease = root is None and current() is None
     if root is None:
         _acquire_control_plane(role="dashboard")
+    else:
+        guard_supervisor()
     try:
         _assert_dashboard_auth_configured()
         open_postgres_pools()

@@ -7,9 +7,12 @@ filesystem. Durable records still use their existing storage.
 from __future__ import annotations
 
 import asyncio
+import ctypes
 import json
 import os
+import signal
 import sqlite3
+import sys
 import time
 from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import asynccontextmanager, contextmanager, suppress
@@ -21,6 +24,8 @@ from maverick.control_plane_lease import dashboard_worker_root as active_root
 
 WORKER_COUNT = "MAVERICK_DASHBOARD_WORKERS"
 WORKER_ROOT = DASHBOARD_WORKER_ROOT
+_WORKER_PARENT = "MAVERICK_DASHBOARD_WORKER_PARENT"
+_PR_SET_PDEATHSIG = 1
 
 
 def worker_count() -> int:
@@ -41,7 +46,7 @@ def supervisor(count: int) -> Iterator[None]:
     from maverick import control_plane_lease
     from maverick.world_model_backends import is_postgres_configured
 
-    if os.name != "posix" or not is_postgres_configured():
+    if sys.platform != "linux" or not is_postgres_configured():
         raise RuntimeError("Dashboard workers require Linux and PostgreSQL.")
     if active_root() is not None or control_plane_lease.current() is not None:
         raise RuntimeError("Dashboard workers must start from one supervisor.")
@@ -59,12 +64,24 @@ def supervisor(count: int) -> Iterator[None]:
                     "CREATE INDEX hits_bucket ON hits(namespace, bucket);"
                 )
             os.environ[WORKER_ROOT] = directory
+            os.environ[_WORKER_PARENT] = str(os.getpid())
             try:
                 yield
             finally:
                 os.environ.pop(WORKER_ROOT, None)
+                os.environ.pop(_WORKER_PARENT, None)
     finally:
         control_plane_lease.release()
+
+
+def guard_supervisor() -> None:
+    """Have Linux stop an orphan worker before it can write under a lost lease."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.prctl(_PR_SET_PDEATHSIG, signal.SIGKILL, 0, 0, 0) != 0:
+        raise RuntimeError("The dashboard worker cannot watch its supervisor.")
+    # Cover a supervisor exit before prctl set the signal.
+    if str(os.getppid()) != os.environ.get(_WORKER_PARENT):
+        raise RuntimeError("The dashboard worker's supervisor is unavailable.")
 
 
 def take_slot(root: Path, namespace: str, slots: int) -> Slot | None:
