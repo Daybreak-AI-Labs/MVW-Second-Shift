@@ -247,9 +247,11 @@ curl --fail "$origin/readyz"
 
 `/livez` checks that the service responds. `/readyz` rejects a PostgreSQL
 connection in recovery or marked read-only. With row-level security on, it
-also requires a workspace ID and a login subject to the row policies. If
-readiness returns HTTP 503, check the database endpoint, its read-only
-status, the workspace binding and the database login.
+also requires a workspace ID and a login subject to the row policies. A
+readiness check that cannot finish within three seconds returns HTTP 503.
+Repeated probes share any database check still in progress on the same
+worker. If readiness returns HTTP 503, check the database endpoint, its
+read-only status, the workspace binding and the database login.
 
 Include `--parameters @<parameter-file.json>` when supplying the versions or
 platform settings. The template uses `prefix` as `SECOND_SHIFT_CLIENT_ID`

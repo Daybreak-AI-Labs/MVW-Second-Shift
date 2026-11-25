@@ -1,5 +1,6 @@
 """Readiness checks the database scope used by dashboard traffic."""
 
+import asyncio
 from contextlib import contextmanager
 from types import SimpleNamespace
 
@@ -61,3 +62,32 @@ def test_postgres_read_only_session_is_not_ready(records_in_postgres, monkeypatc
             cursor.execute("SET default_transaction_read_only = on")
         assert client.get("/healthz").status_code == 200
         assert client.get("/readyz").status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_readiness_times_out_without_starting_duplicate_database_checks(monkeypatch):
+    import importlib
+
+    from starlette.responses import JSONResponse
+
+    dashboard = importlib.import_module("maverick_dashboard.app")
+    release = asyncio.Event()
+    finished = asyncio.Event()
+    calls = []
+
+    async def probe(*, require_workspace=False):
+        calls.append(require_workspace)
+        await release.wait()
+        finished.set()
+        return JSONResponse({"status": "ok"})
+
+    monkeypatch.setattr(dashboard, "_database_probe", probe)
+    monkeypatch.setattr(dashboard, "_READINESS_RESPONSE_SECONDS", 0.01, raising=False)
+    async with asyncio.timeout(1):
+        responses = await asyncio.gather(dashboard.readyz(), dashboard.readyz())
+    assert [response.status_code for response in responses] == [503, 503]
+    assert calls == [True]
+    release.set()
+    await asyncio.wait_for(finished.wait(), timeout=1)
+    assert (await dashboard.readyz()).status_code == 200
+    assert calls == [True, True]
