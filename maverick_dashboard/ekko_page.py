@@ -30,7 +30,7 @@ router = APIRouter()
 
 def _sessions(request: Request, device_id: str) -> list[dict]:
     store = ekko._store(request, device_id)
-    if not store.path.exists():
+    if not store.has_storage():
         return []
     return [ekko._public_session(session) for session in store.list_sessions(limit=20)]
 

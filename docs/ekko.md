@@ -196,10 +196,12 @@ If a key record, the settings or the enrollment cannot be read, the answer is
 ## 6. Retention and erasure
 
 - Each activity stops being readable `retention_days` after it happened, and
-  is removed from the file the next time that person's recordings are read or
+  is removed from the store the next time that person's recordings are read or
   written.
 - The person can erase one recording, or everything on a computer, at any
-  time. Erased data is overwritten in the database file.
+  time. In SQLite, erased data is overwritten in the database file. In
+  PostgreSQL, the rows are deleted and database maintenance reclaims the
+  space. Apply your backup retention policy to any older copies.
 - Withdrawing consent keeps what was recorded until the person erases it;
   **Forget this computer** does both at once.
 - The recorder keeps nothing on disk. Activities wait in its memory (a few

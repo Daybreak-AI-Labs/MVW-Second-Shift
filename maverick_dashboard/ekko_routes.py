@@ -153,7 +153,7 @@ def _purge_expired(store) -> int:
     already been made, so a purge that cannot run is retried by the next explicit
     write and never fails that write.
     """
-    if not store.path.exists():
+    if not store.has_storage():
         return 0
     try:
         removed = store.purge_expired()
@@ -221,7 +221,7 @@ def _status_data(request: Request, device_id: str) -> dict:
     # established durable state.
     state = (
         store.status()
-        if store.path.exists()
+        if store.has_storage()
         else {
             "enrollment": None,
             "session": None,
@@ -454,7 +454,7 @@ def ekko_revoke(request: Request, payload: DeviceIn) -> dict:
     _require_same_origin(request)
     auth.require_permission(request, "operate")
     store = _store(request, payload.device_id)
-    enrollment = store.revoke_enrollment() if store.path.exists() else None
+    enrollment = store.revoke_enrollment() if store.has_storage() else None
     from maverick.audit import EventKind
 
     _audit(EventKind.EKKO_CONSENT_CHANGED, state="revoked")
@@ -473,7 +473,7 @@ def ekko_sessions(
         "device_id": _device_id(device_id),
         "sessions": [
             _public_session(session) for session in store.list_sessions(limit=100)
-        ] if store.path.exists() else [],
+        ] if store.has_storage() else [],
     }
 
 
@@ -578,7 +578,7 @@ async def ekko_stop_session(
 def _candidate_response(store, policy: dict) -> dict:
     from maverick.work_discovery import MAX_DISCOVERY_EVENTS, discover_candidates
 
-    events = store.list_events(limit=MAX_DISCOVERY_EVENTS) if store.path.exists() else []
+    events = store.list_events(limit=MAX_DISCOVERY_EVENTS) if store.has_storage() else []
     min_occurrences = max(2, int(policy.get("min_occurrences", 3)))
     min_days = max(2, int(policy.get("min_distinct_days", 2)))
     candidates = discover_candidates(events, min_occurrences=min_occurrences, min_distinct_days=min_days)

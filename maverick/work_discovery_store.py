@@ -15,6 +15,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from . import postgres_scoped_sql, record_documents
 from .work_discovery import (
     MAX_RETENTION_DAYS,
     CapturePolicy,
@@ -92,6 +93,158 @@ _MAX_CONTROL_REVISION = 2**63 - 1
 _SESSION_AUTHORITY_REVOKED = b"EKKO-SESSION-REVOKED-V1\n"
 
 
+_SCHEMA = """
+CREATE TABLE IF NOT EXISTS ekko_enrollments (
+    tenant_key TEXT NOT NULL,
+    owner_key TEXT NOT NULL,
+    device_key TEXT NOT NULL,
+    active INTEGER NOT NULL CHECK (active IN (0, 1)),
+    grant_id TEXT NOT NULL,
+    policy_digest TEXT NOT NULL,
+    policy_blob BLOB NOT NULL,
+    enrolled_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    expires_at REAL NOT NULL,
+    PRIMARY KEY (tenant_key, owner_key, device_key)
+);
+CREATE TABLE IF NOT EXISTS ekko_sessions (
+    tenant_key TEXT NOT NULL,
+    owner_key TEXT NOT NULL,
+    device_key TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    state TEXT NOT NULL CHECK (
+        state IN ('created', 'running', 'paused', 'stopped', 'halted')
+    ),
+    policy_digest TEXT NOT NULL,
+    started_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    ended_at REAL,
+    last_sequence INTEGER NOT NULL DEFAULT 0 CHECK (last_sequence >= 0),
+    session_blob BLOB NOT NULL,
+    PRIMARY KEY (tenant_key, owner_key, device_key, session_id)
+);
+CREATE INDEX IF NOT EXISTS ekko_sessions_scope_time
+    ON ekko_sessions(tenant_key, owner_key, device_key, updated_at DESC);
+CREATE TABLE IF NOT EXISTS ekko_events (
+    tenant_key TEXT NOT NULL,
+    owner_key TEXT NOT NULL,
+    device_key TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    event_id TEXT NOT NULL,
+    sequence INTEGER NOT NULL CHECK (sequence > 0),
+    payload BLOB NOT NULL,
+    event_digest TEXT NOT NULL,
+    ingested_at REAL NOT NULL,
+    expires_at REAL NOT NULL,
+    PRIMARY KEY (tenant_key, owner_key, device_key, event_id),
+    UNIQUE (tenant_key, owner_key, device_key, session_id, sequence),
+    FOREIGN KEY (tenant_key, owner_key, device_key, session_id)
+        REFERENCES ekko_sessions(tenant_key, owner_key, device_key, session_id)
+        ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS ekko_events_scope_time
+    ON ekko_events(tenant_key, owner_key, device_key, ingested_at);
+CREATE INDEX IF NOT EXISTS ekko_events_expiry
+    ON ekko_events(tenant_key, owner_key, device_key, expires_at);
+CREATE TABLE IF NOT EXISTS ekko_audit_outbox (
+    tenant_key TEXT NOT NULL,
+    owner_key TEXT NOT NULL,
+    device_key TEXT NOT NULL,
+    outbox_id TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    payload BLOB NOT NULL,
+    PRIMARY KEY (tenant_key, owner_key, device_key, outbox_id)
+);
+CREATE TABLE IF NOT EXISTS ekko_collector_leases (
+    tenant_key TEXT NOT NULL,
+    owner_key TEXT NOT NULL,
+    device_key TEXT NOT NULL,
+    collector_key TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    state TEXT NOT NULL CHECK (state IN ('active', 'paused', 'released')),
+    claimed_at REAL NOT NULL,
+    heartbeat_at REAL NOT NULL,
+    expires_at REAL NOT NULL,
+    lease_blob BLOB NOT NULL,
+    PRIMARY KEY (tenant_key, owner_key, device_key),
+    FOREIGN KEY (tenant_key, owner_key, device_key, session_id)
+        REFERENCES ekko_sessions(tenant_key, owner_key, device_key, session_id)
+        ON DELETE CASCADE
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ekko_collector_lease_session
+    ON ekko_collector_leases(
+        tenant_key, owner_key, device_key, session_id
+    );
+CREATE TABLE IF NOT EXISTS ekko_plans (
+    tenant_key TEXT NOT NULL, owner_key TEXT NOT NULL, device_key TEXT NOT NULL,
+    opportunity_id TEXT NOT NULL, revision TEXT NOT NULL, payload BLOB NOT NULL,
+    expires_at REAL NOT NULL,
+    PRIMARY KEY (tenant_key, owner_key, device_key, opportunity_id)
+);
+CREATE TABLE IF NOT EXISTS ekko_plan_sources (
+    tenant_key TEXT NOT NULL, owner_key TEXT NOT NULL, device_key TEXT NOT NULL,
+    opportunity_id TEXT NOT NULL, session_id TEXT NOT NULL,
+    PRIMARY KEY (tenant_key, owner_key, device_key, opportunity_id, session_id),
+    FOREIGN KEY (tenant_key, owner_key, device_key, opportunity_id)
+        REFERENCES ekko_plans(tenant_key, owner_key, device_key, opportunity_id) ON DELETE CASCADE
+);
+"""
+
+_TABLES = {
+    "ekko_enrollments": "tenant_key,owner_key,device_key,active,grant_id,policy_digest,policy_blob,"
+                        "enrolled_at,updated_at,expires_at",
+    "ekko_sessions": "tenant_key,owner_key,device_key,session_id,state,policy_digest,started_at,"
+                     "updated_at,ended_at,last_sequence,session_blob",
+    "ekko_events": "tenant_key,owner_key,device_key,session_id,event_id,sequence,payload,event_digest,"
+                   "ingested_at,expires_at",
+    "ekko_audit_outbox": "tenant_key,owner_key,device_key,outbox_id,created_at,payload",
+    "ekko_collector_leases": "tenant_key,owner_key,device_key,collector_key,session_id,state,claimed_at,"
+                             "heartbeat_at,expires_at,lease_blob",
+    "ekko_plans": "tenant_key,owner_key,device_key,opportunity_id,revision,payload,expires_at",
+    "ekko_plan_sources": "tenant_key,owner_key,device_key,opportunity_id,session_id",
+}
+_PG_USAGE = """
+CREATE TABLE IF NOT EXISTS ekko_storage_usage (
+    tenant_key text PRIMARY KEY, bytes bigint NOT NULL
+);
+CREATE OR REPLACE FUNCTION second_shift_ekko_storage_delta() RETURNS trigger
+LANGUAGE plpgsql AS $$
+DECLARE change bigint; scope text; used bigint;
+BEGIN
+    change := 0;
+    IF TG_OP != 'INSERT' THEN
+        scope := OLD.tenant_key;
+        change := change - pg_column_size(OLD) - 128;
+    END IF;
+    IF TG_OP != 'DELETE' THEN
+        scope := NEW.tenant_key;
+        change := change + pg_column_size(NEW) + 128;
+    END IF;
+    IF change != 0 THEN
+        INSERT INTO ekko_storage_usage (tenant_key, bytes) VALUES (scope, change)
+        ON CONFLICT (tenant_key) DO UPDATE SET bytes = ekko_storage_usage.bytes + excluded.bytes
+        RETURNING bytes INTO used;
+        IF change > 0 AND used > {maximum}
+            AND current_setting('maverick.ekko_legacy_import', true) IS DISTINCT FROM 'yes' THEN
+            RAISE EXCEPTION 'Ekko storage quota is exhausted' USING ERRCODE = '53100';
+        END IF;
+    END IF;
+    RETURN NULL;
+END;
+$$;
+"""
+_PG = postgres_scoped_sql.ScopedStore(
+    "work-discovery",
+    _SCHEMA + _PG_USAGE.format(maximum=MAX_DATABASE_BYTES) + "".join(
+        f"DROP TRIGGER IF EXISTS second_shift_ekko_usage ON {table};"
+        f"CREATE TRIGGER second_shift_ekko_usage AFTER INSERT OR UPDATE OR DELETE ON {table} "
+        "FOR EACH ROW EXECUTE FUNCTION second_shift_ekko_storage_delta();"
+        for table in _TABLES
+    ),
+    {table: postgres_scoped_sql.workspace_policy("tenant_key") for table in (*_TABLES, "ekko_storage_usage")},
+)
+
+
 def _scope_key(kind: str, value: str) -> str:
     value = str(value)
     if not value or len(value) > 256 or any(ord(char) < 32 for char in value):
@@ -163,7 +316,7 @@ def _default_authority_check(policy: CapturePolicy) -> None:
 
 
 class WorkDiscoveryStore:
-    """SQLite ledger scoped to one tenant, owner, and enrolled device.
+    """Relational ledger scoped to one tenant, owner, and enrolled device.
 
     Scope identifiers are retained only as fixed digests.  Every statement is
     constrained by all three keys, so even an explicitly injected shared test
@@ -198,8 +351,39 @@ class WorkDiscoveryStore:
                 else data_dir("ekko", "work-discovery.sqlite3")
             )
 
+    def has_storage(self) -> bool:
+        """PostgreSQL is an available store address even before its first row."""
+        return record_documents.using_postgres() or self.path.exists()
+
+    def _import_legacy(self, previous, cursor) -> None:
+        postgres_scoped_sql.bind(cursor, self._tenant_key)
+        cursor.execute("SELECT set_config('maverick.ekko_legacy_import', 'yes', true)")
+        for table, columns in _TABLES.items():
+            postgres_scoped_sql.copy_legacy(previous, cursor, table, columns,
+                                            where="tenant_key=?", params=(self._tenant_key,))
+
     @contextlib.contextmanager
-    def _connect(self) -> Iterator[sqlite3.Connection]:
+    def _postgres(self, *, write: bool = False):
+        try:
+            with _PG.transaction(
+                self._tenant_key, writing=":".join(self._scope) if write else None,
+                legacy=(self.path, self._tenant_key, self._import_legacy),
+            ) as conn:
+                yield conn
+        except postgres_scoped_sql.ScopedStoreError as exc:
+            raise WorkDiscoveryStoreError("Ekko's saved record could not be used. Try again.") from exc
+
+    @contextlib.contextmanager
+    def _connect(self):
+        if record_documents.using_postgres():
+            with self._postgres() as conn:
+                yield conn
+            return
+        with self._sqlite_connection() as conn:
+            yield conn
+
+    @contextlib.contextmanager
+    def _sqlite_connection(self) -> Iterator[sqlite3.Connection]:
         from .file_lock import ensure_private_directory, ensure_private_file
 
         ensure_private_directory(self.path.parent)
@@ -221,109 +405,18 @@ class WorkDiscoveryStore:
             conn.execute("PRAGMA temp_store=MEMORY")
             conn.execute("PRAGMA trusted_schema=OFF")
             conn.execute("PRAGMA secure_delete=ON")
-            conn.executescript("""
-                CREATE TABLE IF NOT EXISTS ekko_enrollments (
-                    tenant_key TEXT NOT NULL,
-                    owner_key TEXT NOT NULL,
-                    device_key TEXT NOT NULL,
-                    active INTEGER NOT NULL CHECK (active IN (0, 1)),
-                    grant_id TEXT NOT NULL,
-                    policy_digest TEXT NOT NULL,
-                    policy_blob BLOB NOT NULL,
-                    enrolled_at REAL NOT NULL,
-                    updated_at REAL NOT NULL,
-                    expires_at REAL NOT NULL,
-                    PRIMARY KEY (tenant_key, owner_key, device_key)
-                );
-                CREATE TABLE IF NOT EXISTS ekko_sessions (
-                    tenant_key TEXT NOT NULL,
-                    owner_key TEXT NOT NULL,
-                    device_key TEXT NOT NULL,
-                    session_id TEXT NOT NULL,
-                    state TEXT NOT NULL CHECK (
-                        state IN ('created', 'running', 'paused', 'stopped', 'halted')
-                    ),
-                    policy_digest TEXT NOT NULL,
-                    started_at REAL NOT NULL,
-                    updated_at REAL NOT NULL,
-                    ended_at REAL,
-                    last_sequence INTEGER NOT NULL DEFAULT 0 CHECK (last_sequence >= 0),
-                    session_blob BLOB NOT NULL,
-                    PRIMARY KEY (tenant_key, owner_key, device_key, session_id)
-                );
-                CREATE INDEX IF NOT EXISTS ekko_sessions_scope_time
-                    ON ekko_sessions(tenant_key, owner_key, device_key, updated_at DESC);
-                CREATE TABLE IF NOT EXISTS ekko_events (
-                    tenant_key TEXT NOT NULL,
-                    owner_key TEXT NOT NULL,
-                    device_key TEXT NOT NULL,
-                    session_id TEXT NOT NULL,
-                    event_id TEXT NOT NULL,
-                    sequence INTEGER NOT NULL CHECK (sequence > 0),
-                    payload BLOB NOT NULL,
-                    event_digest TEXT NOT NULL,
-                    ingested_at REAL NOT NULL,
-                    expires_at REAL NOT NULL,
-                    PRIMARY KEY (tenant_key, owner_key, device_key, event_id),
-                    UNIQUE (tenant_key, owner_key, device_key, session_id, sequence),
-                    FOREIGN KEY (tenant_key, owner_key, device_key, session_id)
-                        REFERENCES ekko_sessions(tenant_key, owner_key, device_key, session_id)
-                        ON DELETE CASCADE
-                );
-                CREATE INDEX IF NOT EXISTS ekko_events_scope_time
-                    ON ekko_events(tenant_key, owner_key, device_key, ingested_at);
-                CREATE INDEX IF NOT EXISTS ekko_events_expiry
-                    ON ekko_events(tenant_key, owner_key, device_key, expires_at);
-                CREATE TABLE IF NOT EXISTS ekko_audit_outbox (
-                    tenant_key TEXT NOT NULL,
-                    owner_key TEXT NOT NULL,
-                    device_key TEXT NOT NULL,
-                    outbox_id TEXT NOT NULL,
-                    created_at REAL NOT NULL,
-                    payload BLOB NOT NULL,
-                    PRIMARY KEY (tenant_key, owner_key, device_key, outbox_id)
-                );
-                CREATE TABLE IF NOT EXISTS ekko_collector_leases (
-                    tenant_key TEXT NOT NULL,
-                    owner_key TEXT NOT NULL,
-                    device_key TEXT NOT NULL,
-                    collector_key TEXT NOT NULL,
-                    session_id TEXT NOT NULL,
-                    state TEXT NOT NULL CHECK (state IN ('active', 'paused', 'released')),
-                    claimed_at REAL NOT NULL,
-                    heartbeat_at REAL NOT NULL,
-                    expires_at REAL NOT NULL,
-                    lease_blob BLOB NOT NULL,
-                    PRIMARY KEY (tenant_key, owner_key, device_key),
-                    FOREIGN KEY (tenant_key, owner_key, device_key, session_id)
-                        REFERENCES ekko_sessions(tenant_key, owner_key, device_key, session_id)
-                        ON DELETE CASCADE
-                );
-                CREATE UNIQUE INDEX IF NOT EXISTS ekko_collector_lease_session
-                    ON ekko_collector_leases(
-                        tenant_key, owner_key, device_key, session_id
-                    );
-                CREATE TABLE IF NOT EXISTS ekko_plans (
-                    tenant_key TEXT NOT NULL, owner_key TEXT NOT NULL, device_key TEXT NOT NULL,
-                    opportunity_id TEXT NOT NULL, revision TEXT NOT NULL, payload BLOB NOT NULL,
-                    expires_at REAL NOT NULL,
-                    PRIMARY KEY (tenant_key, owner_key, device_key, opportunity_id)
-                );
-                CREATE TABLE IF NOT EXISTS ekko_plan_sources (
-                    tenant_key TEXT NOT NULL, owner_key TEXT NOT NULL, device_key TEXT NOT NULL,
-                    opportunity_id TEXT NOT NULL, session_id TEXT NOT NULL,
-                    PRIMARY KEY (tenant_key, owner_key, device_key, opportunity_id, session_id),
-                    FOREIGN KEY (tenant_key, owner_key, device_key, opportunity_id)
-                        REFERENCES ekko_plans(tenant_key, owner_key, device_key, opportunity_id) ON DELETE CASCADE
-                );
-            """)
+            conn.executescript(_SCHEMA)
             yield conn
         finally:
             conn.close()
 
     @contextlib.contextmanager
-    def _transaction(self) -> Iterator[sqlite3.Connection]:
-        with self._connect() as conn:
+    def _transaction(self):
+        if record_documents.using_postgres():
+            with self._postgres(write=True) as conn:
+                yield conn
+            return
+        with self._sqlite_connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
                 yield conn
@@ -535,7 +628,7 @@ class WorkDiscoveryStore:
 
     @contextlib.contextmanager
     def _session_authority_barrier(self, session_id: str) -> Iterator[None]:
-        """Serialize a session's SQLite controls with its rollback authority."""
+        """Serialize a session's database controls with its rollback authority."""
         from .file_lock import cross_process_lock
 
         with cross_process_lock(
@@ -852,7 +945,7 @@ class WorkDiscoveryStore:
         revision: int,
         enrollment_grant_id: str,
     ) -> None:
-        conn.execute(
+        updated = conn.execute(
             "UPDATE ekko_sessions SET session_blob=? WHERE tenant_key=? "
             "AND owner_key=? AND device_key=? AND session_id=?",
             (
@@ -868,7 +961,7 @@ class WorkDiscoveryStore:
                 session.session_id,
             ),
         )
-        if conn.execute("SELECT changes()").fetchone()[0] != 1:
+        if updated.rowcount != 1:
             raise SessionStateError("session state changed concurrently")
 
     def _sync_lease_session_state(
@@ -913,7 +1006,7 @@ class WorkDiscoveryStore:
             heartbeat_at=lease.heartbeat_at,
             expires_at=expires_at,
         )
-        conn.execute(
+        updated = conn.execute(
             "UPDATE ekko_collector_leases SET state=?,expires_at=?,lease_blob=? "
             "WHERE tenant_key=? AND owner_key=? AND device_key=? AND "
             "collector_key=? AND session_id=?",
@@ -928,7 +1021,7 @@ class WorkDiscoveryStore:
                 lease.session_id,
             ),
         )
-        if conn.execute("SELECT changes()").fetchone()[0] != 1:
+        if updated.rowcount != 1:
             raise CollectorLeaseError("collector lease changed concurrently")
 
     def _queue_audit(
@@ -1005,12 +1098,12 @@ class WorkDiscoveryStore:
             if not accepted:
                 break
             with self._transaction() as conn:
-                conn.execute(
+                updated = conn.execute(
                     "DELETE FROM ekko_audit_outbox WHERE tenant_key=? AND "
                     "owner_key=? AND device_key=? AND outbox_id=? AND payload=?",
                     (*self._scope, outbox_id, sealed_blob),
                 )
-                if conn.execute("SELECT changes()").fetchone()[0] != 1:
+                if updated.rowcount != 1:
                     # Another drainer won the acknowledgement race. Delivery is
                     # still at-least-once and the stable outbox id enables sink
                     # deduplication.
@@ -1018,7 +1111,12 @@ class WorkDiscoveryStore:
             delivered += 1
         return {"delivered": delivered, "pending": self.pending_audit_count()}
 
-    def _assert_database_capacity(self) -> None:
+    def _assert_database_capacity(self, conn) -> None:
+        if not isinstance(conn, sqlite3.Connection):
+            row = conn.execute("SELECT bytes FROM ekko_storage_usage WHERE tenant_key=?", (self._tenant_key,)).fetchone()
+            if row and row[0] > MAX_DATABASE_BYTES - _DATABASE_GROWTH_RESERVE:
+                raise WorkDiscoveryStoreError("Ekko storage quota is exhausted")
+            return
         try:
             database_bytes = self.path.stat().st_size
         except OSError:
@@ -1061,7 +1159,7 @@ class WorkDiscoveryStore:
             session_ids = self._scoped_session_ids()
             with self._session_authority_barriers(session_ids), self._transaction() as conn:
                 self._authority_check(policy)
-                self._assert_database_capacity()
+                self._assert_database_capacity(conn)
                 session_rows = conn.execute(
                     "SELECT session_id,state,policy_digest,started_at,updated_at,"
                     "ended_at,last_sequence,session_blob FROM ekko_sessions "
@@ -1142,7 +1240,7 @@ class WorkDiscoveryStore:
 
     def _revoke_enrollment_locked(self, now: float) -> Enrollment | None:
         # This authority lives outside the database so replaying a backed-up
-        # active row cannot resurrect consent. Write it before touching SQLite;
+        # active row cannot resurrect consent. Write it before changing the database;
         # a crash can only fail closed.
         try:
             self._write_consent_authority({
@@ -1330,7 +1428,7 @@ class WorkDiscoveryStore:
             _active_digest, enrollment_grant_id = self._active_enrollment(
                 conn, policy,
             )
-            self._assert_database_capacity()
+            self._assert_database_capacity(conn)
             session_count = int(conn.execute(
                 "SELECT COUNT(*) FROM ekko_sessions WHERE tenant_key=? "
                 "AND owner_key=? AND device_key=?",
@@ -1498,7 +1596,7 @@ class WorkDiscoveryStore:
                     session_id, expected_revision=revision,
                 )
             )
-            conn.execute(
+            updated = conn.execute(
                 "UPDATE ekko_sessions SET state=?,updated_at=?,ended_at=?,session_blob=? "
                 "WHERE tenant_key=? "
                 "AND owner_key=? AND device_key=? AND session_id=? AND state=?",
@@ -1515,7 +1613,7 @@ class WorkDiscoveryStore:
                     *self._scope, session_id, current.value,
                 ),
             )
-            if conn.execute("SELECT changes()").fetchone()[0] != 1:
+            if updated.rowcount != 1:
                 raise SessionStateError("session state changed concurrently")
             self._sync_lease_session_state(
                 conn,
@@ -1566,7 +1664,7 @@ class WorkDiscoveryStore:
         ):
             self._authority_check(policy)
             digest, active_grant_id = self._active_enrollment(conn, policy)
-            self._assert_database_capacity()
+            self._assert_database_capacity(conn)
             session_row = conn.execute(
                 "SELECT session_id,state,policy_digest,started_at,updated_at,ended_at,"
                 "last_sequence,session_blob FROM ekko_sessions WHERE tenant_key=? "
@@ -1736,7 +1834,7 @@ class WorkDiscoveryStore:
                 heartbeat_at=now,
                 expires_at=now + ttl,
             )
-            conn.execute(
+            updated = conn.execute(
                 "UPDATE ekko_collector_leases SET heartbeat_at=?,expires_at=?,"
                 "lease_blob=? WHERE tenant_key=? AND owner_key=? AND device_key=? "
                 "AND collector_key=? AND session_id=? AND state IN ('active','paused')",
@@ -1749,7 +1847,7 @@ class WorkDiscoveryStore:
                     *self._scope, collector, session_id,
                 ),
             )
-            if conn.execute("SELECT changes()").fetchone()[0] != 1:
+            if updated.rowcount != 1:
                 raise CollectorLeaseError("collector lease changed concurrently")
         return lease
 
@@ -1819,7 +1917,7 @@ class WorkDiscoveryStore:
                 revision=next_revision,
                 enrollment_grant_id=session_grant_id,
             )
-            conn.execute(
+            updated = conn.execute(
                 "UPDATE ekko_collector_leases SET state='released',heartbeat_at=?,"
                 "expires_at=?,lease_blob=? WHERE tenant_key=? AND owner_key=? "
                 "AND device_key=? AND collector_key=? AND session_id=?",
@@ -1832,7 +1930,7 @@ class WorkDiscoveryStore:
                     *self._scope, collector, session_id,
                 ),
             )
-            changed = conn.execute("SELECT changes()").fetchone()[0] == 1
+            changed = updated.rowcount == 1
             if changed:
                 try:
                     self._queue_audit(
@@ -1995,7 +2093,7 @@ class WorkDiscoveryStore:
     ) -> bool:
         """Append exactly the next event; return ``False`` for an exact retry.
 
-        The running-state check and insert share a ``BEGIN IMMEDIATE`` lock, so
+        The running-state check and insert share one write transaction, so
         a concurrent stop/revocation wins either before or after the append but
         can never leave an event committed after its terminal transition.
 
@@ -2038,7 +2136,7 @@ class WorkDiscoveryStore:
             self._transaction() as conn,
         ):
             self._authority_check(policy)
-            self._assert_database_capacity()
+            self._assert_database_capacity(conn)
             conn.execute(
                 "DELETE FROM ekko_events WHERE tenant_key=? AND owner_key=? "
                 "AND device_key=? AND expires_at<=?",
@@ -2112,7 +2210,7 @@ class WorkDiscoveryStore:
                 session.ended_at,
                 event.sequence,
             )
-            conn.execute(
+            updated = conn.execute(
                 "UPDATE ekko_sessions SET last_sequence=?,updated_at=?,session_blob=? "
                 "WHERE tenant_key=? "
                 "AND owner_key=? AND device_key=? AND session_id=? AND state='running'",
@@ -2129,7 +2227,7 @@ class WorkDiscoveryStore:
                     *self._scope, event.session_id,
                 ),
             )
-            if conn.execute("SELECT changes()").fetchone()[0] != 1:
+            if updated.rowcount != 1:
                 raise SessionStateError("session stopped while the event was appended")
         return True
 

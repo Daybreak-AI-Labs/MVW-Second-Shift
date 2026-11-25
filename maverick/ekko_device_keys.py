@@ -34,6 +34,8 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
+from . import postgres_scoped_sql, record_documents
+
 KEY_PREFIX = "ekr_"
 _KEY_RE = re.compile(r"^ekr_([0-9a-f]{16})_([A-Za-z0-9_-]{43})$")
 _HASH_PREFIX = "sha256:"
@@ -104,8 +106,55 @@ def _path() -> Path:
     return data_dir("ekko", "device-keys.sqlite3", tenant=None)
 
 
+_SCHEMA = """
+            CREATE TABLE IF NOT EXISTS ekko_device_keys (
+                key_id TEXT PRIMARY KEY,
+                device_scope TEXT NOT NULL UNIQUE,
+                owner_scope TEXT NOT NULL,
+                tenant TEXT,
+                key_hash TEXT NOT NULL,
+                record BLOB NOT NULL,
+                account_hash TEXT NOT NULL DEFAULT '',
+                heard_at REAL,
+                refusal_at REAL
+            )
+        """
+_SCOPE = "CASE WHEN tenant IS NULL THEN '0' ELSE '1:' || tenant END"
+_PG = postgres_scoped_sql.ScopedStore(
+    "recorder-keys", _SCHEMA,
+    {"ekko_device_keys": postgres_scoped_sql.workspace_policy(f"({_SCOPE})")},
+    lookup_policies={"ekko_device_keys": postgres_scoped_sql.key_policy("key_hash")},
+)
+
+
+def _import_keys(previous, cursor) -> None:
+    columns = "key_id,device_scope,owner_scope,tenant,key_hash,record,account_hash,heard_at,refusal_at"
+    for (tenant,) in previous.execute("SELECT DISTINCT tenant FROM ekko_device_keys"):
+        postgres_scoped_sql.bind(cursor, postgres_scoped_sql.workspace_key(tenant))
+        postgres_scoped_sql.copy_legacy(previous, cursor, "ekko_device_keys", columns,
+                                        where="tenant IS ?", params=(tenant,))
+
+
+def _has_store() -> bool:
+    return record_documents.using_postgres() or _path().exists()
+
+
 @contextlib.contextmanager
-def _connect() -> Iterator[sqlite3.Connection]:
+def _connect(tenant: str | None, *, lookup: str | None = None):
+    if record_documents.using_postgres():
+        try:
+            scope = "" if lookup is not None else postgres_scoped_sql.workspace_key(tenant)
+            with _PG.transaction(scope, lookup=lookup or "", legacy=(_path(), "all", _import_keys)) as conn:
+                yield conn
+        except postgres_scoped_sql.ScopedStoreError as exc:
+            raise DeviceKeyError("The recorder key could not be read or updated. Try again.") from exc
+        return
+    with _sqlite_connection() as conn:
+        yield conn
+
+
+@contextlib.contextmanager
+def _sqlite_connection() -> Iterator[sqlite3.Connection]:
     from .file_lock import ensure_private_directory, ensure_private_file
 
     path = _path()
@@ -125,27 +174,18 @@ def _connect() -> Iterator[sqlite3.Connection]:
         conn.execute("PRAGMA synchronous=FULL")
         conn.execute("PRAGMA trusted_schema=OFF")
         conn.execute("PRAGMA secure_delete=ON")
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS ekko_device_keys (
-                key_id TEXT PRIMARY KEY,
-                device_scope TEXT NOT NULL UNIQUE,
-                owner_scope TEXT NOT NULL,
-                tenant TEXT,
-                key_hash TEXT NOT NULL,
-                record BLOB NOT NULL,
-                account_hash TEXT NOT NULL DEFAULT '',
-                heard_at REAL,
-                refusal_at REAL
-            )
-        """)
+        conn.execute(_SCHEMA)
         yield conn
     finally:
         conn.close()
 
 
 @contextlib.contextmanager
-def _transaction() -> Iterator[sqlite3.Connection]:
-    with _connect() as conn:
+def _transaction(tenant: str | None):
+    with _connect(tenant) as conn:
+        if not isinstance(conn, sqlite3.Connection):
+            yield conn
+            return
         conn.execute("BEGIN IMMEDIATE")
         try:
             yield conn
@@ -219,11 +259,12 @@ def create(
         "device_id": device_id, "enrollment": enrollment, "created_at": created_at,
     })
     scope = _device_scope(tenant, owner, device_id)
-    with _transaction() as conn:
-        conn.execute("DELETE FROM ekko_device_keys WHERE device_scope=?", (scope,))
+    with _transaction(tenant) as conn:
         conn.execute(
             "INSERT INTO ekko_device_keys(key_id,device_scope,owner_scope,tenant,key_hash,record) "
-            "VALUES(?,?,?,?,?,?)",
+            "VALUES(?,?,?,?,?,?) ON CONFLICT (device_scope) DO UPDATE SET "
+            "key_id=excluded.key_id, owner_scope=excluded.owner_scope, tenant=excluded.tenant, "
+            "key_hash=excluded.key_hash, record=excluded.record, account_hash='', heard_at=NULL, refusal_at=NULL",
             (key_id, scope, _owner_scope(tenant, owner), tenant, key_hash, record),
         )
     return key, DeviceKey(key_id, tenant, owner, device_id, enrollment, created_at, None, False)
@@ -237,11 +278,11 @@ def find(key: str) -> DeviceKey | None:
     not be read: the caller refuses, it does not fall back.
     """
     match = _KEY_RE.fullmatch(key or "")
-    if not _path().exists():
+    if not _has_store():
         return None
     row = None
     if match is not None:
-        with _connect() as conn:
+        with _connect(None, lookup=hash_key(key)) as conn:
             row = conn.execute("SELECT * FROM ekko_device_keys WHERE key_id=?", (match.group(1),)).fetchone()
     stored = str(row["key_hash"]) if row is not None else _NO_RECORD_HASH
     if not hmac.compare_digest(stored.encode(), hash_key(key).encode()) or row is None:
@@ -251,9 +292,9 @@ def find(key: str) -> DeviceKey | None:
 
 def for_device(owner: str, device_id: str, *, tenant: str | None) -> DeviceKey | None:
     """The live key record for one person's device, if there is one."""
-    if not _path().exists():
+    if not _has_store():
         return None
-    with _connect() as conn:
+    with _connect(tenant) as conn:
         row = conn.execute(
             "SELECT * FROM ekko_device_keys WHERE device_scope=?", (_device_scope(tenant, owner, device_id),),
         ).fetchone()
@@ -262,9 +303,9 @@ def for_device(owner: str, device_id: str, *, tenant: str | None) -> DeviceKey |
 
 def device_names(owner: str, *, tenant: str | None) -> list[str]:
     """The names of this person's devices that have a recorder key."""
-    if not _path().exists():
+    if not _has_store():
         return []
-    with _connect() as conn:
+    with _connect(tenant) as conn:
         rows = conn.execute(
             "SELECT * FROM ekko_device_keys WHERE owner_scope=?", (_owner_scope(tenant, owner),),
         ).fetchall()
@@ -283,16 +324,16 @@ def revoke(owner: str, device_id: str, *, tenant: str | None) -> bool:
     Removal never needs the record to be readable, so a damaged record can
     always be cleared.
     """
-    if not _path().exists():
+    if not _has_store():
         return False
-    with _transaction() as conn:
-        conn.execute("DELETE FROM ekko_device_keys WHERE device_scope=?", (_device_scope(tenant, owner, device_id),))
-        return conn.execute("SELECT changes()").fetchone()[0] == 1
+    with _transaction(tenant) as conn:
+        return conn.execute("DELETE FROM ekko_device_keys WHERE device_scope=?",
+                            (_device_scope(tenant, owner, device_id),)).rowcount == 1
 
 
 def forget(key: DeviceKey) -> None:
     """Remove exactly this key's record: its enrollment has ended."""
-    with _transaction() as conn:
+    with _transaction(key.tenant) as conn:
         conn.execute("DELETE FROM ekko_device_keys WHERE key_id=?", (key.key_id,))
 
 
@@ -300,7 +341,7 @@ def note_heard(key: DeviceKey, *, now: float) -> None:
     """Remember that the recorder called, at most every ``HEARD_WRITE_SECONDS``."""
     if key.heard_at is not None and now - key.heard_at < HEARD_WRITE_SECONDS:
         return
-    with _transaction() as conn:
+    with _transaction(key.tenant) as conn:
         conn.execute("UPDATE ekko_device_keys SET heard_at=? WHERE key_id=?", (float(now), key.key_id))
 
 
@@ -311,7 +352,7 @@ def account_matches(key: DeviceKey, account: str) -> bool | None:
     """
     if not _ACCOUNT_RE.fullmatch(account or ""):
         return False
-    with _connect() as conn:
+    with _connect(key.tenant) as conn:
         row = conn.execute("SELECT account_hash FROM ekko_device_keys WHERE key_id=?", (key.key_id,)).fetchone()
     if row is None:
         return False
@@ -329,14 +370,12 @@ def bind_account(key: DeviceKey, account: str) -> bool:
     if not _ACCOUNT_RE.fullmatch(account or ""):
         return False
     digest = _account_hash(key.key_id, account)
-    with _transaction() as conn:
-        row = conn.execute("SELECT account_hash FROM ekko_device_keys WHERE key_id=?", (key.key_id,)).fetchone()
-        if row is None:
-            return False
-        if not row["account_hash"]:
-            conn.execute("UPDATE ekko_device_keys SET account_hash=? WHERE key_id=?", (digest, key.key_id))
+    with _transaction(key.tenant) as conn:
+        if conn.execute("UPDATE ekko_device_keys SET account_hash=? WHERE key_id=? AND account_hash=''",
+                        (digest, key.key_id)).rowcount == 1:
             return True
-        return hmac.compare_digest(str(row["account_hash"]), digest)
+        row = conn.execute("SELECT account_hash FROM ekko_device_keys WHERE key_id=?", (key.key_id,)).fetchone()
+        return row is not None and hmac.compare_digest(str(row["account_hash"]), digest)
 
 
 def refusal_due(key: DeviceKey, *, now: float) -> bool:
@@ -345,12 +384,11 @@ def refusal_due(key: DeviceKey, *, now: float) -> bool:
     A recorder that keeps trying is recorded at most every
     ``REFUSAL_AUDIT_SECONDS``, so it cannot fill the record.
     """
-    with _transaction() as conn:
-        conn.execute(
+    with _transaction(key.tenant) as conn:
+        return conn.execute(
             "UPDATE ekko_device_keys SET refusal_at=? WHERE key_id=? AND (refusal_at IS NULL OR refusal_at<=?)",
             (float(now), key.key_id, float(now) - REFUSAL_AUDIT_SECONDS),
-        )
-        return conn.execute("SELECT changes()").fetchone()[0] == 1
+        ).rowcount == 1
 
 
 __all__ = [
