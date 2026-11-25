@@ -819,12 +819,12 @@ def sync(*, now: float | None = None) -> dict:
     if not _active(cfg):
         reason = _OFF_REASON if not cfg["enable"] else _GOVERNANCE_OFF_REASON
         return {"enabled": False, "ran": False, "platforms": {}, "reason": reason}
-    if not _sync_lock.acquire(blocking=False):
-        return {"enabled": True, "ran": False, "platforms": {}, "reason": _BUSY_REASON}
-    try:
+    from .control_plane_lease import try_dashboard_operation
+
+    with try_dashboard_operation(_sync_lock, 'platform-check') as acquired:
+        if not acquired:
+            return {"enabled": True, "ran": False, "platforms": {}, "reason": _BUSY_REASON}
         return _sync(cfg, _now(now))
-    finally:
-        _sync_lock.release()
 
 
 def _sync(cfg: dict, moment: float) -> dict:

@@ -3,13 +3,20 @@
 This kit creates a public HTTPS Container App with Entra sign-in, a private
 PostgreSQL Flexible Server, Azure Files, Key Vault, an image registry, and
 Log Analytics in one Azure subscription. The service runs with one replica
-and uses PostgreSQL row-level security. The app's records (enrolled agents,
+with four dashboard workers and uses PostgreSQL row-level security. The app's records (enrolled agents,
 trust, drift, platform checks, approvals cards, alerts, sign-in roles) are kept
 in PostgreSQL. The settings saved from the Settings page, the signed audit log,
 the emergency-stop file, browser sessions and Ekko's stores stay at
-`/var/lib/second-shift` on Azure Files. The kit sets a limit of eight connections per database pool
-(`SECOND_SHIFT_PG_POOL_SIZE`). See the local load check for total connections
-across the app.
+`/var/lib/second-shift` on Azure Files.
+
+The replica has 4 vCPU and 8 GiB, a supported
+[Azure Container Apps Consumption allocation](https://learn.microsoft.com/en-us/azure/container-apps/containers#allocations).
+The kit sets four connections per database pool per worker
+(`SECOND_SHIFT_PG_POOL_SIZE`). See the [MVW timings](mvw-performance.md)
+for the measured workload. The four workers together admit up to
+32 agent requests and four requests that need a body to verify the sender.
+The limits apply across the replica. One worker runs the scheduled jobs and
+another takes over if it stops. Keep the replica count at one.
 
 ## 1. Prepare the subscription and vault
 

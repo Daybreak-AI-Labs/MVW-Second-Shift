@@ -16,8 +16,11 @@ from contextlib import asynccontextmanager, contextmanager, suppress
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from maverick.control_plane_lease import DASHBOARD_WORKER_ROOT, Slot, try_dashboard_lock
+from maverick.control_plane_lease import dashboard_worker_root as active_root
+
 WORKER_COUNT = "MAVERICK_DASHBOARD_WORKERS"
-WORKER_ROOT = "MAVERICK_DASHBOARD_WORKER_ROOT"
+WORKER_ROOT = DASHBOARD_WORKER_ROOT
 
 
 def worker_count() -> int:
@@ -28,17 +31,6 @@ def worker_count() -> int:
     if not 1 <= count <= 8:
         raise ValueError("Set SECOND_SHIFT_DASHBOARD_WORKERS to a number from 1 to 8.")
     return count
-
-
-def active_root() -> Path | None:
-    value = os.environ.get(WORKER_ROOT)
-    if not value:
-        return None
-    root = Path(value)
-    status = root.stat()
-    if not root.is_dir() or root.is_symlink() or status.st_uid != os.getuid() or status.st_mode & 0o077:
-        raise RuntimeError("The private dashboard worker directory could not be verified.")
-    return root
 
 
 @contextmanager
@@ -75,34 +67,12 @@ def supervisor(count: int) -> Iterator[None]:
         control_plane_lease.release()
 
 
-class Slot:
-    """Closing a descriptor releases the slot even if its worker dies."""
-
-    def __init__(self, fd: int) -> None:
-        self.fd = fd
-
-    def release(self) -> None:
-        if self.fd >= 0:
-            fd, self.fd = self.fd, -1
-            os.close(fd)
-
-
 def take_slot(root: Path, namespace: str, slots: int) -> Slot | None:
-    import fcntl
-
     first = os.getpid() % slots
     for offset in range(slots):
         slot = (first + offset) % slots
-        fd = os.open(root / f"{namespace}-{slot}.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            os.close(fd)
-        except BaseException:
-            os.close(fd)
-            raise
-        else:
-            return Slot(fd)
+        if claim := try_dashboard_lock(root, f"{namespace}-{slot}"):
+            return claim
     return None
 
 

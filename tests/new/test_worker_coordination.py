@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import multiprocessing
 import os
+import time
 from pathlib import Path
 from queue import Empty
 
@@ -20,12 +21,12 @@ def _leader(root, notices):
     asyncio.run(lead_timers(Path(root), (heartbeat,), interval=0.03))
 
 
-def _hold_slots(root, count, notices, finish):
+def _hold_slots(root, count, notices):
     from maverick_dashboard.worker_coordination import take_slot
 
     held = [take_slot(Path(root), "admitted-test", 4) for _ in range(count)]
     notices.put(sum(value is not None for value in held))
-    finish.wait(10)
+    time.sleep(15)
     for value in held:
         if value is not None:
             value.release()
@@ -59,9 +60,8 @@ def test_admission_limit_is_shared_and_worker_exit_frees_its_slots(tmp_path):
 
     ctx = multiprocessing.get_context("spawn")
     notices = ctx.Queue()
-    finish = ctx.Event()
-    first = ctx.Process(target=_hold_slots, args=(str(tmp_path), 3, notices, finish))
-    second = ctx.Process(target=_hold_slots, args=(str(tmp_path), 3, notices, finish))
+    first = ctx.Process(target=_hold_slots, args=(str(tmp_path), 3, notices))
+    second = ctx.Process(target=_hold_slots, args=(str(tmp_path), 3, notices))
     try:
         first.start()
         assert notices.get(timeout=10) == 3
@@ -74,12 +74,10 @@ def test_admission_limit_is_shared_and_worker_exit_frees_its_slots(tmp_path):
         assert held is not None
         held.release()
     finally:
-        finish.set()
         for process in (first, second):
-            if process.pid:
-                process.join(5)
             if process.is_alive():
                 process.kill()
+            if process.pid:
                 process.join(5)
         notices.close()
 
@@ -96,8 +94,6 @@ def _finish_job(root, notices, done):
 
 
 def test_one_worker_can_consume_another_workers_result_once(tmp_path, monkeypatch):
-    import time
-
     from maverick_dashboard.ops_jobs import _Store
     from maverick_dashboard.worker_coordination import WORKER_ROOT
 
@@ -127,3 +123,21 @@ def test_one_worker_can_consume_another_workers_result_once(tmp_path, monkeypatc
             process.kill()
             process.join(5)
         notices.close()
+
+
+def test_admin_operation_refuses_concurrent_worker(tmp_path, monkeypatch):
+    import threading
+
+    from maverick.control_plane_lease import try_dashboard_operation
+    from maverick_dashboard.worker_coordination import WORKER_ROOT, take_slot
+
+    monkeypatch.setenv(WORKER_ROOT, str(tmp_path))
+    held = take_slot(tmp_path, "operation-platform-check", 1)
+    assert held is not None
+    try:
+        with try_dashboard_operation(threading.Lock(), "platform-check") as acquired:
+            assert not acquired
+    finally:
+        held.release()
+    with try_dashboard_operation(threading.Lock(), "platform-check") as acquired:
+        assert acquired
