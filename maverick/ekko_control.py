@@ -19,7 +19,8 @@ def control_barrier(*, shared: bool = False) -> Iterator[None]:
     from .paths import data_dir
 
     target = data_dir("ekko-control", "authority", tenant=None)
-    with cross_process_lock(target, strict=True, shared=shared):
+    lock = cross_process_lock(target, strict=True, shared=True) if shared else cross_process_lock(target, strict=True)
+    with lock:
         yield
 
 

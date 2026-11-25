@@ -1420,19 +1420,21 @@ def cross_process_lock(target: str | Path, *, strict: bool = False, shared: bool
     canonical = _canonical_lock_path(lock_path)
     strict = strict or shared
     shared = shared and os.name != "nt"
-    held: dict[str, tuple[int, bool, bool]] = getattr(_THREAD_LOCK_STATE, "held", {})
+    held: dict[str, tuple[int, bool]] = getattr(_THREAD_LOCK_STATE, "held", {})
+    shared_paths: set[str] = getattr(_THREAD_LOCK_STATE, "shared_paths", set())
     _THREAD_LOCK_STATE.held = held
+    _THREAD_LOCK_STATE.shared_paths = shared_paths
     if canonical in held:
-        count, process_safe, already_shared = held[canonical]
-        if already_shared and not shared:
+        count, process_safe = held[canonical]
+        if canonical in shared_paths and not shared:
             raise RuntimeError("Cannot upgrade a shared cross-process lock.")
         if strict and not process_safe:
             raise RuntimeError("cross-process lock backend is unavailable for strict state")
-        held[canonical] = (count + 1, process_safe, already_shared)
+        held[canonical] = (count + 1, process_safe)
         try:
             yield
         finally:
-            held[canonical] = (count, process_safe, already_shared)
+            held[canonical] = (count, process_safe)
         return
 
     with nullcontext() if shared else _exclusive_local_lock(lock_path):
@@ -1496,10 +1498,13 @@ def cross_process_lock(target: str | Path, *, strict: bool = False, shared: bool
                     "no cross-process lock backend is available"
                 ) from None
             _validate_open_lock_file(lock_path, fd)
-            held[canonical] = (1, backend is not None, shared)
+            held[canonical] = (1, backend is not None)
+            if shared:
+                shared_paths.add(canonical)
             try:
                 yield
             finally:
+                shared_paths.discard(canonical)
                 held.pop(canonical, None)
         finally:
             if backend == "fcntl":

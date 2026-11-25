@@ -2,7 +2,7 @@ param location string = resourceGroup().location
 @minValue(1)
 @maxValue(8)
 @description('Dashboard processes in the single Second Shift replica.')
-param dashboardWorkers int = 4
+param dashboardWorkers int = 6
 param prefix string
 param vaultName string
 param entraClientId string
@@ -95,7 +95,7 @@ var settings = union(platformSettings, {
   SECOND_SHIFT_KMS_KEY_ID: '${vaultUri}keys/second-shift-encryption'
   SECOND_SHIFT_AUDIT_REQUIRE_OFFHOST_KEY: '1'
   SECOND_SHIFT_WORLD_BACKEND: 'postgres'
-  SECOND_SHIFT_PG_POOL_SIZE: '8'
+  SECOND_SHIFT_PG_POOL_SIZE: '6'
   SECOND_SHIFT_DASHBOARD_WORKERS: string(dashboardWorkers)
   SECOND_SHIFT_PG_RLS: '1'
   SECOND_SHIFT_EXTERNAL_AGENTS: '1'

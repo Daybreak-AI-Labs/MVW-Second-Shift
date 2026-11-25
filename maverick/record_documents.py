@@ -77,7 +77,7 @@ def read_texts(*paths: Path) -> tuple[str | None, ...]:
     if not using_postgres() or _HELD.get():
         return tuple(at(path).read_text() for path in paths)
     keys = [_key(path) for path in paths]
-    with _transaction() as cursor:
+    with _transaction(read_statement=True) as cursor:
         _run(cursor, f"SELECT key, body FROM {TABLE} WHERE key = ANY(%s)", (keys,))
         saved = dict(cursor.fetchall())
     return tuple(saved.get(key) for key in keys)
@@ -110,7 +110,7 @@ class RecordDocument:
             # row lock can exhaust the pool before the holder can finish.
             cursor = held.get(key) or next(reversed(held.values()))
             return _select(cursor, key)
-        with _transaction() as cursor:
+        with _transaction(read_statement=True) as cursor:
             return _select(cursor, key)
 
     def exists(self) -> bool:
@@ -213,7 +213,7 @@ def _store(dsn: str):
 
 
 @contextlib.contextmanager
-def _transaction() -> Iterator[Any]:
+def _transaction(*, read_statement: bool = False) -> Iterator[Any]:
     dsn = _dsn()
     store = _store(dsn)
     try:
@@ -223,7 +223,8 @@ def _transaction() -> Iterator[Any]:
             with store.transaction() as cursor:
                 _ensure_table(cursor)
             _SCHEMA_READY.add(dsn)
-        with store.transaction() as cursor:
+        use_connection = store.read_statement if read_statement else store.transaction
+        with use_connection() as cursor:
             yield cursor
     except RecordDocumentError:
         raise
