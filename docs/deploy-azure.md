@@ -286,6 +286,42 @@ The templates and Teams ZIP were checked locally. Confirm bot creation,
 channel activation, app upload, and the test card and button press in a
 real tenant before using it for approvals.
 
+## Check a deployed revision
+
+After each deployment, run the public checks from a workstation that can
+reach the HTTPS origin. Add `--teams-required` if you deployed
+the bot. Supply the tenant ID to verify the exact Entra directory.
+
+```bash
+deploy/azure/check-deployment.sh "$origin" --tenant-id '<tenant ID>'
+```
+
+The check prints a result for each probe and exits with a failure status if
+any check fails. It does not follow the sign-in redirect. The gateway check
+uses `Expect: 100-continue` and sends only headers. If an ingress sends
+`100 Continue` before the rejection or buffers the request, check the same
+path at the app ingress to see where the early refusal was lost.
+
+To also exercise agent enrollment and key handling, supply the name of a
+vault secret that contains a short-lived administrator credential. Use a
+delegated Entra access token with the Second Shift audience and admin role,
+or pass `--admin-session` if the secret is the signed-in administrator's
+`ss_session` cookie value. The test needs an attributable administrator for
+credential minting. The break-glass token does not establish that identity.
+[Read a secret with Azure CLI](https://learn.microsoft.com/en-us/cli/azure/keyvault/secret#az-keyvault-secret-show)
+
+```bash
+deploy/azure/check-deployment.sh "$origin" --vault "$vault" \
+  --admin-secret '<short-lived admin credential secret name>'
+```
+
+The optional check screens a low-risk proposal without running it, tries one
+wrong key and removes the temporary enrollment. If the deployment requires
+a human decision before minting a key, the script reports that and removes
+the enrollment. Leave the approval rule enabled. If cleanup fails, use the
+printed agent ID to find the enrollment. The script never prints credentials
+or raw responses. Remove the short-lived vault credential when finished.
+
 ## Limit traffic at the gateway
 
 For Internet-facing deployments, put Azure Front Door Premium with a WAF
