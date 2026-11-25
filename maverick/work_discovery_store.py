@@ -565,7 +565,7 @@ class WorkDiscoveryStore:
     def _deployment_control_barrier(self) -> Iterator[None]:
         from .ekko_control import control_barrier
 
-        with control_barrier():
+        with control_barrier(shared=True):
             yield
 
     def _write_consent_authority(self, payload: dict[str, Any]) -> None:
@@ -1207,7 +1207,8 @@ class WorkDiscoveryStore:
             })
         return Enrollment(True, digest, enrolled_at, now, expiry)
 
-    def get_enrollment(self) -> Enrollment | None:
+    def enrollment_and_policy(self) -> tuple[Enrollment | None, CapturePolicy | None]:
+        """Read the signed enrollment and policy using the same record."""
         with self._connect() as conn:
             row = conn.execute(
                 "SELECT active,grant_id,policy_digest,policy_blob,enrolled_at,"
@@ -1216,22 +1217,15 @@ class WorkDiscoveryStore:
                 "WHERE tenant_key=? AND owner_key=? AND device_key=?",
                 self._scope,
             ).fetchone()
-        return self._decode_enrollment_row(row, now=self._now())[0] if row else None
+        return (None, None) if row is None else self._decode_enrollment_row(row, now=self._now())
+
+    def get_enrollment(self) -> Enrollment | None:
+        enrollment, _ = self.enrollment_and_policy()
+        return enrollment
 
     def get_policy(self) -> CapturePolicy | None:
-        now = self._now()
-        with self._connect() as conn:
-            row = conn.execute(
-                "SELECT active,grant_id,policy_digest,policy_blob,enrolled_at,"
-                "updated_at,expires_at "
-                "FROM ekko_enrollments "
-                "WHERE tenant_key=? AND owner_key=? AND device_key=?",
-                self._scope,
-            ).fetchone()
-        if row is None:
-            return None
-        enrollment, policy = self._decode_enrollment_row(row, now=now)
-        return policy if enrollment.active else None
+        enrollment, policy = self.enrollment_and_policy()
+        return policy if enrollment is not None and enrollment.active else None
 
     def revoke_enrollment(self, *, at: float | None = None) -> Enrollment | None:
         now = self._now() if at is None else _timestamp(at)

@@ -111,15 +111,17 @@
           <td class="mv-row__actions">
             <a class="btn btn--primary" href="/external-agents/{{ a.id }}">View agent</a>
             <button type="button" class="btn btn--ghost" data-xa-connect="{{ a.id }}" data-xa-label="{{ _name }}" data-xa-platform="{{ a.platform }}" data-xa-gate="{{ a.gate }}" data-xa-level="{{ a.level }}">{{ 'Check the connection' if a.level == 'connected' else 'Connect it' }}</button>
+            {% if external_agents_can_manage %}
             {% if a.contained %}
-            <button type="button" class="btn btn--ghost" data-xa-release="{{ a.id }}" data-xa-label="{{ _name }}"{% if not external_agents_can_manage %} disabled aria-disabled="true"{% endif %}>Let it work again</button>
+            <button type="button" class="btn btn--ghost" data-xa-release="{{ a.id }}" data-xa-label="{{ _name }}">Let it work again</button>
             {% endif %}
-            <button type="button" class="btn btn--ghost" data-xa-mint="{{ a.id }}" data-xa-label="{{ _name }}"{% if not external_agents_can_manage %} disabled aria-disabled="true"{% endif %}>Create access key</button>
+            <button type="button" class="btn btn--ghost" data-xa-mint="{{ a.id }}" data-xa-label="{{ _name }}">Create access key</button>
             {% if a.over_budget %}
-            <button type="button" class="btn btn--ghost" data-xa-reset-budget="{{ a.id }}" data-xa-label="{{ _name }}"{% if not external_agents_can_manage %} disabled aria-disabled="true"{% endif %}>Reset spending</button>
+            <button type="button" class="btn btn--ghost" data-xa-reset-budget="{{ a.id }}" data-xa-label="{{ _name }}">Reset spending</button>
             {% endif %}
-            <button type="button" class="btn btn--ghost btn--danger" data-xa-revoke="{{ a.id }}" data-xa-label="{{ _name }}"{% if not external_agents_can_manage %} disabled aria-disabled="true"{% endif %}>Block all access</button>
-            <button type="button" class="btn btn--ghost btn--danger" data-xa-remove="{{ a.id }}" data-xa-label="{{ _name }}"{% if not external_agents_can_manage %} disabled aria-disabled="true"{% endif %}>Remove agent</button>
+            <button type="button" class="btn btn--ghost btn--danger" data-xa-revoke="{{ a.id }}" data-xa-label="{{ _name }}">Block all access</button>
+            <button type="button" class="btn btn--ghost btn--danger" data-xa-remove="{{ a.id }}" data-xa-label="{{ _name }}">Remove agent</button>
+            {% endif %}
           </td>
         </tr>
         {% endif %}

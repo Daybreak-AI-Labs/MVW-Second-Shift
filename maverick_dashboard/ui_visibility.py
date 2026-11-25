@@ -581,12 +581,27 @@ def finder_pages(
     return _grouped_links(role, include_folded=True, scope_roles=scope_roles)
 
 
+def navigation(
+    role: str | None, *, scope_roles: dict[str, str | None] | None = None,
+) -> tuple[list[dict], list[dict]]:
+    """Build the sidebar and finder from the same current visibility rules."""
+    finder = finder_pages(role, scope_roles=scope_roles)
+    groups = []
+    for group in finder:
+        links = [link for link in group["links"] if _PAGES_BY_PATH[link["href"]].get("in_nav", True)]
+        if links:
+            groups.append({**group, "links": links})
+    return groups, finder
+
+
 def _grouped_links(
     role: str | None, *, include_folded: bool,
     scope_roles: dict[str, str | None] | None = None,
 ) -> list[dict]:
     ov = overrides() if role is not None or scope_roles else {}
     groups: list[dict] = []
+    permissions = {item: rbac.permissions_for(item)
+                   for item in {role, *(scope_roles or {}).values()} if item is not None}
     # Groups follow the sidebar's order; a group reached only through folded
     # pages follows them, so the finder never reorders the sidebar's groups.
     sidebar_order: dict[str, int] = {}
@@ -598,10 +613,11 @@ def _grouped_links(
         page_role = (scope_roles or {}).get(page.get("scope", "workspace"), role)
         if page_role is not None:
             if (page["path"], page_role) not in LOCKED:
-                if not eligible(page, page_role):
+                allowed = permissions[page_role]
+                if _permission(page, "floor") not in allowed:
                     continue
                 cell = ov.get(page["path"], {}).get(page_role)
-                shown = cell if cell is not None else default_visible(page, page_role)
+                shown = cell if cell is not None else _permission(page, "default") in allowed
                 if not shown:
                     continue
         # Merge by group label (first-seen order), not adjacency: a page whose

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import ctypes
+import hashlib
 import json
 import os
 import signal
@@ -26,6 +27,7 @@ WORKER_COUNT = "MAVERICK_DASHBOARD_WORKERS"
 WORKER_ROOT = DASHBOARD_WORKER_ROOT
 _WORKER_PARENT = "MAVERICK_DASHBOARD_WORKER_PARENT"
 _PR_SET_PDEATHSIG = 1
+_RECORDER_RATE_SHARDS = 32
 
 
 def worker_count() -> int:
@@ -56,13 +58,7 @@ def supervisor(count: int) -> Iterator[None]:
     try:
         with TemporaryDirectory(prefix="second-shift-workers-") as directory:
             root = Path(directory)
-            with _rate_connection(root) as conn:
-                conn.executescript(
-                    "PRAGMA journal_mode=WAL;"
-                    "CREATE TABLE hits (namespace text, bucket text, seen real);"
-                    "CREATE INDEX hits_recent ON hits(namespace, seen);"
-                    "CREATE INDEX hits_bucket ON hits(namespace, bucket);"
-                )
+            _initialize_rates(root)
             os.environ[WORKER_ROOT] = directory
             os.environ[_WORKER_PARENT] = str(os.getpid())
             try:
@@ -118,8 +114,9 @@ async def lead_timers(root: Path, factories: tuple[Callable, ...], *, interval: 
 
 
 @contextmanager
-def _rate_connection(root: Path):
-    conn = sqlite3.connect(root / "worker-rates.sqlite3", timeout=1)
+def _rate_connection(root: Path, shard: int | None = None):
+    file = "worker-rates.sqlite3" if shard is None else f"recorder-rates-{shard}.sqlite3"
+    conn = sqlite3.connect(root / file, timeout=1)
     try:
         with conn:
             yield conn
@@ -127,20 +124,56 @@ def _rate_connection(root: Path):
         conn.close()
 
 
+def _initialize_rates(root: Path) -> None:
+    for shard in (None, *range(_RECORDER_RATE_SHARDS)):
+        with _rate_connection(root, shard) as conn:
+            conn.executescript(
+                "PRAGMA journal_mode=WAL;"
+                "CREATE TABLE rate_windows (namespace text, bucket text, latest real, hits text, "
+                "PRIMARY KEY (namespace, bucket)) WITHOUT ROWID;"
+                "CREATE INDEX window_expiry ON rate_windows(namespace, latest);"
+            )
+
+
 def rate_allowed(root: Path, namespace: str, bucket: tuple[str, str], limit: int, max_buckets: int, *,
                  count_hit: bool = True) -> bool:
     """Check and spend one hit in a rolling minute across all the workers."""
-    now = time.monotonic()
     identity = json.dumps(bucket, separators=(",", ":"))
-    with _rate_connection(root) as conn:
-        conn.execute("BEGIN IMMEDIATE")
-        conn.execute("DELETE FROM hits WHERE namespace = ? AND seen <= ?", (namespace, now - 60))
-        count = conn.execute("SELECT COUNT(*) FROM hits WHERE namespace = ? AND bucket = ?", (namespace, identity)).fetchone()[0]
-        if count >= limit:
+    shard = None
+    if namespace == "ekko" and max_buckets >= _RECORDER_RATE_SHARDS:
+        # All workers send a bucket to the same file. Independent recorders
+        # do not queue for one SQLite writer or delay the agent gateway.
+        digest = hashlib.blake2s(identity.encode(), digest_size=4).digest()
+        shard = int.from_bytes(digest, "big") % _RECORDER_RATE_SHARDS
+        capacity, remainder = divmod(max_buckets, _RECORDER_RATE_SHARDS)
+        max_buckets = capacity + int(shard < remainder)
+    with _rate_connection(root, shard) as conn:
+        # A preflight can inspect the latest committed window while another
+        # worker spends a hit. Counted requests still update atomically.
+        if count_hit and shard is not None:
+            # Counters live for the lifetime of the worker group. WAL commits
+            # remain visible across workers without a disk flush on every call.
+            conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("BEGIN IMMEDIATE" if count_hit else "BEGIN")
+        now = time.monotonic()
+        cutoff = now - 60
+        row = conn.execute(
+            "SELECT hits FROM rate_windows WHERE namespace = ? AND bucket = ? AND latest > ?",
+            (namespace, identity, cutoff),
+        ).fetchone()
+        hits = [stamp for stamp in json.loads(row[0]) if stamp > cutoff] if row else []
+        if len(hits) >= limit:
             return False
-        if not count and conn.execute(
-                "SELECT COUNT(DISTINCT bucket) FROM hits WHERE namespace = ?", (namespace,)).fetchone()[0] >= max_buckets:
+        if not hits and conn.execute(
+            "SELECT 1 FROM rate_windows WHERE namespace = ? AND latest > ? LIMIT 1 OFFSET ?",
+            (namespace, cutoff, max_buckets - 1),
+        ).fetchone():
             return False
         if count_hit:
-            conn.execute("INSERT INTO hits VALUES (?, ?, ?)", (namespace, identity, now))
+            conn.execute("DELETE FROM rate_windows WHERE namespace = ? AND latest <= ?", (namespace, cutoff))
+            conn.execute(
+                "INSERT INTO rate_windows VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(namespace, bucket) DO UPDATE SET latest = excluded.latest, hits = excluded.hits",
+                (namespace, identity, now, json.dumps([*hits, now], separators=(",", ":"))),
+            )
         return True

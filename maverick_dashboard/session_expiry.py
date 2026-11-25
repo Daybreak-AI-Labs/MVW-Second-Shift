@@ -78,8 +78,14 @@ def sign_in_path() -> str:
 
 def page_session(request: Request) -> dict | None:
     """For the page shell: the session's end, the server clock and how to keep it."""
-    found = _payload(request)
-    ends = _ends(found) if found else None
+    ends = getattr(getattr(request, "state", None), "verified_browser_deadline", None)
+    if ends is None:
+        found = _payload(request)
+        ends = _ends(found) if found else None
+    elif ends > time.time():
+        ends = int(ends)
+    else:
+        ends = None
     if ends is None:
         return None
     from .session_policy import idle_minutes

@@ -121,6 +121,12 @@ class SessionRecord:
         return data
 
 
+def prepare_storage() -> None:
+    """Prepare the session schema and import before a worker serves requests."""
+    with _connect():
+        pass
+
+
 def new_sid() -> str:
     return secrets.token_urlsafe(24)
 

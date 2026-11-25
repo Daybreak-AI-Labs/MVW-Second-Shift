@@ -166,3 +166,158 @@ def test_the_timer_script_calls_only_the_three_session_addresses():
     script = (Path(maverick_dashboard.__file__).parent / "static" / "second-shift-session.js").read_text(encoding="utf-8")
     assert sorted(set(re.findall(r"mvFetchJSON\('([^']+)'", script))) == [
         "/auth/session/activity", "/auth/session/renew", "/auth/session/status"]
+
+
+def test_render_reads_the_session_once_but_the_next_request_observes_revocation(client, monkeypatch):
+    from maverick.web_session import verify_session
+    from maverick_dashboard import oidc_login, session_registry
+
+    _signed_in(client)
+    sid = verify_session(client.cookies.get(oidc_login.SESSION_COOKIE), SESSION_SECRET)["sid"]
+    checks = []
+    current = session_registry.current
+
+    def recorded(sid, *, principal):
+        checks.append(sid)
+        return current(sid, principal=principal)
+
+    monkeypatch.setattr(session_registry, "current", recorded)
+    page = client.get("/external-agents")
+    assert page.status_code == 200
+    assert _meta(page.text, "second-shift-session-expires")
+    assert checks == [sid]
+
+    session_registry.revoke(sid, by="test")
+    assert client.get("/auth/session/status").status_code == 401
+    assert checks == [sid, sid]
+
+
+def test_render_reads_global_role_only_for_its_two_display_scopes(client, monkeypatch):
+    from maverick_dashboard import rbac, template_runtime
+
+    rendered = False
+    observed = []
+    get_role = rbac.get_stored_role
+    reply = template_runtime._Templates.TemplateResponse
+
+    def tracked_render(self, *args, **kwargs):
+        nonlocal rendered
+        rendered = True
+        try:
+            return reply(self, *args, **kwargs)
+        finally:
+            rendered = False
+
+    def tracked_role(principal):
+        if rendered:
+            observed.append(principal)
+        return get_role(principal)
+
+    monkeypatch.setattr(template_runtime._Templates, "TemplateResponse", tracked_render)
+    monkeypatch.setattr(rbac, "get_stored_role", tracked_role)
+    _signed_in(client)
+    assert client.get("/external-agents").status_code == 200
+    assert 0 < len(observed) <= 2
+    observed.clear()
+    assert client.get("/external-agents").status_code == 200
+    assert 0 < len(observed) <= 2
+
+
+def test_navigation_and_finder_share_one_visibility_read(monkeypatch):
+    from maverick_dashboard import ui_visibility
+
+    expected = ui_visibility.nav_groups("operator"), ui_visibility.finder_pages("operator")
+    calls = 0
+
+    def observed():
+        nonlocal calls
+        calls += 1
+        return {}
+
+    monkeypatch.setattr(ui_visibility, "overrides", observed)
+    assert ui_visibility.navigation("operator") == expected
+    assert calls == 1
+
+
+def test_home_renders_outside_the_request_event_loop(client, monkeypatch):
+    import asyncio
+
+    from maverick_dashboard import template_runtime
+
+    original = template_runtime._Templates.TemplateResponse
+    loops = []
+
+    def tracked(self, *args, **kwargs):
+        try:
+            loops.append(asyncio.get_running_loop())
+        except RuntimeError:
+            loops.append(None)
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(template_runtime._Templates, "TemplateResponse", tracked)
+    assert _signed_in(client).get("/").status_code == 200
+    assert loops == [None]
+
+
+@pytest.mark.asyncio
+async def test_read_only_page_shares_one_configuration_check_and_sees_the_next_process_write(
+    tmp_path, monkeypatch,
+):
+    import subprocess
+    import sys
+
+    from maverick import config
+    from maverick_dashboard import _request_memo
+
+    location = tmp_path / "config.toml"
+    location.write_text('snapshot_test = "first"\n', encoding="utf-8")
+    monkeypatch.setenv("MAVERICK_HOME", str(tmp_path))
+    monkeypatch.setenv("MAVERICK_CONFIG", str(location))
+    monkeypatch.setattr(_request_memo, "_prime_request_configuration", lambda: None)
+    observations = []
+    witnesses = []
+    read_witness = config._read_witness
+
+    def observe():
+        witnesses.append(1)
+        return read_witness()
+
+    async def endpoint(scope, receive, send):
+        for _ in range(2):
+            with config.single_read(fresh=True):
+                observations.append(config.load_global_config()["snapshot_test"])
+
+    monkeypatch.setattr(config, "_read_witness", observe)
+    page = _request_memo.RequestMemoMiddleware(endpoint)
+    scope = {"type": "http", "method": "GET", "path": "/external-agents"}
+    await page(scope, None, None)
+    subprocess.run([sys.executable, "-c",
+                    "from pathlib import Path; import sys; Path(sys.argv[1]).write_text(sys.argv[2], encoding='utf-8')",
+                    str(location), 'snapshot_test = "replaced"\n'], check=True)
+    await page(scope, None, None)
+    assert observations == ["first", "first", "replaced", "replaced"]
+    assert len(witnesses) == 2
+
+
+@pytest.mark.asyncio
+async def test_read_only_pages_queue_before_more_than_eight_start(monkeypatch):
+    import asyncio
+
+    from maverick_dashboard import _request_memo
+
+    monkeypatch.setattr(_request_memo, "_prime_request_configuration", lambda: None)
+    active = peak = completed = 0
+
+    async def endpoint(scope, receive, send):
+        nonlocal active, peak, completed
+        active += 1
+        peak = max(peak, active)
+        await asyncio.sleep(.03)
+        active -= 1
+        completed += 1
+
+    page = _request_memo.RequestMemoMiddleware(endpoint)
+    calls = [page({"type": "http", "method": "GET", "path": "/"}, None, None) for _ in range(24)]
+    await asyncio.gather(*calls)
+    assert peak == 8
+    assert completed == 24

@@ -32,8 +32,10 @@ it (:func:`_backfill_record`).
 """
 from __future__ import annotations
 
+import contextvars
 import json
 import re
+from contextlib import contextmanager
 from pathlib import Path
 
 # Built-in roles, ordered most-privileged first (SCIM group resolution and the
@@ -210,29 +212,21 @@ def _validate_custom_role(name: object, rec: object) -> tuple[str, dict]:
     return name, {"permissions": ordered, "description": description}
 
 
-def _read_store(p: Path):
-    """The record at ``p`` as a document, or None when there is none. Files get
-    their private-folder and private-file checks; Postgres has neither."""
+def _read_store_text(p: Path) -> str | None:
+    """Read one current record, with private-file checks in file deployments."""
     from maverick import record_documents
 
-    if not record_documents.using_postgres():
-        from maverick.file_lock import ensure_private_directory
-        from maverick.paths import maverick_home
-
-        ensure_private_directory(maverick_home())
-        ensure_private_directory(p.parent)
     doc = record_documents.at(p)
-    return doc if doc.exists() else None
+    if record_documents.using_postgres():
+        return doc.read_text()
+    from maverick.file_lock import ensure_private_directory, ensure_private_file
+    from maverick.paths import maverick_home
 
-
-def _read_text(doc, p: Path) -> str:
-    """The text of an existing record; a record that has gone is unreadable."""
-    from maverick import record_documents
-
-    if not record_documents.using_postgres():
-        from maverick.file_lock import ensure_private_file
-
-        ensure_private_file(p)
+    ensure_private_directory(maverick_home())
+    ensure_private_directory(p.parent)
+    if not doc.exists():
+        return None
+    ensure_private_file(p)
     text = doc.read_text()
     if text is None:
         raise FileNotFoundError("the saved record is missing")
@@ -241,11 +235,11 @@ def _read_text(doc, p: Path) -> str:
 
 def _load_custom() -> dict[str, dict]:
     p = custom_roles_path()
-    doc = _read_store(p)
-    if doc is None:
+    raw = _read_store_text(p)
+    if raw is None:
         return {}
     try:
-        data = _decode_json_object(_read_text(doc, p), label="custom role store")
+        data = _decode_json_object(raw, label="custom role store")
     except RbacStoreError:
         raise
     except (OSError, ValueError) as exc:
@@ -319,6 +313,35 @@ def _backfill_record(path: Path) -> None:
         logging.getLogger(__name__).warning("RBAC roster marker not recorded: %s", exc)
 
 
+_DISPLAY_ROSTERS: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
+    "second_shift_display_rosters", default=None,
+)
+
+
+@contextmanager
+def display_roster_reads():
+    token = _DISPLAY_ROSTERS.set({})
+    try:
+        yield
+    finally:
+        _DISPLAY_ROSTERS.reset(token)
+
+
+def _read_role_and_marker(path: Path) -> tuple[str | None, str | None]:
+    from maverick import record_documents
+
+    snapshot = _DISPLAY_ROSTERS.get()
+    if snapshot is None:
+        return record_documents.read_texts(path, _presence_marker(path))
+    if path not in snapshot:
+        global_path, tenant_path = store_path(), tenant_store_path()
+        body, marker, tenant_body, tenant_marker = record_documents.read_texts(
+            global_path, _presence_marker(global_path), tenant_path, _presence_marker(tenant_path),
+        )
+        snapshot.update({global_path: (body, marker), tenant_path: (tenant_body, tenant_marker)})
+    return snapshot[path]
+
+
 def _load() -> dict[str, str]:
     from maverick import record_documents
 
@@ -326,7 +349,7 @@ def _load() -> dict[str, str]:
     marked = False
     try:
         if record_documents.using_postgres():
-            raw, marker = record_documents.read_texts(p, _presence_marker(p))
+            raw, marker = _read_role_and_marker(p)
             marked = marker is not None
             if raw is None:
                 if marked:
@@ -334,10 +357,9 @@ def _load() -> dict[str, str]:
                         f"The role list is missing although this installation recorded one. {ROSTER_RECOVERY}")
                 return {}
         else:
-            doc = _read_store(p)
-            if doc is None:
+            raw = _read_store_text(p)
+            if raw is None:
                 return _missing_roster(p, "The role list")
-            raw = _read_text(doc, p)
         data = _decode_json_object(raw, label="RBAC roster")
     except RbacStoreError:
         raise
@@ -391,12 +413,24 @@ def tenant_store_path() -> Path:
 
 
 def _load_tenant() -> dict[str, dict[str, str]]:
+    from maverick import record_documents
+
     p = tenant_store_path()
-    doc = _read_store(p)
-    if doc is None:
-        return _missing_roster(p, "The workspace role list")
+    marked = False
+    if record_documents.using_postgres():
+        raw, marker = _read_role_and_marker(p)
+        marked = marker is not None
+        if raw is None:
+            if marked:
+                raise RosterMissingError(
+                    f"The workspace role list is missing although this installation recorded one. {ROSTER_RECOVERY}")
+            return {}
+    else:
+        raw = _read_store_text(p)
+        if raw is None:
+            return _missing_roster(p, "The workspace role list")
     try:
-        data = _decode_json_object(_read_text(doc, p), label="tenant RBAC roster")
+        data = _decode_json_object(raw, label="tenant RBAC roster")
     except RbacStoreError:
         raise
     except (OSError, ValueError) as exc:
@@ -421,7 +455,8 @@ def _load_tenant() -> dict[str, dict[str, str]]:
                 )
             clean[principal] = role
         out[tenant] = clean
-    _backfill_record(p)
+    if not marked:
+        _backfill_record(p)
     return out
 
 
@@ -445,6 +480,9 @@ def tenant_role_scope_initialized() -> bool:
     from maverick import record_documents
 
     _load_tenant()
+    if record_documents.using_postgres() and _DISPLAY_ROSTERS.get() is not None:
+        raw, _ = _read_role_and_marker(tenant_store_path())
+        return raw is not None
     return record_documents.at(tenant_store_path()).exists()
 
 

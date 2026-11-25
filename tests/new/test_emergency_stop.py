@@ -109,3 +109,34 @@ def test_a_stop_that_cannot_be_read_refuses(client, agent, monkeypatch):
     monkeypatch.setattr(killswitch, "check", unreadable)
     refused = _ask(agent)
     assert refused["allowed"] is False and refused["rule"] == "halted"
+
+
+def test_concurrent_fresh_halt_checks_use_one_connection_pool(monkeypatch):
+    import threading
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+
+    from maverick import killswitch, world_model, world_model_backends
+
+    waiting = threading.Barrier(8, timeout=5)
+    opened = []
+
+    class World:
+        def active_halt(self):
+            return None
+
+    def open_world():
+        opened.append(World())
+        time.sleep(0.1)
+        return opened[-1]
+
+    def check(_):
+        waiting.wait()
+        return killswitch._shared_halt_active(min_interval=0, fail_closed=True)
+
+    monkeypatch.setattr(killswitch, "_shared_world", None)
+    monkeypatch.setattr(world_model, "open_world", open_world)
+    monkeypatch.setattr(world_model_backends, "is_postgres_configured", lambda: True)
+    with ThreadPoolExecutor(max_workers=8) as workers:
+        assert list(workers.map(check, range(8))) == [None] * 8
+    assert len(opened) == 1

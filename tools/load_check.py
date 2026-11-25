@@ -1,4 +1,4 @@
-"""Measure one local Second Shift app process on a disposable PostgreSQL database."""
+"""Measure browser, agent, Teams and recorder traffic on local PostgreSQL."""
 
 from __future__ import annotations
 
@@ -54,7 +54,7 @@ def test_database(dsn):
             conn.execute(sql.SQL("DROP ROLE {}").format(sql.Identifier(name)))
 
 
-def configure_app(directory, origin, dsn, pool_size):
+def configure_app(directory, origin, dsn, pool_size, recorders=0):
     for key in list(os.environ):
         if key.startswith(("MAVERICK_", "SECOND_SHIFT_", "AZURE_")):
             del os.environ[key]
@@ -90,7 +90,8 @@ def configure_app(directory, origin, dsn, pool_size):
         '[auth.oidc.role_map]\n"Load.Operator" = "operator"\n"Load.Admin" = "admin"\n'
         '[external_agents]\nmax_enrolled = 500\n'
         f'[teams]\nenabled = true\napp_id = "{BOT_ID}"\ntenant_id = "{TENANT_ID}"\n'
-        'app_secret_env = "SECOND_SHIFT_LOAD_BOT_SECRET"\n', encoding="utf-8")
+        'app_secret_env = "SECOND_SHIFT_LOAD_BOT_SECRET"\n'
+        + ('[ekko]\nenable = true\nallowed_apps = ["excel", "word"]\n' if recorders else ""), encoding="utf-8")
     return oidc_secret
 
 
@@ -123,13 +124,65 @@ def benchmark_app():
     return app
 
 
-def run_app(pipe, directory, dsn, people, pool_size, workers=1):
+def seed_people(population):
+    """Prepopulate the real indexed identity and sign-out stores."""
+    from maverick import teams_identity
+    from maverick_dashboard import account_profiles, session_revocation, subject_directory
+
+    def person(index):
+        return f"load-person-{index}"
+
+    now = time.time() - 60
+    with account_profiles._keyed().transaction(account_profiles._migrate, write=True) as store:
+        store.rows("people").seed((
+            f"user:{person(idx)}",
+            account_profiles._encode({"name": f"Employee {idx}", "email": f"{person(idx)}@example.test", "at": now}),
+            "", now,
+        ) for idx in range(population))
+    with subject_directory._keyed().transaction(subject_directory._migrate, write=True) as store:
+        store.rows("people").seed((
+            subject_directory._subject_key(person(idx)), json.dumps({"sub": person(idx), "ts": now}), "", now,
+        ) for idx in range(population))
+        store.rows("aliases").seed((
+            subject_directory._key(alias), subject_directory._subject_key(person(idx)), "", now,
+        ) for idx in range(population) for alias in (f"{person(idx)}@example.test", str(uuid.UUID(int=idx))))
+    with session_revocation._keyed().transaction(session_revocation._migrate, write=True) as store:
+        store.rows("people").seed((f"user:{person(idx)}", json.dumps(now), "", now) for idx in range(population))
+    with teams_identity._keyed().transaction(teams_identity._migrate, write=True) as store:
+        store.rows("links").seed((
+            str(uuid.UUID(int=idx)),
+            json.dumps({"principal": f"user:{person(idx)}", "upn": f"{person(idx)}@example.test", "linked_at": now}),
+            f"user:{person(idx)}", now,
+        ) for idx in range(population))
+
+
+def seed_recorders(count):
+    """Enrol synthetic people and start their real Ekko sessions."""
+    from maverick import config, ekko_device_keys
+    from maverick.paths import current_tenant_id_strict
+    from maverick.work_discovery_store import WorkDiscoveryStore
+
+    policy = config.get_ekko_policy()
+    tenant = current_tenant_id_strict()
+    recorders = []
+    for index in range(count):
+        person = f"user:load-person-{index}"
+        store = WorkDiscoveryStore(person, "load-recorder", tenant=tenant)
+        enrollment = store.enroll(policy)
+        session = store.create_session(policy=policy)
+        key, _ = ekko_device_keys.create(person, "load-recorder", tenant=tenant,
+                                         enrollment=ekko_device_keys.enrollment_fingerprint(enrollment))
+        recorders.append((key, session.session_id))
+    return recorders
+
+
+def run_app(pipe, directory, dsn, people, pool_size, workers=1, population=0, recorders=0):
     """Run the normal app, bound only to loopback, using synthetic identities."""
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
         listener.listen(4096)
         origin = f"http://127.0.0.1:{listener.getsockname()[1]}"
-        session_secret = configure_app(directory, origin, dsn, pool_size)
+        session_secret = configure_app(directory, origin, dsn, pool_size, recorders)
 
         import uvicorn
         from starlette.requests import Request
@@ -143,6 +196,9 @@ def run_app(pipe, directory, dsn, people, pool_size, workers=1):
         signing_key = os.environ["MAVERICK_AUDIT_SIGNING_KEY"]
         world = _world()
         world.ping()
+        if population:
+            seed_people(population)
+        recorder_keys = seed_recorders(recorders) if recorders else []
         record_documents.at(rbac.store_path()).write_text(json.dumps({"user:load-teams": "approver"}))
         teams_identity.link(TEAMS_ACTOR, "user:load-teams", actor="load-check")
         teams_token = teams_test_token()
@@ -154,8 +210,9 @@ def run_app(pipe, directory, dsn, people, pool_size, workers=1):
                 extra=sign_in_roles.session_extra({"roles": [role]}),
             )
 
-        pipe.send((origin, session("load-admin", "Load.Admin"),
-                   [session(f"load-person-{idx}", "Load.Operator") for idx in range(people)], teams_token))
+        payload = (origin, session("load-admin", "Load.Admin"),
+                   [session(f"load-person-{idx}", "Load.Operator") for idx in range(people)], teams_token)
+        pipe.send((*payload, recorder_keys) if recorder_keys else payload)
         pipe.close()
         # The setup process uses the same synthetic signer as its fresh workers.
         if workers > 1:
@@ -314,9 +371,19 @@ def main():
     parser.add_argument("--agents", type=int, required=True)
     parser.add_argument("--cards", type=int, default=10)
     parser.add_argument("--pool-size", type=int, default=8)
+    parser.add_argument("--mode", choices=("burst", "steady"), default="burst")
+    parser.add_argument("--seconds", type=int, default=120)
+    parser.add_argument("--population", type=int, default=0)
+    parser.add_argument("--recorders", type=int, default=0)
+    parser.add_argument("--workers", type=int, default=1)
     args = parser.parse_args()
     if not (1 <= args.people <= 1000 and 1 <= args.agents <= 500 and 1 <= args.cards <= args.agents and 1 <= args.pool_size <= 32):
         parser.error("Use 1–1000 people, 1–500 agents, 1–agents cards and a pool of 1–32.")
+    if (not 0 <= args.population <= 50_000 or not 0 <= args.recorders <= 2_500
+            or not 1 <= args.workers <= 8 or not 1 <= args.seconds <= 3600):
+        parser.error("Use up to 50,000 saved people, 2,500 recorders, eight workers and one hour.")
+    if args.recorders and args.mode != "steady":
+        parser.error("Use the steady mode to measure recorders.")
     dsn = os.environ.get("SECOND_SHIFT_LOAD_DSN")
     if not dsn:
         parser.error("Set SECOND_SHIFT_LOAD_DSN to a local PostgreSQL login that can create roles and databases.")
@@ -324,13 +391,19 @@ def main():
     try:
         with test_database(dsn) as (conn, name, app_dsn), TemporaryDirectory(prefix="second-shift-load-") as directory:
             receive, send = ctx.Pipe(duplex=False)
-            process = ctx.Process(target=run_app, args=(send, directory, app_dsn, args.people, args.pool_size))
+            process = ctx.Process(target=run_app, args=(send, directory, app_dsn, args.people, args.pool_size,
+                                                        args.workers, args.population, args.recorders))
             process.start()
             send.close()
             try:
-                if not receive.poll(90):
+                if not receive.poll(480 if args.population or args.recorders else 90):
                     raise RuntimeError("The local app did not finish preparing test sessions.")
-                result = asyncio.run(measure(conn, name, process, receive.recv(), args))
+                payload = receive.recv()
+                if args.mode == "steady":
+                    from tools.mvw_benchmark import measure_steady
+                    result = asyncio.run(measure_steady(payload, args))
+                else:
+                    result = asyncio.run(measure(conn, name, process, payload, args))
             finally:
                 receive.close()
                 process.terminate()
@@ -343,6 +416,8 @@ def main():
         print(f"Load check failed. {message}", flush=True)
         return 1
     print(json.dumps(result, indent=2))
+    if args.mode == "steady":
+        return int(any(item["errors"] for scenario in result.values() for item in scenario.values()))
     return int(any(item["failures"] for item in result["latencies"].values()))
 
 

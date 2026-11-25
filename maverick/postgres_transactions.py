@@ -166,6 +166,18 @@ class PostgresTransactions:
                     entry.active -= 1
 
     @contextlib.contextmanager
+    def read_statement(self) -> Iterator[Any]:
+        """Use one statement snapshot for a stand-alone read."""
+        with self._connection() as connection:
+            previous = connection.autocommit
+            connection.autocommit = True
+            try:
+                with connection.cursor() as cursor:
+                    yield cursor
+            finally:
+                connection.autocommit = previous
+
+    @contextlib.contextmanager
     def transaction(self) -> Iterator[Any]:
         with self._connection() as connection:
             cursor = None

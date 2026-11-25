@@ -63,9 +63,12 @@ public sealed class SecondShiftClient : IDisposable
                 if (body is not null)
                     request.Content = JsonContent.Create(body, options: JsonOptions);
                 using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, attemptTimeout.Token);
-                if (response.StatusCode == HttpStatusCode.TooManyRequests && attempt < 2)
+                var retry = response.Headers.RetryAfter;
+                var busy = response.StatusCode == HttpStatusCode.ServiceUnavailable && retry is not null &&
+                    response.Headers.TryGetValues("X-Second-Shift-Admission", out var admission) &&
+                    admission.Count() == 1 && admission.Single() == "busy";
+                if ((response.StatusCode == HttpStatusCode.TooManyRequests || busy) && attempt < 2)
                 {
-                    var retry = response.Headers.RetryAfter;
                     var delay = retry?.Delta ?? (retry?.Date - DateTimeOffset.UtcNow)
                         ?? TimeSpan.FromMilliseconds(250 << attempt);
                     if (delay >= limit - clock.Elapsed) break;

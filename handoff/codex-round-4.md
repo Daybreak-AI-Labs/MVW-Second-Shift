@@ -79,7 +79,7 @@ same file/PostgreSQL split, same fail-closed rules, same encryption where the fi
 and size the limits for at least 50,000 people. Test with 25,000 synthetic people: a sign-in costs
 the same with 25,000 people as with 25. Add to the review queue.
 
-## 5. Load check at MVW's size
+## 5. Load check at MVW's size (PR #19)
 
 Branch `codex/load-check-mvw`. Extend `tools/load_check.py` with Ekko recorders handing over
 (read `docs/ekko.md` for how often a recorder hands over) and with 20,000 people already present

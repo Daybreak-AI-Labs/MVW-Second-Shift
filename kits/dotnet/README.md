@@ -34,8 +34,8 @@ await client.FinishRunAsync(run.GoalId, new RunResult(allowed ? "success" : "fai
   Put one tool name per call in `Tools`, including repeats. For a completed-run
   retry after an uncertain response, reuse the same `IdempotencyKey` and
   payload. For a live run, use the same ID and result when retrying its finish.
-- An HTTP attempt times out after 10 seconds. On 429 the client waits for
-  `Retry-After` before retrying, up to two retries within 140 seconds total.
+- An HTTP attempt times out after 10 seconds. For 429 or a marked capacity refusal, the client
+  waits for `Retry-After` before retrying, up to two retries within 140 seconds total.
   A heartbeat has 10 seconds total and approval polls share the approval
   deadline. An indeterminate screen or heartbeat returns `false`.
   Run start, finish and reporting throw a generic error for an unusable

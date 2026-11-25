@@ -12,15 +12,16 @@ emergency-stop file and Ekko's consent and session authority files stay at
 
 The replica has 4 vCPU and 8 GiB, a supported
 [Azure Container Apps Consumption allocation](https://learn.microsoft.com/en-us/azure/container-apps/containers#allocations).
-The kit sets four connections per database pool per worker
+The kit sets eight connections per database pool per worker
 (`SECOND_SHIFT_PG_POOL_SIZE`). See the [MVW timings](mvw-performance.md)
 for the measured workload. The four workers together admit up to
 32 agent requests and four requests that need a body to verify the sender.
 The limits apply across the replica. One worker runs the scheduled jobs and
 another takes over if it stops. Keep the replica count at one.
 
-An upgrade imports existing browser sessions and recorder keys on their first
-use, and Ekko recordings on the first access to each workspace's store.
+The workers import existing browser sessions before serving requests after an
+upgrade. They import recorder keys on their first use and Ekko recordings on
+the first access to each workspace's store.
 Stop the old revision before upgrading, as described below. Keep the data
 volume and encryption keys available for the import. Verify sessions and
 recordings after the upgrade, then manage the old SQLite files as backups
@@ -447,81 +448,80 @@ future deployments.
 
 ## Local load check
 
-From a Linux checkout with Python 3.12 and the PostgreSQL extra installed,
-point the developer tool at a disposable PostgreSQL 16 service. It requires
-an explicit `127.0.0.1` bootstrap login that can create roles and databases.
-It launches one local app process, creates a fresh database and a
-non-superuser service login for the run, and removes both on exit.
+The hosted load check seeds 20,000 people, then runs the Azure image at
+4 vCPU and 8 GiB with four workers and eight connections per database pool.
+A separate PostgreSQL 16 service has 2 vCPU and 8 GiB. The driver measures
+complete HTTP responses, with a local signer and connector for Teams.
+
+| Workload | Result | Failed requests |
+| --- | --- | ---: |
+| One person and one agent | Slowest of the six serial operations was 152 ms | 0 |
+| 100 people arriving together | 100/100 pages under 2 seconds. Highest page p95 was 1,420 ms | 0 |
+| 500 people arriving together | Highest page p95 was 4,987 ms | 0 |
+| 500 people every 30 seconds with 100 agents | 2,000/2,000 pages under 1 second. Highest page p95 was 55 ms | 0 |
+| 500 people every 30 seconds with 25 agents | 2,000/2,000 pages under 1 second. Highest page p95 was 42 ms | 0 |
+| 100 agents sending together | 37 marked capacity replies were retried and all 100 screen and 100 report requests completed | 0 |
+
+The steady workloads run for two minutes and include Teams decisions.
+Three runs of the final application on Intel Xeon 6975P-C runners passed
+all three gates. The worst 100-person burst page p95 across those runs was
+1.50 seconds. [First repeat](https://github.com/Daybreak-AI-Labs/MVW-Second-Shift/actions/runs/45551358398/job/138995586259) · [Second repeat](https://github.com/Daybreak-AI-Labs/MVW-Second-Shift/actions/runs/45551358398/job/138997902283)
+
+Before these page changes, a capped run on an AMD EPYC 7763
+recorded 46 of 100 burst pages under two seconds. It met the 100-agent
+steady target. Confirm the speed gates on the target hardware.
+[Slower capped run](https://github.com/Daybreak-AI-Labs/MVW-Second-Shift/actions/runs/45548121662/job/138985528161)
+
+The gateway admits up to 32 authenticated requests across the
+replica. If a slot stays busy for a second, it tells the client to retry.
+Both connection kits honor that hint and bound retries. Recorder traffic
+has up to 48 in-flight requests per worker and shares per-key quotas
+across the replica. Each worker queues Home, Outside agents and Approvals
+requests before more than eight begin processing.
+
+The one-hour load driver schedules 2,000 synthetic recorders. Each asks
+for instructions every five seconds and sends one synthetic app switch
+when its 30-second buffer is due. The first flushes are spread across the
+30-second interval.
+
+The hosted output reports 1,440,000 scheduled instruction polls. The
+configured five-second cadence for 2,000 devices over one hour yields
+720,000, so the poll totals remain unverified. The 238,000 scheduled
+hand-overs match the configured interval.
+
+| Recorder operation | Scheduled | Attempted | Completed successfully | Devices with successes | P95 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Recorder hand-over | 238,000 | 137,629 | 51,835 | 2,000 | 7,465 ms |
+
+The tested instance could not sustain the recorder workload. It returned
+85,660 capacity refusals. The driver canceled 134 remaining attempts at the
+deadline and left 100,371 scheduled hand-overs unattempted.
+
+The browser and agent workload in the table peaked at 62 open database
+connections, 15 active and 15 waiting on locks in the one-second samples.
+The recorder run peaked at 81 open connections, 10 active and 10 waiting
+on locks. The kit keeps the General Purpose D2ds_v5
+PostgreSQL size, which provides 2 vCores and 8 GiB. The load check uses a
+runner-local PostgreSQL server and disk. Confirm performance with Azure
+Files, private networking and the real identity and Teams services during
+deployment. [Azure PostgreSQL compute sizes](https://learn.microsoft.com/en-us/azure/postgresql/compute-storage/concepts-compute#compute-tiers-vcores-and-server-types)
+
+Run the same measurements from a Linux checkout with Docker and Python
+3.12. Install `.[postgres]`, `./runtime[office]` and `aiohttp==3.14.5` for
+the load driver. Set `SECOND_SHIFT_LOAD_DSN` to a disposable loopback
+PostgreSQL 16 login that can create roles and databases. Give that container
+2 vCPU and 8 GiB. Each run creates its own database and application login
+and drops both when it finishes.
 
 ```bash
-docker run --rm -d --name second-shift-load-db -p 127.0.0.1:55432:5432 \
-  -e POSTGRES_PASSWORD=local-load-only postgres:16
-export SECOND_SHIFT_LOAD_DSN='postgresql://postgres:local-load-only@127.0.0.1:55432/postgres'
-.venv/bin/python -m tools.load_check --people 50 --agents 25
-docker stop second-shift-load-db
-unset SECOND_SHIFT_LOAD_DSN
+docker build -f deploy/azure/Dockerfile -t second-shift:benchmark .
+python -m tools.mvw_benchmark --cpus 4 --memory-gib 8 --workers 4 --pool-size 8 \
+  --population 20000 --mvw --seconds 120 --require-targets --output /tmp/mvw-traffic.json
+python -m tools.mvw_benchmark --cpus 4 --memory-gib 8 --workers 4 --pool-size 8 \
+  --population 20000 --recorders 2000 --seconds 3600 --output /tmp/mvw-recorders.json
 ```
 
-Each person opens Home, Outside agents and Approvals once in sequence using
-a registered, signed-in session. Each enrolled agent screens one low-risk
-proposal and reports one run with its own key. The concurrent burst also
-includes ten card rejections through the Teams webhook. The tool signs
-those activities with a local test key and uses a stand-in for the outbound
-Teams connector. It checks that the returned card records the rejection.
-The runs use row-level security, encrypted records, an explicit workspace
-(`SECOND_SHIFT_CLIENT_ID`), a deployment key with its expected digest
-(`SECOND_SHIFT_ENCRYPTION_KEY_DIGEST`), and the kit's pool setting of eight.
-The tool measures complete HTTP responses on loopback. The test excludes
-sign-in redirects, browser asset downloads and network time to Microsoft or
-Azure, and uses local files for state held on Azure Files in the kit.
-
-The benchmark used Python 3.12.14 on Linux 6.18.57 on an AMD EPYC 9V74
-host. The container had a four-CPU quota and 16 GiB of memory. PostgreSQL
-16.16 ran in a separate local container with a 100-connection limit.
-One test run was made for each combination. Counts are the number of
-clients that started together. Timings include queueing and all attempts,
-including refusals. They describe a local burst with synthetic data.
-
-End-to-end response times are median / 95th percentile in seconds.
-
-| People | Agents | Home | Outside agents | Approvals | Screen | Report run | Teams card | Failed requests |
-| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 50 | 25 | 7.64 / 7.71 | 5.32 / 5.71 | 2.20 / 2.45 | 7.62 / 7.68 | 5.70 / 8.45 | 7.64 / 7.66 | 0 |
-| 50 | 100 | 9.60 / 9.66 | 8.13 / 9.28 | 2.92 / 3.35 | 3.76 / 10.30 | 9.10 / 13.10 | 9.63 / 9.64 | 112 |
-| 200 | 25 | 26.39 / 27.02 | 15.87 / 26.38 | 9.53 / 11.11 | 14.95 / 26.56 | 16.90 / 20.76 | 26.96 / 26.99 | 0 |
-| 200 | 100 | 31.31 / 31.82 | 18.17 / 37.18 | 6.67 / 9.75 | 3.03 / 7.77 | 29.79 / 34.26 | 31.80 / 31.84 | 135 |
-| 1,000 | 25 | 81.10 / 134.47 | 102.47 / 139.35 | 41.90 / 49.50 | 63.52 / 69.73 | 84.42 / 86.67 | 134.53 / 134.53 | 0 |
-| 1,000 | 100 | 86.79 / 152.44 | 123.16 / 164.41 | 41.95 / 50.19 | 9.51 / 63.44 | 51.61 / 114.11 | 152.50 / 152.51 | 136 |
-
-PostgreSQL connections were sampled about every 100 ms. App CPU is the
-average number of logical CPU cores used by the app process during the burst.
-
-| People | Agents | Burst seconds | App CPU cores | Peak open | Peak non-idle | Peak waiting for a database lock |
-| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 50 | 25 | 15.48 | 0.95 | 30 | 13 | 0 |
-| 50 | 100 | 21.04 | 0.91 | 38 | 13 | 0 |
-| 200 | 25 | 51.90 | 1.03 | 37 | 14 | 0 |
-| 200 | 100 | 59.26 | 1.03 | 30 | 15 | 0 |
-| 1,000 | 25 | 241.70 | 1.07 | 36 | 16 | 0 |
-| 1,000 | 100 | 269.19 | 1.07 | 38 | 15 | 0 |
-
-**What limits the app first.** Page latency grew as the one app process
-used roughly one full CPU core. At 1,000 people, the home page took over
-two minutes at the 95th percentile. All page and Teams requests completed,
-and all agent calls in the 25-agent runs completed. In the 100-agent
-bursts, the agent gateway returned 503 responses for 56 to 68 screening
-requests and 56 to 68 run reports per run. The gateway admits up to 32
-authenticated requests concurrently and returns a busy response when a slot
-does not open within one second. It rejected traffic before PostgreSQL
-reached its connection limit.
-
-Peak open connections stayed at or below 38 of the server's 100. The
-configured limit of eight applies to each pool. Connection sampling saw
-no waits for PostgreSQL heavyweight locks. It does not measure short waits
-between samples, per-pool checkout queues, or application locks. The
-local results establish the behavior of these six single-process bursts.
-The Azure kit's CPU allocation, storage and network require a separate
-measurement in the intended deployment.
+[Browser and agent run](https://github.com/Daybreak-AI-Labs/MVW-Second-Shift/actions/runs/45551358398/job/138993038063) · [Recorder hour](https://github.com/Daybreak-AI-Labs/MVW-Second-Shift/actions/runs/45547283337/job/138979818081) · [Comparison tables](mvw-performance.md)
 
 ## Local verification
 

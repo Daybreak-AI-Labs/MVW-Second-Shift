@@ -233,8 +233,7 @@ def _nav_context_now(request: Request) -> dict:
 
     role = _page_role(request)
     scope_roles = {"global": _page_role(request, global_scope=True)}
-    groups = ui_visibility.nav_groups(role, scope_roles=scope_roles)
-    finder = ui_visibility.finder_pages(role, scope_roles=scope_roles)
+    groups, finder = ui_visibility.navigation(role, scope_roles=scope_roles)
     finder_hrefs = {link["href"] for group in finder for link in group["links"]}
 
     def can_open_page(path: str) -> bool:
@@ -459,6 +458,30 @@ async def _owner_note_loop() -> None:
         await asyncio.sleep(300)
 
 
+def _warm_dashboard_worker() -> None:
+    """Open its database pools and compile the most-used templates."""
+    from jinja2.meta import find_referenced_templates
+
+    from maverick import record_documents
+
+    from . import rbac, session_registry, ui_visibility
+
+    _world()
+    record_documents.read_texts(rbac.store_path(), rbac.tenant_store_path(), ui_visibility.store_path())
+    session_registry.prepare_storage()
+    choices = ["base.html", "home.html", "external_agents.html", "approvals.html"]
+    loaded = set()
+    env = templates.env
+    while choices:
+        name = choices.pop()
+        if name in loaded:
+            continue
+        loaded.add(name)
+        env.get_template(name)
+        source, _, _ = env.loader.get_source(env, name)
+        choices.extend(child for child in find_referenced_templates(env.parse(source)) if child is not None)
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     """Check sign-in and start timers under the single deployment lease."""
@@ -477,11 +500,16 @@ async def _lifespan(app: FastAPI):
         _acquire_control_plane(role="dashboard")
     else:
         guard_supervisor()
+        from anyio.to_thread import current_default_thread_limiter
+
+        # Keep simultaneous blocking work bounded per process. The shared
+        # database pool is smaller than AnyIO's generic forty-thread default.
+        current_default_thread_limiter().total_tokens = 16
     try:
         _assert_dashboard_auth_configured()
         open_postgres_pools()
         if root is not None:
-            await run_in_threadpool(_world)
+            await run_in_threadpool(_warm_dashboard_worker)
         try:
             from maverick.proxy_auth import warn_if_untrusted_proxy_config
 
@@ -859,22 +887,22 @@ _AUTH_EXEMPT = {
 }
 _EXTERNAL_BODY_SLOTS = 32
 _EXTERNAL_UNSIGNED_BODY_SLOTS = 4
+_RECORDER_BODY_SLOTS = 48  # Per worker. Recorder key quotas remain shared across workers.
 _EXTERNAL_BODY_TIMEOUT_SECONDS = 10.0
 _external_body_limiters: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 _external_body_limiter_lock = threading.Lock()
 
 
-def _external_body_limiter(needs_body_to_authenticate: bool) -> asyncio.Semaphore:
+def _external_body_limiter(namespace: str, limit: int) -> asyncio.Semaphore:
     loop = asyncio.get_running_loop()
     with _external_body_limiter_lock:
         limiters = _external_body_limiters.get(loop)
         if limiters is None:
-            limiters = {
-                True: asyncio.Semaphore(_EXTERNAL_UNSIGNED_BODY_SLOTS),
-                False: asyncio.Semaphore(_EXTERNAL_BODY_SLOTS),
-            }
+            limiters = {}
             _external_body_limiters[loop] = limiters
-        return limiters[needs_body_to_authenticate]
+        if namespace not in limiters:
+            limiters[namespace] = asyncio.Semaphore(limit)
+        return limiters[namespace]
 
 
 _EVIDENCE_GATEWAY_PREFIX = "/api/v1/security/assurance/gateway/"
@@ -931,24 +959,36 @@ async def _bounded_external_body(request: Request) -> bytes:
         raise HTTPException(408, "external request body timed out") from exc
 
 
-async def _take_external_body_slot(needs_body_to_authenticate: bool):
+def _gateway_busy() -> HTTPException:
+    return HTTPException(503, "external request capacity is busy",
+                         headers={"Retry-After": "1", "X-Second-Shift-Admission": "busy"})
+
+
+async def _take_external_body_slot(needs_body_to_authenticate: bool, *, recorder: bool = False):
     from .worker_coordination import active_root, take_slot
 
-    root = active_root()
+    if recorder:
+        namespace, limit = "admitted-recorder", _RECORDER_BODY_SLOTS
+    elif needs_body_to_authenticate:
+        namespace, limit = "pending-agent", _EXTERNAL_UNSIGNED_BODY_SLOTS
+    else:
+        namespace, limit = "admitted-agent", _EXTERNAL_BODY_SLOTS
+    # A worker's recorder queue sleeps on its semaphore. At the recorder's
+    # polling rate, sweeping every shared slot for each waiter saturates the
+    # event loop. Agent and unsigned-body limits remain replica-wide.
+    root = None if recorder else active_root()
     if root is not None:
-        limit = _EXTERNAL_UNSIGNED_BODY_SLOTS if needs_body_to_authenticate else _EXTERNAL_BODY_SLOTS
-        namespace = "pending-agent" if needs_body_to_authenticate else "admitted-agent"
         deadline = time.monotonic() + 1.0
         while (slot := take_slot(root, namespace, limit)) is None:
             if time.monotonic() >= deadline:
-                raise HTTPException(503, "external request capacity is busy")
+                raise _gateway_busy()
             await asyncio.sleep(0.02)
         return slot
-    limiter = _external_body_limiter(needs_body_to_authenticate)
+    limiter = _external_body_limiter(namespace, limit)
     try:
         await asyncio.wait_for(limiter.acquire(), timeout=1.0)
     except TimeoutError as exc:
-        raise HTTPException(503, "external request capacity is busy") from exc
+        raise _gateway_busy() from exc
     return limiter
 
 
@@ -963,10 +1003,13 @@ async def bound_public_governance_body(request: Request, call_next):
 
     try:
         credential = None
-        if path.startswith("/api/v1/external/ekko/"):
+        recorder = path.startswith("/api/v1/external/ekko/")
+        if recorder:
             from .ekko_handover_api import _known_key
 
-            await run_in_threadpool(_known_key, request)
+            key = await run_in_threadpool(_known_key, request)
+            if request.method == "GET" and path == "/api/v1/external/ekko/instructions":
+                request.state.verified_recorder_for_instructions = key
         else:
             _gate()
             credential = agent_credential(request)
@@ -982,7 +1025,7 @@ async def bound_public_governance_body(request: Request, call_next):
             finally:
                 pending.release()
         else:
-            admitted = await _take_external_body_slot(False)
+            admitted = await _take_external_body_slot(False, recorder=recorder)
         try:
             request._body = body if body is not None else await _bounded_external_body(request)  # noqa: SLF001
             return await call_next(request)
@@ -1962,6 +2005,10 @@ def _approval_progress(approvals: list, request: Request) -> dict:
     return progress
 
 
+from maverick.safety.secret_detector import reuse_display_scans  # noqa: E402
+
+
+@reuse_display_scans
 def _approval_queue_context(approvals: list, request: Request | None = None) -> dict:
     """Build the exact-operation review context shared by approval surfaces."""
 
@@ -2060,12 +2107,12 @@ def approvals_page(request: Request) -> HTMLResponse:
 
 
 @app.get("/", response_class=HTMLResponse)
-async def home(request: Request) -> HTMLResponse:
+def home(request: Request) -> HTMLResponse:
     """What needs the signed-in person today (see ``home_page``)."""
     from .home_page import build
 
     return templates.TemplateResponse(
-        request, "home.html", {"home": await run_in_threadpool(build, request)},
+        request, "home.html", {"home": build(request)},
         headers={"Cache-Control": "private, no-store"},
     )
 

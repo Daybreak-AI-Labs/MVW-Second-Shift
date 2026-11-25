@@ -13,7 +13,9 @@ preferable to false negatives — we err on the side of redaction.
 from __future__ import annotations
 
 import re
+from contextvars import ContextVar
 from dataclasses import dataclass
+from functools import wraps
 
 
 @dataclass(frozen=True)
@@ -21,6 +23,24 @@ class SecretMatch:
     name: str
     span: tuple[int, int]
     value_preview: str
+
+
+_DISPLAY_SCANS: ContextVar[dict[str, tuple[SecretMatch, ...]] | None] = ContextVar(
+    "second_shift_display_scans", default=None,
+)
+
+
+def reuse_display_scans(render):
+    """Share scans of identical text during one review display."""
+    @wraps(render)
+    def wrapped(*args, **kwargs):
+        token = _DISPLAY_SCANS.set({})
+        try:
+            return render(*args, **kwargs)
+        finally:
+            _DISPLAY_SCANS.reset(token)
+
+    return wrapped
 
 
 # Each entry: (name, regex). Most patterns match common formats; the
@@ -157,6 +177,9 @@ def scan(text: str) -> list[SecretMatch]:
     """Return all secret matches found in ``text``."""
     if not text:
         return []
+    display_scans = _DISPLAY_SCANS.get()
+    if display_scans is not None and text in display_scans:
+        return list(display_scans[text])
     # scan() must stay a byte-for-byte mirror of the native port
     # (maverick_native.secret_scan_spans) -- see test_native_detect_parity and
     # the module footer -- so it reports every pattern's raw span and dedupes
@@ -177,6 +200,8 @@ def scan(text: str) -> list[SecretMatch]:
             raw = m.group(grp)
             preview = raw[:6] + "..." if len(raw) > 12 else "..."
             matches.append(SecretMatch(name=name, span=span, value_preview=preview))
+    if display_scans is not None and len(display_scans) < 512:
+        display_scans[text] = tuple(matches)
     return matches
 
 

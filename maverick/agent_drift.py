@@ -481,7 +481,9 @@ def _window(days: dict, first: int, last: int) -> dict:
     """Totals over the UTC days ``first`` to ``last`` inclusive."""
     total = _empty_totals()
     for epoch_day in range(first, last + 1):
-        _add(total, _dict(days.get(_day_key(epoch_day))))
+        day = _dict(days.get(_day_key(epoch_day)))
+        if day:
+            _add(total, day)
     return total
 
 
@@ -1448,11 +1450,13 @@ def _alert(agent_id: str, new: list[dict], *, contained: bool, failed: bool) -> 
         log.warning("agent_drift: alert delivery failed", exc_info=True)
 
 
-def roster_view(*, now: float | None = None) -> list[dict]:
+def roster_view(*, now: float | None = None, findings_only: bool = False) -> list[dict]:
     """One row per enrolled agent: ``{agent_id, state, findings_count,
     highest_severity, baseline_approved_at, baseline_approved_by,
     last_observed_at}``. Reads only. An unreadable record or enrollment
-    sidecar raises instead of returning a reassuring empty list."""
+    sidecar raises instead of returning a reassuring empty list. The findings
+    view includes the findings in each row and skips agents without a baseline.
+    """
     cfg = settings()
     moment = _now(now)
     active = _active(cfg)
@@ -1461,9 +1465,13 @@ def roster_view(*, now: float | None = None) -> list[dict]:
     enrolled = _enrolled_ids()
     for agent_id in sorted(enrolled):
         record = _current_record(agents, agent_id, enrolled)
+        if findings_only and not isinstance(_dict(record).get("baseline"), dict):
+            continue
         result = _evaluate_record(agent_id, record, cfg, moment, active=active)
+        if findings_only and result["findings_count"] == 0:
+            continue
         approved = result["baseline"] or {}
-        rows.append({
+        row = {
             "agent_id": agent_id,
             "state": result["state"],
             "findings_count": result["findings_count"],
@@ -1471,7 +1479,10 @@ def roster_view(*, now: float | None = None) -> list[dict]:
             "baseline_approved_at": approved.get("approved_at"),
             "baseline_approved_by": approved.get("approved_by", ""),
             "last_observed_at": _dict(record).get("last_observed_at"),
-        })
+        }
+        if findings_only:
+            row["findings"] = result["findings"]
+        rows.append(row)
     return rows
 
 

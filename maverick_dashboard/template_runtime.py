@@ -63,7 +63,9 @@ class _Templates(Jinja2Templates):
     def TemplateResponse(self, *args, **kwargs):  # noqa: N802 -- Starlette's name
         from maverick.config import single_read
 
-        with single_read():
+        from .auth import display_role_reads
+
+        with single_read(), display_role_reads():
             return super().TemplateResponse(*args, **kwargs)
 
 

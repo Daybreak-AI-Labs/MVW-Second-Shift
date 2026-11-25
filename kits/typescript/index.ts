@@ -67,8 +67,11 @@ export class SecondShiftClient {
           redirect: "error",
           signal: AbortSignal.timeout(Math.min(remaining, requestTimeout)),
         });
-        if (response.status === 429 && attempt < 2) {
-          const delay = retryDelay(response.headers.get("Retry-After"), attempt);
+        const retryAfter = response.headers.get("Retry-After");
+        const busy = response.status === 503 && retryAfter !== null
+          && response.headers.get("X-Second-Shift-Admission") === "busy";
+        if ((response.status === 429 || busy) && attempt < 2) {
+          const delay = retryDelay(retryAfter, attempt);
           await response.body?.cancel();
           if (delay >= deadline - now()) break;
           await sleep(delay);

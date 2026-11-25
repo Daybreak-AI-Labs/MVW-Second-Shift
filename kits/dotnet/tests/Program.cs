@@ -11,7 +11,7 @@ var receipt = Json(new { ok = true, goal_id = 42 });
 var run = new RunStart("Check item");
 var result = new RunResult("success", 0.12m, 100, 25, ["lookup", "lookup"],
     new AgentBuild("1.2", "sha256:abc", "model-a"));
-var replies = new ConcurrentQueue<(int Status, string Body, string? RetryAfter)>();
+var replies = new ConcurrentQueue<(int Status, string Body, string? RetryAfter, bool Busy)>();
 var requests = new ConcurrentQueue<(string Method, string Path, string Bearer, string Body)>();
 
 var builder = WebApplication.CreateBuilder();
@@ -32,6 +32,7 @@ server.Run(async context =>
     context.Response.StatusCode = reply.Status;
     context.Response.ContentType = "application/json";
     if (reply.RetryAfter is not null) context.Response.Headers.RetryAfter = reply.RetryAfter;
+    if (reply.Busy) context.Response.Headers["X-Second-Shift-Admission"] = "busy";
     if (reply.Status == 302) context.Response.Headers.Location = "/other";
     await context.Response.WriteAsync(reply.Body);
 });
@@ -93,6 +94,15 @@ Reply(429, "{}", "300");
 Check(!await Screen(), "Retry-After exceeds request budget");
 Take("POST", "/screen");
 
+Reply(503, "{}", "0", busy: true);
+Reply(200, """{"allowed":true}""");
+Check(await Screen(), "marked gateway capacity refusal is retried");
+Take("POST", "/screen");
+Take("POST", "/screen");
+Reply(503, "{}", "0");
+Check(!await Screen(), "other service failures fail closed");
+Take("POST", "/screen");
+
 Reply(201, """{"ok":true,"goal_id":42,"heartbeat_seconds":5}""");
 Reply(200, """{"continue":true}""");
 Reply(200, """{"continue":false}""");
@@ -130,7 +140,7 @@ static string Json(object value) => JsonSerializer.Serialize(value);
 string Approval(string status, long? expires = null, string? hash = null, int id = 7) =>
     Json(new { status, approval_id = id, approval_binding_sha256 = hash ?? binding,
         expires_at = expires ?? DateTimeOffset.UtcNow.AddMinutes(1).ToUnixTimeSeconds() });
-void Reply(int status, string body, string? retry = null) => replies.Enqueue((status, body, retry));
+void Reply(int status, string body, string? retry = null, bool busy = false) => replies.Enqueue((status, body, retry, busy));
 Task<bool> Screen(TimeSpan? wait = null) => client.ScreenAsync("lookup", "Read item", Risk.High, wait);
 
 string Take(string method, string path)

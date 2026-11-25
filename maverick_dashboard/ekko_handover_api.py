@@ -277,6 +277,7 @@ class _Device:
     key: keys.DeviceKey
     store: WorkDiscoveryStore
     collector_id: str
+    instruction_policy: CapturePolicy | None = None
 
 
 def _open_store(key: keys.DeviceKey) -> WorkDiscoveryStore:
@@ -344,13 +345,20 @@ def _known_key(request: Request) -> keys.DeviceKey:
 @contextmanager
 def _device(request: Request, action: str) -> Iterator[_Device]:
     """Resolve the caller to its device and current enrollment, or refuse."""
-    key = _known_key(request)
+    checked = getattr(request.state, "verified_recorder_for_instructions", None) if action == "instructions" else None
+    key = checked if checked is not None else _known_key(request)
     if _over_limit(key.key_id, action):
         raise _too_many()
     with _in_workspace(key):
         store = _open_store(key)
+        instruction_policy = None
         try:
-            enrollment = store.get_enrollment() if store.has_storage() else None
+            if not store.has_storage():
+                enrollment = None
+            elif action == "instructions":
+                enrollment, instruction_policy = store.enrollment_and_policy()
+            else:
+                enrollment = store.get_enrollment()
         except EnrollmentRequired:
             enrollment = None
         except WorkDiscoveryStoreError as exc:
@@ -361,7 +369,7 @@ def _device(request: Request, action: str) -> Iterator[_Device]:
             raise _invalid_key()
         collector = "handover-" + hashlib.sha256(
             f"ekko:handover-collector:v1:{key.tenant or ''}:{key.owner}:{key.device_id}".encode()).hexdigest()[:40]
-        yield _Device(key=key, store=store, collector_id=collector)
+        yield _Device(key=key, store=store, collector_id=collector, instruction_policy=instruction_policy)
 
 
 def _settings_readable() -> None:
@@ -389,7 +397,7 @@ def _enrolled_policy(device: _Device) -> tuple[bool, CapturePolicy, bool]:
     settings = get_ekko()
     on = bool(settings.get("enable")) and bool(settings.get("allowed_apps"))
     try:
-        policy = device.store.get_policy()
+        policy = device.instruction_policy or device.store.get_policy()
     except WorkDiscoveryStoreError as exc:
         raise _not_accepted("The enrollment") from exc
     if policy is None:

@@ -151,6 +151,59 @@ def test_worker_cannot_serve_after_supervisor_has_left(monkeypatch):
         guard_supervisor()
 
 
+def test_rate_preflight_can_read_during_another_workers_write(monkeypatch):
+    from maverick import control_plane_lease, world_model_backends
+    from maverick_dashboard import worker_coordination as coordination
+
+    monkeypatch.setattr(world_model_backends, "is_postgres_configured", lambda: True)
+    monkeypatch.setattr(control_plane_lease, "acquire", lambda **_: object())
+    monkeypatch.setattr(control_plane_lease, "release", lambda: None)
+    bucket = ("refused", "address")
+    with coordination.supervisor(4):
+        root = coordination.active_root()
+        assert coordination.rate_allowed(root, "ekko", bucket, 1, 10)
+        with coordination._rate_connection(root) as writer:
+            writer.execute("BEGIN IMMEDIATE")
+            assert not coordination.rate_allowed(root, "ekko", bucket, 1, 10, count_hit=False)
+            assert coordination.rate_allowed(root, "ekko", ("refused", "another"), 1, 10, count_hit=False)
+
+
+def test_shared_rate_caps_count_active_buckets_and_only_recent_hits(monkeypatch):
+    from maverick import control_plane_lease, world_model_backends
+    from maverick_dashboard import worker_coordination as coordination
+
+    monkeypatch.setattr(world_model_backends, "is_postgres_configured", lambda: True)
+    monkeypatch.setattr(control_plane_lease, "acquire", lambda **_: object())
+    monkeypatch.setattr(control_plane_lease, "release", lambda: None)
+    clock = iter((0.0, 30.0, 35.0, 59.99, 60.0, 60.0, 60.0))
+    monkeypatch.setattr(coordination.time, "monotonic", lambda: next(clock))
+    first, second = ("instructions", "first"), ("instructions", "second")
+    with coordination.supervisor(4):
+        root = coordination.active_root()
+        assert coordination.rate_allowed(root, "ekko", first, 2, 1)
+        assert coordination.rate_allowed(root, "ekko", first, 2, 1)
+        assert not coordination.rate_allowed(root, "ekko", second, 2, 1, count_hit=False)
+        assert not coordination.rate_allowed(root, "ekko", first, 2, 1)
+        assert coordination.rate_allowed(root, "ekko", first, 2, 1, count_hit=False)
+        assert coordination.rate_allowed(root, "ekko", first, 2, 1)
+        assert not coordination.rate_allowed(root, "ekko", first, 2, 1, count_hit=False)
+
+
+def test_recorder_counters_can_write_while_the_agent_counter_is_busy(monkeypatch):
+    from maverick import control_plane_lease, world_model_backends
+    from maverick_dashboard import worker_coordination as coordination
+
+    monkeypatch.setattr(world_model_backends, "is_postgres_configured", lambda: True)
+    monkeypatch.setattr(control_plane_lease, "acquire", lambda **_: object())
+    monkeypatch.setattr(control_plane_lease, "release", lambda: None)
+    with coordination.supervisor(4):
+        root = coordination.active_root()
+        with coordination._rate_connection(root) as writer:
+            writer.execute("BEGIN IMMEDIATE")
+            assert coordination.rate_allowed(root, "ekko", ("instructions", "device"), 1, 10_000)
+            assert not coordination.rate_allowed(root, "ekko", ("instructions", "device"), 1, 10_000)
+
+
 def test_workers_can_install_postgres_row_policies_together(records_in_postgres, monkeypatch):
     from concurrent.futures import ThreadPoolExecutor
     from threading import Barrier
@@ -172,3 +225,70 @@ def test_workers_can_install_postgres_row_policies_together(records_in_postgres,
 
     with ThreadPoolExecutor(max_workers=4) as workers:
         list(workers.map(boot, range(4)))
+
+
+@pytest.mark.asyncio
+async def test_only_exhausted_gateway_admission_returns_retry_hint(monkeypatch):
+    from fastapi import HTTPException
+
+    from maverick_dashboard import app as dashboard
+
+    monkeypatch.setattr(dashboard, "_EXTERNAL_BODY_SLOTS", 1)
+    slot = await dashboard._take_external_body_slot(False)
+    try:
+        with pytest.raises(HTTPException) as failure:
+            await dashboard._take_external_body_slot(False)
+        assert failure.value.status_code == 503
+        assert failure.value.headers == {"Retry-After": "1", "X-Second-Shift-Admission": "busy"}
+    finally:
+        slot.release()
+    (await dashboard._take_external_body_slot(False)).release()
+
+
+@pytest.mark.asyncio
+async def test_recorder_traffic_has_bounded_slots_separate_from_agent_requests(tmp_path, monkeypatch):
+    from fastapi import HTTPException
+
+    from maverick_dashboard import app as dashboard
+    from maverick_dashboard import worker_coordination as coordination
+
+    monkeypatch.setenv(coordination.WORKER_ROOT, str(tmp_path))
+    monkeypatch.setattr(dashboard, "_EXTERNAL_BODY_SLOTS", 1)
+    monkeypatch.setattr(dashboard, "_RECORDER_BODY_SLOTS", 1, raising=False)
+    agent = await dashboard._take_external_body_slot(False)
+    try:
+        def no_kernel_slot(*_args):
+            pytest.fail("Recorder admission polled process locks.")
+
+        monkeypatch.setattr(coordination, "take_slot", no_kernel_slot)
+        recorder = await dashboard._take_external_body_slot(False, recorder=True)
+        try:
+            with pytest.raises(HTTPException) as failure:
+                await dashboard._take_external_body_slot(False, recorder=True)
+            assert failure.value.status_code == 503
+        finally:
+            recorder.release()
+    finally:
+        agent.release()
+
+
+def test_worker_warms_imported_page_templates_and_the_session_store(monkeypatch):
+    from maverick import record_documents
+    from maverick_dashboard import app as dashboard
+    from maverick_dashboard import session_registry
+
+    compiled = []
+    prepared = []
+    get_template = dashboard.templates.env.get_template
+    monkeypatch.setattr(dashboard, "_world", lambda: None)
+    monkeypatch.setattr(record_documents, "read_texts", lambda *_: ())
+    monkeypatch.setattr(session_registry, "prepare_storage", lambda: prepared.append(True), raising=False)
+
+    def track(name):
+        compiled.append(name)
+        return get_template(name)
+
+    monkeypatch.setattr(dashboard.templates.env, "get_template", track)
+    dashboard._warm_dashboard_worker()
+    assert prepared == [True]
+    assert {"external_agents.html", "_connect_guide.html", "_external_agent_actions.html"} <= set(compiled)

@@ -392,7 +392,10 @@ def session_claims(payload: dict, request: Request, *, via: str) -> dict | None:
         record = session_registry.current(sid, principal=f"user:{payload.get('sub')}")
         if record is None:
             return None
-    except session_registry.SessionStoreError:
+        state = getattr(request, "state", None)
+        if state is not None:
+            state.verified_browser_deadline = min(float(payload["exp"]), record.effective_end)
+    except (KeyError, TypeError, ValueError, session_registry.SessionStoreError):
         return None
     client = getattr(request, "client", None)
     session_registry.touch(
