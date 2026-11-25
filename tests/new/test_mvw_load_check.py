@@ -18,7 +18,7 @@ def _report():
     return {
         "serial": {name: _sample(4, 4, 199) for name in OP_NAMES},
         "burst": {name: _sample(100, 95) for name in OP_NAMES[:3]},
-        "steady": {name: _sample(500, 480) for name in (*OP_NAMES[:3], "Teams card")},
+        "steady": {name: _sample(500, 480) for name in OP_NAMES},
         "overload": {"Screen": _sample(100, 95), "Report run": _sample(100, 95)},
     }
 
@@ -31,6 +31,42 @@ def test_exact_thresholds_and_transport_failures_are_failures():
     report["steady"]["Teams card"]["errors"] = {"TransportError": 1}
     report["overload"]["Report run"]["errors"] = {"503 gateway busy": 1}
     assert len(target_failures(report)) == 4
+
+
+def test_steady_agent_failures_and_missing_reports_fail_the_gate():
+    report = _report()
+    report["steady"]["Screen"]["errors"] = {"screen refused": 1}
+    del report["steady"]["Report run"]
+    assert target_failures(report) == ["An agent screen or run report failed during steady traffic."]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("decision", [{"allowed": False}, {"allowed": True, "requires_approval": True}, []])
+async def test_load_driver_stops_when_screening_refuses_an_action(decision):
+    paths = []
+
+    def respond(request):
+        paths.append(request.url.path)
+        if request.url.path.endswith("/screen"):
+            return httpx.Response(200, json=decision)
+        return httpx.Response(201, json={"ok": True, "goal_id": 1})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond), base_url="http://127.0.0.1") as client:
+        workload = Workload(client, "")
+        await workload.agent({}, "only-report-if-allowed")
+    assert paths == ["/api/v1/external/screen"]
+    assert workload.report(200)["Screen"]["errors"] == {"screen refused": 1}
+
+
+@pytest.mark.asyncio
+async def test_successful_status_without_a_run_receipt_fails_the_load_check():
+    replies = iter([{"allowed": True}, {"ok": True}])
+    statuses = iter([200, 201])
+    transport = httpx.MockTransport(lambda request: httpx.Response(next(statuses), json=next(replies)))
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
+        workload = Workload(client, "")
+        await workload.agent({}, "require-a-receipt")
+    assert workload.report(200)["Report run"]["errors"] == {"unexpected reply": 1}
 
 
 @pytest.mark.asyncio

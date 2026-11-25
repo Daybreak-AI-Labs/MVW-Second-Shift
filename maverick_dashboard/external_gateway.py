@@ -73,11 +73,13 @@ def _rate_limit(key: str, action: str) -> None:
     now = time.monotonic()
     limit = _RATE_LIMITS[action]
     bucket = (action, key)
-    from .worker_coordination import active_root, rate_allowed
+    from .worker_coordination import RateConnectionBusy, active_root, rate_allowed
 
     if (root := active_root()) is not None:
         try:
             allowed = rate_allowed(root, "external", bucket, limit, _RATE_BUCKET_CAP)
+        except RateConnectionBusy as exc:
+            raise _gateway_busy() from exc
         except sqlite3.OperationalError as exc:
             code = getattr(exc, "sqlite_errorcode", 0) & 0xff
             if code in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):

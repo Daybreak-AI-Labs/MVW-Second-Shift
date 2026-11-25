@@ -280,6 +280,31 @@ def test_busy_agent_rate_store_tells_client_to_retry_before_action(monkeypatch, 
     assert refusal.value.headers == {"Retry-After": "1", "X-Second-Shift-Admission": "busy"}
 
 
+def test_agent_rates_do_not_wait_indefinitely_for_a_local_connection(monkeypatch, tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+
+    from fastapi import HTTPException
+
+    from maverick_dashboard import external_gateway
+    from maverick_dashboard import worker_coordination as coordination
+
+    coordination._initialize_rates(tmp_path)
+    monkeypatch.setattr(coordination, "active_root", lambda: tmp_path)
+    monkeypatch.setattr(coordination, "_AGENT_RATE_LOCK_TIMEOUT", 0.01, raising=False)
+    try:
+        external_gateway._rate_limit("test-agent", "screen")
+        lock, _ = next(entry for key, entry in coordination._RATE_CONNECTIONS.items() if key[1] == tmp_path)
+        with ThreadPoolExecutor(max_workers=1) as pool, lock:
+            waiting = pool.submit(external_gateway._rate_limit, "test-agent", "screen")
+            with pytest.raises(HTTPException) as refusal:
+                waiting.result(timeout=2)
+        assert refusal.value.status_code == 503
+        assert refusal.value.headers == {"Retry-After": "1", "X-Second-Shift-Admission": "busy"}
+        external_gateway._rate_limit("test-agent", "screen")
+    finally:
+        coordination.close_rate_connections()
+
+
 def test_workers_can_install_postgres_row_policies_together(records_in_postgres, monkeypatch):
     from concurrent.futures import ThreadPoolExecutor
     from threading import Barrier
