@@ -233,8 +233,7 @@ def _nav_context_now(request: Request) -> dict:
 
     role = _page_role(request)
     scope_roles = {"global": _page_role(request, global_scope=True)}
-    groups = ui_visibility.nav_groups(role, scope_roles=scope_roles)
-    finder = ui_visibility.finder_pages(role, scope_roles=scope_roles)
+    groups, finder = ui_visibility.navigation(role, scope_roles=scope_roles)
     finder_hrefs = {link["href"] for group in finder for link in group["links"]}
 
     def can_open_page(path: str) -> bool:
@@ -477,6 +476,11 @@ async def _lifespan(app: FastAPI):
         _acquire_control_plane(role="dashboard")
     else:
         guard_supervisor()
+        from anyio.to_thread import current_default_thread_limiter
+
+        # Keep simultaneous blocking work bounded per process. The shared
+        # database pool is smaller than AnyIO's generic forty-thread default.
+        current_default_thread_limiter().total_tokens = 12
     try:
         _assert_dashboard_auth_configured()
         open_postgres_pools()

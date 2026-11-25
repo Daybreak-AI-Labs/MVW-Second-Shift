@@ -221,3 +221,19 @@ def test_render_reads_global_role_only_for_its_two_display_scopes(client, monkey
     observed.clear()
     assert client.get("/external-agents").status_code == 200
     assert 0 < len(observed) <= 2
+
+
+def test_navigation_and_finder_share_one_visibility_read(monkeypatch):
+    from maverick_dashboard import ui_visibility
+
+    expected = ui_visibility.nav_groups("operator"), ui_visibility.finder_pages("operator")
+    calls = 0
+
+    def observed():
+        nonlocal calls
+        calls += 1
+        return {}
+
+    monkeypatch.setattr(ui_visibility, "overrides", observed)
+    assert ui_visibility.navigation("operator") == expected
+    assert calls == 1

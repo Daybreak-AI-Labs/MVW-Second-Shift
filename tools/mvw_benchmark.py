@@ -305,6 +305,8 @@ async def measure(payload, args):
         result = {"serial": await serial(client, token, people[0], keys[0], cards[:4])}
         if not args.profile:
             result["burst"] = await burst(client, token, people, args.burst)
+            if args.quick:
+                return result
             result["steady"] = await steady(client, token, people, keys, cards[4:14], args.seconds)
             if args.mvw:
                 result["burst500"] = await burst(client, token, people, 500)
@@ -359,6 +361,7 @@ def main():
     parser.add_argument("--seconds", type=int, default=60)
     parser.add_argument("--profile", action="store_true")
     parser.add_argument("--mvw", action="store_true", help="also measure 500 arrivals and 25 agents")
+    parser.add_argument("--quick", action="store_true", help="measure only the serial and 100-arrival cases")
     parser.add_argument("--population", type=int, default=0)
     parser.add_argument("--recorders", type=int, default=0)
     parser.add_argument("--output", type=Path, required=True)

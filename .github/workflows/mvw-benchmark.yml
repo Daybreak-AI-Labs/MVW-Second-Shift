@@ -16,7 +16,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: mvw-benchmark-${{ github.ref }}-${{ contains(github.event.head_commit.message, 'Measure recorder hour') && 'recorder-hour' || 'comparison' }}
+  group: mvw-benchmark-${{ github.ref }}-${{ contains(github.event.head_commit.message, 'Measure recorder hour') && 'recorder-hour' || contains(github.event.head_commit.message, 'Measure burst') && 'quick' || 'comparison' }}
   cancel-in-progress: true
 
 jobs:
@@ -64,6 +64,7 @@ jobs:
             case "$BENCHMARK_TITLE" in
               *"Measure recorder hour"*) args=(--recorders 2000 --population 20000 --seconds 3600) ;;
               *"Measure recorder pilot"*) args=(--recorders 2000 --population 20000 --seconds 65) ;;
+              *"Measure burst"*) args=(--quick --population 20000) ;;
             esac
           fi
           docker exec "$POSTGRES_CONTAINER" cat /sys/fs/cgroup/cpu.max /sys/fs/cgroup/memory.max
