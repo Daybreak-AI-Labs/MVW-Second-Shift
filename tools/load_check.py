@@ -28,6 +28,7 @@ OP_NAMES = ("Home", "Outside agents", "Approvals", "Screen", "Report run", "Team
 BOT_ID = "0f0f0f0f-1111-2222-3333-444444444444"
 TENANT_ID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 TEAMS_ACTOR = "11111111-aaaa-aaaa-aaaa-111111111111"
+# https://learn.microsoft.com/en-us/azure/bot-service/rest-api/bot-framework-rest-connector-authentication
 TEAMS_SERVICE = "https://smba.trafficmanager.net/emea/"
 
 
@@ -36,7 +37,7 @@ def test_database(dsn):
     """Use a loopback-only bootstrap login and clean up the dedicated data."""
     params = conninfo_to_dict(dsn)
     if params.get("host") != "127.0.0.1" or params.get("hostaddr", "127.0.0.1") != "127.0.0.1" or "service" in params:
-        raise ValueError("Use an explicit 127.0.0.1 PostgreSQL address for this local check.")
+        raise RuntimeError("Use an explicit 127.0.0.1 PostgreSQL address for this local check.")
     dsn = make_conninfo(dsn, hostaddr="127.0.0.1", connect_timeout=5)
     name = "ss_load_" + uuid.uuid4().hex
     password = secrets.token_urlsafe(32)
@@ -230,8 +231,10 @@ async def measure(conn, dbname, process, payload, args):
             try:
                 response = await client.request(method, path, headers=headers, json=body)
                 expected = 201 if name == "Report run" else 200
-                code = str(response.status_code)
                 if response.status_code != expected:
+                    code = str(response.status_code)
+                    if code == "503" and b"external request capacity is busy" in response.content:
+                        code = "503 gateway busy"
                     failures[name][code] += 1
                     return
                 if name == "Screen" and not response.json().get("allowed"):
@@ -242,6 +245,8 @@ async def measure(conn, dbname, process, payload, args):
                         failures[name]["decision not recorded"] += 1
             except httpx.HTTPError as error:
                 failures[name][type(error).__name__] += 1
+            except ValueError:
+                failures[name]["unreadable response"] += 1
             finally:
                 results[name].append((time.perf_counter() - started) * 1000)
 
