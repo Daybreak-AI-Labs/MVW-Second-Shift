@@ -10,6 +10,10 @@ param platformSettings object = {}
 param platformVaultReferences object = {}
 @description('Optional map of vault secret names to immutable Key Vault versions.')
 param secretVersions object = {}
+@description('Create a single-tenant Azure Bot and enable the Microsoft Teams channel.')
+param enableTeams bool = false
+@description('Application (client) ID of the single-tenant Teams bot registration when Teams is enabled.')
+param teamsBotAppId string = ''
 
 var suffix = uniqueString(resourceGroup().id, prefix)
 var dataPath = '/var/lib/second-shift'
@@ -20,7 +24,8 @@ var loginBase = '${entraOrigin}/oauth2/v2.0'
 var publicOrigin = 'https://${prefix}.${appsEnvironment.properties.defaultDomain}'
 var vaultUri = vault.properties.vaultUri
 var storageName = 'second-shift-data'
-var references = union(platformVaultReferences, {
+var teamsVaultReferences = enableTeams ? { SECOND_SHIFT_TEAMS_BOT_SECRET: 'teams-bot-secret' } : {}
+var references = union(platformVaultReferences, teamsVaultReferences, {
   SECOND_SHIFT_PG_DSN: 'postgres-dsn'
   SECOND_SHIFT_OIDC_CLIENT_SECRET: 'oidc-client-secret'
   SECOND_SHIFT_OIDC_SESSION_SECRET: 'oidc-session-secret'
@@ -170,6 +175,16 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
     }
   }
   dependsOn: [secretAccess]
+}
+
+module teams 'teams.bicep' = if (enableTeams) {
+  name: 'second-shift-teams-bot'
+  params: {
+    botName: '${prefix}-teams-${suffix}'
+    botAppId: teamsBotAppId
+    tenantId: tenantId
+    publicOrigin: publicOrigin
+  }
 }
 
 output publicOrigin string = 'https://${app.properties.configuration.ingress.fqdn}'
