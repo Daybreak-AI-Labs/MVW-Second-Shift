@@ -1516,7 +1516,7 @@ def _live_screening_approvals(world: Any, agent_id: str, *, window: float) -> in
     acted on: ``approval_status`` refuses one once its card expires, and no
     sweep ever moves such a row out of ``pending``. Rows are read newest
     first and the scan stops at the first one requested more than ``window``
-    seconds ago (a screening card's lifespan), so old rows cost nothing.
+    seconds ago (a screening card's lifespan), so old rows need no decryption.
     Returns ``None`` when the scan bound runs out before that point, so the
     caller can stay blocked instead of guessing."""
     from .approval_cards import ApprovalCardError, decode_approval_detail
@@ -1524,14 +1524,13 @@ def _live_screening_approvals(world: Any, agent_id: str, *, window: float) -> in
     owner = f"agent:{agent_id}"
     prefix = f"external:{agent_id}:"
     now = time.time()
-    ids = world.pending_unattached_approval_ids(owner, limit=_SCREEN_BACKLOG_SCAN + 1)
+    approvals, complete = world.pending_unattached_approvals(
+        owner, limit=_SCREEN_BACKLOG_SCAN, since=now - window,
+    )
+    if not complete:
+        return None
     live = 0
-    for approval_id in ids[:_SCREEN_BACKLOG_SCAN]:
-        approval = world.get_approval(int(approval_id))
-        if approval is None:
-            continue
-        if float(approval.requested_at or 0) <= now - window:
-            return live
+    for approval in approvals:
         if (approval.provenance != "external_agents"
                 or not str(approval.action).startswith(prefix)):
             continue
@@ -1541,7 +1540,7 @@ def _live_screening_approvals(world: Any, agent_id: str, *, window: float) -> in
             continue
         if card is not None and float(card["expires_at"]) > now:
             live += 1
-    return live if len(ids) <= _SCREEN_BACKLOG_SCAN else None
+    return live
 
 
 def _screen_admission(

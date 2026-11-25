@@ -246,7 +246,15 @@ curl --fail "$origin/readyz"
 ```
 
 Include `--parameters @<parameter-file.json>` when supplying the versions or
-platform settings. Secret values come from Key Vault references resolved by
+platform settings. The template uses `prefix` as `SECOND_SHIFT_CLIENT_ID`
+for PostgreSQL row-level security and workspace storage. If you already have
+a workspace ID, keep it by setting `SECOND_SHIFT_CLIENT_ID` in the app
+parameter file's `platformSettings` object before upgrading. This also applies
+if the existing ID came from `[client] id` in `config.toml`. Keep the same
+ID when deploying a new revision or restoring a backup.
+[Bicep object merge order](https://learn.microsoft.com/en-us/azure/azure-resource-manager/bicep/bicep-functions-object#union)
+
+Secret values come from Key Vault references resolved by
 the service's user-assigned identity. The application receives the resolved
 values in its environment. The Key Vault RSA key wraps per-workspace data
 keys. The deployment encryption key handles data sealed at deployment scope.

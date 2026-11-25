@@ -8,7 +8,7 @@ param vaultName string
 param entraClientId string
 @description('Registry-relative image pinned by digest, such as second-shift@sha256:...')
 param image string
-@description('Optional Second Shift environment variables with non-secret platform-check settings.')
+@description('Optional non-secret platform-check settings and an existing SECOND_SHIFT_CLIENT_ID.')
 param platformSettings object = {}
 @description('Optional map of platform-check environment names to vault secret names.')
 param platformVaultReferences object = {}
@@ -74,7 +74,7 @@ resource registry 'Microsoft.ContainerRegistry/registries@2023-07-01' existing =
   name: 'ssregistry${suffix}'
 }
 
-var settings = union(platformSettings, {
+var settings = union({ SECOND_SHIFT_CLIENT_ID: prefix }, platformSettings, {
   SECOND_SHIFT_HOME: dataPath
   SECOND_SHIFT_CONFIG_OVERLAY: '/opt/second-shift/service.toml'
   SECOND_SHIFT_PUBLIC_URL: publicOrigin
