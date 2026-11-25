@@ -2213,13 +2213,16 @@ class PostgresWorldModel:
             rows = cur.fetchall()
         return [_PgRow.wrap(r, columns) for r in rows]
 
-    def ping(self) -> bool:
-        """Cheap liveness probe for ``/healthz`` -- confirms Postgres answers a
-        trivial read so the deep health check probes the SAME store the app uses."""
+    def ping(self, *, require_workspace: bool = False) -> bool:
+        """Check the live connection and, for readiness, its workspace scope."""
+        scoped = require_workspace and self._rls
+        if scoped and _active_tenant() is None:
+            return False
         with self._tx() as cur:
-            cur.execute("SELECT 1")
-            cur.fetchone()
-        return True
+            cur.execute("SELECT NOT (rolsuper OR rolbypassrls) FROM pg_roles WHERE rolname=current_user"
+                        if scoped else "SELECT 1")
+            row = cur.fetchone()
+        return bool(row and row[0])
 
     # ---- Artifacts (migration v16) ------------------------------------------
 

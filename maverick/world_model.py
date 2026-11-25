@@ -1837,11 +1837,13 @@ class WorldModel:
         del system
         return self._read_all(sql, tuple(params))
 
-    def ping(self) -> bool:
+    def ping(self, *, require_workspace: bool = False) -> bool:
         """Cheap liveness probe for ``/healthz`` -- confirms the world store
         answers a trivial read. Backend-agnostic (mirrored on Postgres) so the
         deep health check probes the SAME store the app actually uses, not a
         hard-coded local ``world.db``. Raises on failure (the caller reports it)."""
+        # SQLite opens the workspace's own file and has no row policies to bind.
+        del require_workspace
         self._read_one("SELECT 1 AS one", ())
         return True
 

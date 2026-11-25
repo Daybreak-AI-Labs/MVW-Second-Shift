@@ -12,6 +12,7 @@ on:
       - codex/platform-speed
       - codex/burst-latency
       - codex/approval-read-speed
+      - codex/debug-platform
     paths-ignore:
       - 'docs/**'
       - 'handoff/**'
@@ -69,7 +70,7 @@ jobs:
           pool=$(sed -nE "s/.*SECOND_SHIFT_PG_POOL_SIZE: '([0-9]+)'.*/\1/p" deploy/azure/app.bicep)
           args=()
           recorder_seconds=0
-          if [[ "$GITHUB_REF_NAME" =~ ^codex/(load-check-mvw|ekko-throughput|platform-speed|burst-latency|approval-read-speed)$ ]]; then
+          if [[ "$GITHUB_REF_NAME" =~ ^codex/(load-check-mvw|ekko-throughput|platform-speed|burst-latency|approval-read-speed|debug-platform)$ ]]; then
             args=(--mvw --population 20000 --seconds 120 --require-targets)
             case "$BENCHMARK_SCENARIO:$BENCHMARK_TITLE" in
               mixed-live:*) args=(--mixed-live --population 20000 --agents 25 --burst 100) ;;

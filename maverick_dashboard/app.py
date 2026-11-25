@@ -2183,25 +2183,28 @@ async def livez() -> dict:
     return {"status": "ok"}
 
 
-@app.get("/healthz")
-async def healthz() -> JSONResponse:
-    """Deep health: the database answers."""
-    def _database_answers() -> bool:
+async def _database_probe(*, require_workspace: bool = False) -> JSONResponse:
+    def check() -> bool:
         try:
-            _world().ping()
-            return True
+            return _world().ping(require_workspace=require_workspace)
         except Exception:
             return False
 
-    ok = await run_in_threadpool(_database_answers)
+    ok = await run_in_threadpool(check)
     return JSONResponse({"status": "ok" if ok else "degraded"}, status_code=200 if ok else 503,
                         headers={"Cache-Control": "no-store"})
 
 
+@app.get("/healthz")
+async def healthz() -> JSONResponse:
+    """Deep health: the database answers."""
+    return await _database_probe()
+
+
 @app.get("/readyz")
 async def readyz() -> JSONResponse:
-    """Ready to serve traffic: the same check as /healthz."""
-    return await healthz()
+    """Ready to serve traffic against the configured workspace."""
+    return await _database_probe(require_workspace=True)
 
 
 def _is_loopback_host(host: str) -> bool:

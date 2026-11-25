@@ -20,9 +20,11 @@ from tempfile import TemporaryDirectory
 
 import httpx
 
-from tools.load_check import OP_NAMES, expect, prepare, run_app, test_database
+from tools.load_check import OP_NAMES, SERVER_KEEPALIVE_SECONDS, expect, prepare, run_app, test_database
 
 PAGES = tuple(zip(OP_NAMES[:3], ("/", "/external-agents", "/approvals"), strict=True))
+# Retire idle sockets before the server's close timer can race with the next request.
+_CLIENT_IDLE_SECONDS = SERVER_KEEPALIVE_SECONDS - 2
 
 
 class _StartupPipe:
@@ -306,7 +308,8 @@ class _TrafficClient:
 
         self.aiohttp = aiohttp
         self.session = aiohttp.ClientSession(
-            base_url=origin, connector=aiohttp.TCPConnector(limit=connections), trust_env=False,
+            base_url=origin, connector=aiohttp.TCPConnector(limit=connections, keepalive_timeout=_CLIENT_IDLE_SECONDS),
+            trust_env=False,
             timeout=aiohttp.ClientTimeout(total=60), cookie_jar=aiohttp.DummyCookieJar(),
             auto_decompress=False,
         )
@@ -321,7 +324,15 @@ class _TrafficClient:
         try:
             async with self.session.request(method, path, headers=headers, json=json, allow_redirects=False) as reply:
                 return httpx.Response(reply.status, headers=dict(reply.headers), content=await reply.read())
-        except (self.aiohttp.ClientError, TimeoutError) as exc:
+        except TimeoutError as exc:
+            raise httpx.TimeoutException("The local benchmark request timed out.") from exc
+        except self.aiohttp.ClientConnectorError as exc:
+            raise httpx.ConnectError("The local benchmark could not connect.") from exc
+        except self.aiohttp.ServerDisconnectedError as exc:
+            raise httpx.RemoteProtocolError("The local benchmark connection closed before a reply.") from exc
+        except self.aiohttp.ClientPayloadError as exc:
+            raise httpx.ReadError("The local benchmark reply was incomplete or unreadable.") from exc
+        except self.aiohttp.ClientError as exc:
             raise httpx.TransportError("The local benchmark request did not complete.") from exc
 
     async def get(self, path, **kwargs):
@@ -336,7 +347,8 @@ def client_for(origin, *, connections=800):
         return _TrafficClient(origin, connections)
     except ImportError:
         return httpx.AsyncClient(base_url=origin, trust_env=False, timeout=60,
-                                 limits=httpx.Limits(max_connections=connections, max_keepalive_connections=connections))
+                                 limits=httpx.Limits(max_connections=connections, max_keepalive_connections=connections,
+                                                     keepalive_expiry=_CLIENT_IDLE_SECONDS))
 
 
 async def measure_steady(payload, args):
