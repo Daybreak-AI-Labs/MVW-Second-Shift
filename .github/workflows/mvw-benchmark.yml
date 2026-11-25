@@ -15,6 +15,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: mvw-benchmark-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   benchmark:
     runs-on: ubuntu-24.04
@@ -32,7 +36,11 @@ jobs:
           --health-timeout 5s
           --health-retries 12
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - name: Check out the benchmark commit
+        run: |
+          curl --fail --silent --show-error --location --retry 2 --max-time 45 \
+            "https://codeload.github.com/$GITHUB_REPOSITORY/tar.gz/$GITHUB_SHA" |
+            tar -xz --strip-components=1
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: '3.12'
@@ -47,6 +55,14 @@ jobs:
           cpu=$(sed -nE "s/.*cpu: json\('([^']+)'\).*/\1/p" deploy/azure/app.bicep)
           memory=$(sed -nE "s/.*memory: '([0-9]+)Gi'.*/\1/p" deploy/azure/app.bicep)
           python -m tools.mvw_benchmark --cpus "$cpu" --memory-gib "$memory" --output "$out/measure.json"
+          OUT="$out" python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          out = Path(os.environ["OUT"])
+          for scenario, results in json.loads((out / "measure.json").read_text()).items():
+              print(f"::notice title={scenario}::{json.dumps(results, separators=(',', ':'))}")
+          PY
           python -m tools.mvw_benchmark --cpus "$cpu" --memory-gib "$memory" --profile --output "$out/profile.json"
           OUT="$out" python - <<'PY'
           import json
@@ -54,9 +70,6 @@ jobs:
           import pstats
           from pathlib import Path
           out = Path(os.environ["OUT"])
-          results = json.loads((out / "measure.json").read_text())
-          for scenario, results in results.items():
-              print(f"::notice title={scenario}::{json.dumps(results, separators=(',', ':'))}")
           stats = pstats.Stats(str(out / "request-profile.pstats"))
           stats.sort_stats("cumulative").print_stats("maverick(_dashboard)?/", 55)
           items = [(f"{Path(name).name}:{line} {func}", round(values[3], 3), values[1])
