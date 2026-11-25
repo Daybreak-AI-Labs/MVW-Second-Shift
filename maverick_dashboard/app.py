@@ -495,7 +495,7 @@ async def _lifespan(app: FastAPI):
     from maverick.postgres_transactions import close_postgres_pools, open_postgres_pools
     from maverick.servicenow_incidents import delivery_loop
 
-    from .worker_coordination import active_root, close_recorder_rate_connections, guard_supervisor, lead_timers, timers
+    from .worker_coordination import active_root, close_rate_connections, guard_supervisor, lead_timers, timers
 
     root = active_root()
     owns_lease = root is None and current() is None
@@ -539,7 +539,7 @@ async def _lifespan(app: FastAPI):
                     await leader
     finally:
         if root is not None:
-            close_recorder_rate_connections()
+            close_rate_connections()
         await run_in_threadpool(partial(close_postgres_pools, timeout=5))
         if owns_lease:
             release()
@@ -806,6 +806,7 @@ templates.env.globals["page_session"] = _page_session
 # route-specific credentials instead of a dashboard session. Individual route
 # families self-gate on their own configuration. The prefix is
 # self-authenticating (see _AUTH_EXEMPT rationale for /a2a/v1).
+from .external_gateway import _gateway_busy  # noqa: E402
 from .external_gateway import router as external_gateway_router  # noqa: E402
 
 app.include_router(external_gateway_router)
@@ -963,11 +964,6 @@ async def _bounded_external_body(request: Request) -> bytes:
         )
     except TimeoutError as exc:
         raise HTTPException(408, "external request body timed out") from exc
-
-
-def _gateway_busy() -> HTTPException:
-    return HTTPException(503, "external request capacity is busy",
-                         headers={"Retry-After": "1", "X-Second-Shift-Admission": "busy"})
 
 
 async def _take_external_body_slot(needs_body_to_authenticate: bool, *, recorder: bool = False, poll: bool = False):

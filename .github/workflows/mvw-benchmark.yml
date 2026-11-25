@@ -30,7 +30,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        scenario: ${{ fromJSON(github.ref_name == 'codex/burst-latency' && '["requested","mixed-live","mixed-live-500"]' || github.ref_name == 'codex/platform-speed' && '["requested","mixed-live"]' || contains(github.event.head_commit.message, 'paired app comparison') && '["requested","comparison","sustained"]' || contains(github.event.head_commit.message, 'Measure final recorder hour') && '["requested","comparison"]' || '["requested"]') }}
+        scenario: ${{ fromJSON(github.ref_name == 'codex/burst-latency' && '["requested","mixed-live","mixed-live-500"]' || github.ref_name == 'codex/debug-platform' && '["requested","mixed-live-500"]' || github.ref_name == 'codex/platform-speed' && '["requested","mixed-live"]' || contains(github.event.head_commit.message, 'paired app comparison') && '["requested","comparison","sustained"]' || contains(github.event.head_commit.message, 'Measure final recorder hour') && '["requested","comparison"]' || '["requested"]') }}
     timeout-minutes: 85
     services:
       postgres:
@@ -95,6 +95,8 @@ jobs:
             baseline_ref=refs/heads/claude/friendly-shannon-e8jwva
             if [ "$GITHUB_REF_NAME" = codex/burst-latency ]; then
               baseline_ref=8d2219761111780f6bdd4eda78e1a17d0673cd30
+            elif [ "$GITHUB_REF_NAME" = codex/debug-platform ]; then
+              baseline_ref=3d160bc28e654821d1ffaab4b1736745e73d0b16
             fi
             mkdir -p "$baseline"
             curl --fail --silent --show-error --location --retry 2 --max-time 45 \

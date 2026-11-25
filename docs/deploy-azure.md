@@ -498,7 +498,11 @@ steady target. Confirm the speed gates on the target hardware.
 
 The gateway admits up to 32 authenticated requests across the
 replica. If a slot stays busy for a second, it tells the client to retry.
-Both connection kits honor that hint and bound retries. Each worker admits
+The workers share each agent's rate counter, with unrelated counters spread
+across 32 local database files. Each file has a share of the gateway's
+counter capacity. A busy counter also returns a retry response before
+the request reaches the agent operation. Both connection kits honor that
+hint and bound retries. Each worker admits
 up to eight bodyless recorder polls and 40 other recorder requests. Per-key
 recorder quotas apply across the replica. Each worker queues Home,
 Outside agents and Approvals requests before more than eight begin processing.
