@@ -325,6 +325,37 @@ An unavailable audit record blocks the change. Read-only use may be sampled.
   storage, Key Vault operations, and Log Analytics ingestion and retention.
   Network egress, availability choices and future agent replicas add costs.
 
+## Monitor the deployment
+
+Deploy the alerts after the app and infrastructure. Use a monitored email
+address. In Azure Monitor, test the action group and confirm the email
+arrives. Review the rules after changing the service's limits or usage.
+[Azure Monitor action groups](https://learn.microsoft.com/en-us/azure/azure-monitor/alerts/action-groups)
+
+```bash
+az deployment group create -g "$rg" -n second-shift-monitoring \
+  --template-file deploy/azure/monitoring.bicep \
+  --parameters prefix="$prefix" operatorEmail='<monitored operator email>'
+```
+
+| Alert | When it fires | What to check |
+| --- | --- | --- |
+| App restarting | The replica's cumulative restart count is above zero. One alert can stay active for the life of that replica. | Check system logs for liveness failures, memory exhaustion, and revision events. [Container Apps metrics](https://learn.microsoft.com/en-us/azure/azure-monitor/reference/supported-metrics/microsoft-app-containerapps-metrics) |
+| App not ready | More than one readiness failure appears in the app's system logs over five minutes. | Check `/readyz`, the latest revision, the database, and the storage mount. [Health probe troubleshooting](https://learn.microsoft.com/en-us/azure/container-apps/troubleshoot-health-probe-failures) |
+| Server errors | More than ten HTTP 5xx responses in five minutes. | Find the affected requests in app logs and check whether they coincide with a deployment or a dependency failure. [Container Apps metrics](https://learn.microsoft.com/en-us/azure/azure-monitor/reference/supported-metrics/microsoft-app-containerapps-metrics) |
+| Database CPU high | Average CPU is above 80% for 15 minutes. | Inspect active queries, waits and workload before increasing compute. [PostgreSQL metrics](https://learn.microsoft.com/en-us/azure/azure-monitor/reference/supported-metrics/microsoft-dbforpostgresql-flexibleservers-metrics) |
+| Database storage nearly full | Storage exceeds 80% in the 15-minute window. | Check growth and available capacity. Plan a storage increase if needed. [PostgreSQL metrics](https://learn.microsoft.com/en-us/azure/azure-monitor/reference/supported-metrics/microsoft-dbforpostgresql-flexibleservers-metrics) |
+| Database connections failing | More than five failed connections in five minutes. | Check configuration, credential rotation, private DNS and server connections. [PostgreSQL metrics](https://learn.microsoft.com/en-us/azure/azure-monitor/reference/supported-metrics/microsoft-dbforpostgresql-flexibleservers-metrics) |
+| File share nearly full | The hourly capacity metric is above 80% of the share quota read at deployment, normally 80 GiB of 100 GiB. Rerun the deployment after changing the quota. | Find what is growing and verify backups before removing historical files or increasing the quota. [Azure Files metrics](https://learn.microsoft.com/en-us/azure/azure-monitor/reference/supported-metrics/microsoft-storage-storageaccounts-fileservices-metrics) |
+| Alerts could not be sent | The app logged a delivery failure or no configured alert channel. | Check the delivery page, correct the channel settings and send a test. |
+| Saved record unavailable | The app logged a failed saved-record operation. | Check storage access, private PostgreSQL and the logs around the failure. |
+| Audit record unavailable | The app logged a failed audit write or could not open the audit file. | Check the data share, signing setup and access. Retry the blocked action once audit writes work again. |
+
+The log rules query this app's [Container Apps logs](https://learn.microsoft.com/en-us/azure/container-apps/log-monitoring)
+and send counts. Verify the probe event wording, metrics, scheduled query
+evaluation and email delivery in Azure. Bicep compilation checks the
+template locally.
+
 ## Room for factory agents
 
 Allocate another Container App for each factory-built agent in the same

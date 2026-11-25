@@ -68,7 +68,7 @@ Behind a parameter so a deployment without Teams creates nothing. Update
 `docs/teams-approvals.md` and `docs/deploy-azure.md` with how to build the Teams app package
 (`teams-app/build_package.py` already exists) and upload it in the Teams admin center.
 
-## 4. Watch the deployment itself
+## 4. Watch the deployment itself (merged in PR #11)
 
 Branch `codex/azure-monitoring`. Add to the Bicep kit an action group (an operator email
 address as a parameter) and alert rules for: the app restarting or not ready, a rise in 5xx
