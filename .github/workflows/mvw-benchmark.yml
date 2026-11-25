@@ -60,7 +60,7 @@ jobs:
           pool=$(sed -nE "s/.*SECOND_SHIFT_PG_POOL_SIZE: '([0-9]+)'.*/\1/p" deploy/azure/app.bicep)
           args=()
           if [ "$GITHUB_REF_NAME" = codex/load-check-mvw ]; then
-            args=(--mvw --population 20000 --seconds 120)
+            args=(--mvw --population 20000 --seconds 120 --require-targets)
             case "$BENCHMARK_TITLE" in
               *"Measure recorder hour"*) args=(--recorders 2000 --population 20000 --seconds 3600) ;;
               *"Measure recorder pilot"*) args=(--recorders 2000 --population 20000 --seconds 65) ;;
@@ -68,8 +68,9 @@ jobs:
             esac
           fi
           docker exec "$POSTGRES_CONTAINER" cat /sys/fs/cgroup/cpu.max /sys/fs/cgroup/memory.max
+          measured=0
           python -m tools.mvw_benchmark --cpus "$cpu" --memory-gib "$memory" \
-            --workers "$workers" --pool-size "$pool" "${args[@]}" --output "$out/measure.json"
+            --workers "$workers" --pool-size "$pool" "${args[@]}" --output "$out/measure.json" || measured=$?
           OUT="$out" python - <<'PY'
           import json
           import os
@@ -78,7 +79,7 @@ jobs:
           for scenario, results in json.loads((out / "measure.json").read_text()).items():
               print(f"::notice title={scenario}::{json.dumps(results, separators=(',', ':'))}")
           PY
-          if [ "$workers" -ne 1 ]; then exit 0; fi
+          if [ "$measured" -ne 0 ] || [ "$workers" -ne 1 ]; then exit "$measured"; fi
           python -m tools.mvw_benchmark --cpus "$cpu" --memory-gib "$memory" --profile --output "$out/profile.json"
           OUT="$out" python - <<'PY'
           import json

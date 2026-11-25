@@ -458,6 +458,18 @@ async def _owner_note_loop() -> None:
         await asyncio.sleep(300)
 
 
+def _warm_dashboard_worker() -> None:
+    """Open its database pools and compile the most-used templates."""
+    from maverick import record_documents
+
+    from . import rbac, ui_visibility
+
+    _world()
+    record_documents.read_texts(rbac.store_path(), rbac.tenant_store_path(), ui_visibility.store_path())
+    for name in ("base.html", "home.html", "external_agents.html", "approvals.html"):
+        templates.env.get_template(name)
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     """Check sign-in and start timers under the single deployment lease."""
@@ -480,12 +492,12 @@ async def _lifespan(app: FastAPI):
 
         # Keep simultaneous blocking work bounded per process. The shared
         # database pool is smaller than AnyIO's generic forty-thread default.
-        current_default_thread_limiter().total_tokens = 12
+        current_default_thread_limiter().total_tokens = 16
     try:
         _assert_dashboard_auth_configured()
         open_postgres_pools()
         if root is not None:
-            await run_in_threadpool(_world)
+            await run_in_threadpool(_warm_dashboard_worker)
         try:
             from maverick.proxy_auth import warn_if_untrusted_proxy_config
 
@@ -2071,12 +2083,12 @@ def approvals_page(request: Request) -> HTMLResponse:
 
 
 @app.get("/", response_class=HTMLResponse)
-async def home(request: Request) -> HTMLResponse:
+def home(request: Request) -> HTMLResponse:
     """What needs the signed-in person today (see ``home_page``)."""
     from .home_page import build
 
     return templates.TemplateResponse(
-        request, "home.html", {"home": await run_in_threadpool(build, request)},
+        request, "home.html", {"home": build(request)},
         headers={"Cache-Control": "private, no-store"},
     )
 

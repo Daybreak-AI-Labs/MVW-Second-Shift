@@ -237,3 +237,23 @@ def test_navigation_and_finder_share_one_visibility_read(monkeypatch):
     monkeypatch.setattr(ui_visibility, "overrides", observed)
     assert ui_visibility.navigation("operator") == expected
     assert calls == 1
+
+
+def test_home_renders_outside_the_request_event_loop(client, monkeypatch):
+    import asyncio
+
+    from maverick_dashboard import template_runtime
+
+    original = template_runtime._Templates.TemplateResponse
+    loops = []
+
+    def tracked(self, *args, **kwargs):
+        try:
+            loops.append(asyncio.get_running_loop())
+        except RuntimeError:
+            loops.append(None)
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(template_runtime._Templates, "TemplateResponse", tracked)
+    assert _signed_in(client).get("/").status_code == 200
+    assert loops == [None]

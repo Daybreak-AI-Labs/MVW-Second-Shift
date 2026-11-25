@@ -348,6 +348,27 @@ async def measure_resources(payload, args, monitor_connection, database_name):
     return result
 
 
+def target_failures(report):
+    """Apply the round's strict latency and availability limits."""
+    failures = []
+    if any(name not in report["serial"] or report["serial"][name]["max_ms"] >= 200
+           or report["serial"][name]["errors"] for name in OP_NAMES):
+        failures.append("A serial operation took 200 ms or more, or failed.")
+    pages = OP_NAMES[:3]
+    for name, threshold in (("steady", "one second"), ("burst", "two seconds")):
+        case = report[name]
+        total = sum(case.get(page, {}).get("count", 0) for page in pages)
+        under = sum(case.get(page, {}).get("under_target", 0) for page in pages)
+        if not total or under * 100 < total * 95:
+            failures.append(f"Fewer than 95% of {name} page requests finished under {threshold}.")
+        if name == "steady" and any(not case.get(operation) or case[operation]["errors"]
+                                    for operation in (*pages, "Teams card")):
+            failures.append("A page or Teams request failed during steady traffic.")
+    if any(item["errors"] for item in report.get("overload", {}).values()):
+        failures.append("An agent still failed after the bounded retry.")
+    return failures
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--image", default="second-shift:benchmark")
@@ -362,6 +383,7 @@ def main():
     parser.add_argument("--profile", action="store_true")
     parser.add_argument("--mvw", action="store_true", help="also measure 500 arrivals and 25 agents")
     parser.add_argument("--quick", action="store_true", help="measure only the serial and 100-arrival cases")
+    parser.add_argument("--require-targets", action="store_true", help="fail when a measured workload misses an MVW target")
     parser.add_argument("--population", type=int, default=0)
     parser.add_argument("--recorders", type=int, default=0)
     parser.add_argument("--output", type=Path, required=True)
@@ -370,7 +392,8 @@ def main():
         parser.error("Choose positive workload counts and a burst no larger than the number of people.")
     if (not 0 <= args.population <= 50_000 or not 0 <= args.recorders <= 2_500 or args.seconds > 3600
             or (args.mvw and (args.people < 500 or args.agents < 25))
-            or (args.profile and (args.mvw or args.recorders))):
+            or (args.profile and (args.mvw or args.recorders))
+            or (args.require_targets and (not args.mvw or args.quick or args.recorders))):
         parser.error("Use realistic workload counts and run the profiler and recorder load separately.")
     dsn = os.environ.get("SECOND_SHIFT_LOAD_DSN")
     if not dsn:
@@ -402,7 +425,10 @@ def main():
                 print(output)
             finally:
                 subprocess.run(["docker", "stop", "--time", "10", name], check=False, stdout=subprocess.DEVNULL)
-    return 0
+    failures = target_failures(report) if args.require_targets else []
+    for message in failures:
+        print(message, file=sys.stderr)
+    return int(bool(failures))
 
 
 if __name__ == "__main__":
