@@ -6,7 +6,18 @@ in this order.
 
 **MVW's size:** about 20,000 workers, of whom about 2,000 are knowledge workers. Everyone may sign
 in; the 2,000 knowledge workers use Second Shift regularly and are the people who would run the
-Ekko recorder. It stays one copy of the app (one Container App replica) for everyone.
+Ekko recorder. At most 500 people use it at the same time. It stays one copy of the app (one
+Container App replica) for everyone.
+
+**Speed targets (Chris: "we need to speed that up dramatically").** These are the pass/fail line
+for this round, measured with the CPU and memory the Azure kit sets:
+
+- one person alone: every page and every agent call answers in under 200 ms;
+- 500 people active at once, each opening a page about every 30 seconds, plus 100 agents
+  working: 95% of pages under 1 second, no failed page or Teams requests;
+- 100 people arriving in the same moment: 95% of pages under 2 seconds.
+
+Measure before you change anything, and report the same table after every job.
 
 **Where it stands** (your load check, `docs/deploy-azure.md` "Local load check"): one app process
 uses about one CPU core and pages slow down with the number of people arriving together (home
@@ -72,10 +83,11 @@ the same with 25,000 people as with 25. Add to the review queue.
 
 Branch `codex/load-check-mvw`. Extend `tools/load_check.py` with Ekko recorders handing over
 (read `docs/ekko.md` for how often a recorder hands over) and with 20,000 people already present
-in the per-person records. Run it after jobs 1–4, with the CPU and memory the kit now sets, for:
-200 and 500 people arriving together out of 2,000, 2,000 recorders handing over across one hour,
-and 25 and 100 agents. Aim for: pages under 3 s at the 95th percentile with 200 arriving
-together; no failed page or Teams requests; agent "busy" answers only above the admission limit,
-and retried successfully by the kits. Say what limits first. From the results, set the kit's
+in the per-person records. Add a steady mode (people active over minutes, each opening a page about every 30 seconds)
+beside the existing burst mode. Run it after jobs 1–4, with the CPU and memory the kit now sets,
+for: 500 people active, 100 and 500 arriving in the same moment, 2,000 recorders handing over
+across one hour, and 25 and 100 agents. Meet the speed targets at the top of this file; agent
+"busy" answers only above the admission limit, and retried successfully by the kits. If a target
+is not met, say what limits it and keep going on job 1 or 2 before closing this job. From the results, set the kit's
 worker count, CPU, memory, database pool size and PostgreSQL size, and replace the numbers in
 `docs/deploy-azure.md`.
