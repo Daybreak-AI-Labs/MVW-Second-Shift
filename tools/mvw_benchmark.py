@@ -110,6 +110,9 @@ class Workload:
                 self.errors[name]["recording not active"] += 1
             elif name == "Recorder hand-over" and reply.json().get("accepted") != 1:
                 self.errors[name]["activity not accepted"] += 1
+        except asyncio.CancelledError:
+            self.errors[name]["measurement deadline"] += 1
+            raise
         except (ValueError, httpx.HTTPError) as error:
             self.errors[name][type(error).__name__] += 1
         finally:
@@ -214,8 +217,27 @@ async def recorder_hour(client, token, recorders, seconds):
                                     "duration_seconds": FLUSH_SECONDS, "occurred_at": wall_start + when}],
                 })
 
-    await asyncio.gather(*(recorder(index, *item) for index, item in enumerate(recorders)))
-    return work.report(1000)
+    try:
+        async with asyncio.timeout(seconds + 30):
+            await asyncio.gather(*(recorder(index, *item) for index, item in enumerate(recorders)))
+    except TimeoutError:
+        pass
+    planned = {"Recorder instructions": 0, "Recorder hand-over": 0}
+    flush_turns = round(FLUSH_SECONDS / poll)
+    for index in range(len(recorders)):
+        scheduled = math.ceil((seconds - index * poll / len(recorders)) / poll)
+        planned["Recorder instructions"] += scheduled
+        planned["Recorder hand-over"] += max(0, (scheduled - 1) // flush_turns)
+    result = work.report(1000)
+    for name, expected in planned.items():
+        item = result.get(name)
+        if item is None:
+            result[name] = {"count": 0, "scheduled": expected, "errors": {"not sent": expected}}
+        else:
+            item["scheduled"] = expected
+            if expected > item["count"]:
+                item["errors"]["not sent"] = expected - item["count"]
+    return result
 
 
 def client_for(origin, *, connections=800):

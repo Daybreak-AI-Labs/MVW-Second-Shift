@@ -16,10 +16,12 @@ from __future__ import annotations
 
 import contextvars
 from collections.abc import Callable
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from typing import Any, TypeVar
 
 T = TypeVar("T")
+
+_READ_ONLY_ROLE_PAGES = frozenset({"/", "/external-agents", "/approvals"})
 
 _SCOPE: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar(
     "maverick_dashboard_request_memo", default=None,
@@ -68,14 +70,16 @@ class RequestMemoMiddleware:
         token = _SCOPE.set({})
         try:
             with kept_reads():
-                from .auth import probe_path
+                from .auth import display_role_reads, probe_path
 
                 if scope["type"] == "http" and not probe_path(scope):
                     # A probe answers without configuration or a worker thread.
                     from starlette.concurrency import run_in_threadpool
 
                     await run_in_threadpool(_prime_request_configuration)
-                await self.app(scope, receive, send)
+                display_page = scope.get("method") == "GET" and scope.get("path") in _READ_ONLY_ROLE_PAGES
+                with display_role_reads() if display_page else nullcontext():
+                    await self.app(scope, receive, send)
         finally:
             _SCOPE.reset(token)
 

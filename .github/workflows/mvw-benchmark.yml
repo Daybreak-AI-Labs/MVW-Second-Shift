@@ -16,7 +16,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: mvw-benchmark-${{ github.ref }}
+  group: mvw-benchmark-${{ github.ref }}-${{ contains(github.event.head_commit.message, 'Measure recorder hour') && 'recorder-hour' || 'comparison' }}
   cancel-in-progress: true
 
 jobs:
@@ -31,7 +31,7 @@ jobs:
         ports:
           - 5432/tcp
         options: >-
-          --health-cmd pg_isready
+          --cpus 2 --memory 8g --health-cmd pg_isready
           --health-interval 5s
           --health-timeout 5s
           --health-retries 12

@@ -55,9 +55,15 @@ def _reset_connection(connection: Any) -> None:
     """Remove any accidental session tenant binding before another lease."""
     # SET LOCAL in the authority transaction is the primary boundary. Reset the
     # session value as well; a failed reset makes psycopg_pool discard the socket.
-    with connection.cursor() as cursor:
-        cursor.execute("SELECT set_config('maverick.tenant', '', false)")
-    connection.commit()
+    # The pool returns an idle socket. Clear its session value in one round
+    # trip and restore the normal transactional posture before reuse.
+    previous = connection.autocommit
+    connection.autocommit = True
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT set_config('maverick.tenant', '', false)")
+    finally:
+        connection.autocommit = previous
 
 
 def _shared_pool(dsn: str, kwargs: dict, size: int, timeout: float, io_timeout: float,

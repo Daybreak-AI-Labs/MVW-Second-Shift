@@ -38,7 +38,7 @@ import tempfile
 import threading
 import time
 from collections.abc import Callable, Iterable
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -1400,7 +1400,7 @@ def open_private_read(path: str | Path, *, mode: int = 0o600) -> int:
 
 
 @contextmanager
-def cross_process_lock(target: str | Path, *, strict: bool = False):
+def cross_process_lock(target: str | Path, *, strict: bool = False, shared: bool = False):
     """Advisory exclusive lock serializing a read-modify-write of ``target``.
 
     Keyed on a stable ``<name>.lock`` sidecar next to the file — never the file
@@ -1408,6 +1408,8 @@ def cross_process_lock(target: str | Path, *, strict: bool = False):
     handle held on it. Lock creation/acquisition failures propagate instead of
     silently disabling serialization. ``strict=True`` additionally refuses to
     degrade to a process-local lock on filesystems without a working OS lock.
+    Shared holders may run together on POSIX. Windows holds the same exclusive
+    byte-range lock. A thread may nest a shared scope under an exclusive one.
     """
     target = Path(target)
     lock_path = target.parent / (target.name + ".lock")
@@ -1416,28 +1418,24 @@ def cross_process_lock(target: str | Path, *, strict: bool = False):
         # ACL verification when the sidecar exceeds Win32's legacy limit.
         lock_path = Path(_windows_extended_path(lock_path))
     canonical = _canonical_lock_path(lock_path)
-    with _exclusive_local_lock(lock_path):
-        held: dict[str, tuple[int, bool]] = getattr(
-            _THREAD_LOCK_STATE, "held", {},
-        )
-        _THREAD_LOCK_STATE.held = held
-        if canonical in held:
-            # msvcrt byte-range locks are not re-entrant, even from the same
-            # thread. The outer scope already owns both the local stripe and
-            # OS lock, so only maintain the recursion count here. A strict
-            # nested caller must not inherit a degraded process-local lock.
-            count, process_safe = held[canonical]
-            if strict and not process_safe:
-                raise RuntimeError(
-                    "cross-process lock backend is unavailable for strict state"
-                )
-            held[canonical] = (count + 1, process_safe)
-            try:
-                yield
-            finally:
-                held[canonical] = (count, process_safe)
-            return
+    strict = strict or shared
+    shared = shared and os.name != "nt"
+    held: dict[str, tuple[int, bool, bool]] = getattr(_THREAD_LOCK_STATE, "held", {})
+    _THREAD_LOCK_STATE.held = held
+    if canonical in held:
+        count, process_safe, already_shared = held[canonical]
+        if already_shared and not shared:
+            raise RuntimeError("Cannot upgrade a shared cross-process lock.")
+        if strict and not process_safe:
+            raise RuntimeError("cross-process lock backend is unavailable for strict state")
+        held[canonical] = (count + 1, process_safe, already_shared)
+        try:
+            yield
+        finally:
+            held[canonical] = (count, process_safe, already_shared)
+        return
 
+    with nullcontext() if shared else _exclusive_local_lock(lock_path):
         _prepare_parent_directory(target.parent)
         # Failure to create/open the coordination primitive must not silently
         # disable serialization for security-sensitive read-modify-write state.
@@ -1464,7 +1462,7 @@ def cross_process_lock(target: str | Path, *, strict: bool = False):
                 fcntl = None  # type: ignore[assignment]
             if fcntl is not None:
                 try:
-                    fcntl.flock(fd, fcntl.LOCK_EX)
+                    fcntl.flock(fd, fcntl.LOCK_SH if shared else fcntl.LOCK_EX)
                     backend = "fcntl"
                 except OSError as exc:
                     # flock is genuinely unavailable on this platform/filesystem
@@ -1498,7 +1496,7 @@ def cross_process_lock(target: str | Path, *, strict: bool = False):
                     "no cross-process lock backend is available"
                 ) from None
             _validate_open_lock_file(lock_path, fd)
-            held[canonical] = (1, backend is not None)
+            held[canonical] = (1, backend is not None, shared)
             try:
                 yield
             finally:

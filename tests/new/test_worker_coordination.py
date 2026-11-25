@@ -172,3 +172,21 @@ def test_workers_can_install_postgres_row_policies_together(records_in_postgres,
 
     with ThreadPoolExecutor(max_workers=4) as workers:
         list(workers.map(boot, range(4)))
+
+
+@pytest.mark.asyncio
+async def test_only_exhausted_gateway_admission_returns_retry_hint(monkeypatch):
+    from fastapi import HTTPException
+
+    from maverick_dashboard import app as dashboard
+
+    monkeypatch.setattr(dashboard, "_EXTERNAL_BODY_SLOTS", 1)
+    slot = await dashboard._take_external_body_slot(False)
+    try:
+        with pytest.raises(HTTPException) as failure:
+            await dashboard._take_external_body_slot(False)
+        assert failure.value.status_code == 503
+        assert failure.value.headers == {"Retry-After": "1", "X-Second-Shift-Admission": "busy"}
+    finally:
+        slot.release()
+    (await dashboard._take_external_body_slot(False)).release()

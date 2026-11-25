@@ -344,7 +344,8 @@ def _known_key(request: Request) -> keys.DeviceKey:
 @contextmanager
 def _device(request: Request, action: str) -> Iterator[_Device]:
     """Resolve the caller to its device and current enrollment, or refuse."""
-    key = _known_key(request)
+    checked = getattr(request.state, "verified_recorder_for_instructions", None) if action == "instructions" else None
+    key = checked if checked is not None else _known_key(request)
     if _over_limit(key.key_id, action):
         raise _too_many()
     with _in_workspace(key):

@@ -971,7 +971,9 @@ async def bound_public_governance_body(request: Request, call_next):
         if path.startswith("/api/v1/external/ekko/"):
             from .ekko_handover_api import _known_key
 
-            await run_in_threadpool(_known_key, request)
+            key = await run_in_threadpool(_known_key, request)
+            if request.method == "GET" and path == "/api/v1/external/ekko/instructions":
+                request.state.verified_recorder_for_instructions = key
         else:
             _gate()
             credential = agent_credential(request)

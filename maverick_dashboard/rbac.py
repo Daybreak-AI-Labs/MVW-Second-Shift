@@ -32,8 +32,10 @@ it (:func:`_backfill_record`).
 """
 from __future__ import annotations
 
+import contextvars
 import json
 import re
+from contextlib import contextmanager
 from pathlib import Path
 
 # Built-in roles, ordered most-privileged first (SCIM group resolution and the
@@ -311,6 +313,35 @@ def _backfill_record(path: Path) -> None:
         logging.getLogger(__name__).warning("RBAC roster marker not recorded: %s", exc)
 
 
+_DISPLAY_ROSTERS: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
+    "second_shift_display_rosters", default=None,
+)
+
+
+@contextmanager
+def display_roster_reads():
+    token = _DISPLAY_ROSTERS.set({})
+    try:
+        yield
+    finally:
+        _DISPLAY_ROSTERS.reset(token)
+
+
+def _read_role_and_marker(path: Path) -> tuple[str | None, str | None]:
+    from maverick import record_documents
+
+    snapshot = _DISPLAY_ROSTERS.get()
+    if snapshot is None:
+        return record_documents.read_texts(path, _presence_marker(path))
+    if path not in snapshot:
+        global_path, tenant_path = store_path(), tenant_store_path()
+        body, marker, tenant_body, tenant_marker = record_documents.read_texts(
+            global_path, _presence_marker(global_path), tenant_path, _presence_marker(tenant_path),
+        )
+        snapshot.update({global_path: (body, marker), tenant_path: (tenant_body, tenant_marker)})
+    return snapshot[path]
+
+
 def _load() -> dict[str, str]:
     from maverick import record_documents
 
@@ -318,7 +349,7 @@ def _load() -> dict[str, str]:
     marked = False
     try:
         if record_documents.using_postgres():
-            raw, marker = record_documents.read_texts(p, _presence_marker(p))
+            raw, marker = _read_role_and_marker(p)
             marked = marker is not None
             if raw is None:
                 if marked:
@@ -382,10 +413,22 @@ def tenant_store_path() -> Path:
 
 
 def _load_tenant() -> dict[str, dict[str, str]]:
+    from maverick import record_documents
+
     p = tenant_store_path()
-    raw = _read_store_text(p)
-    if raw is None:
-        return _missing_roster(p, "The workspace role list")
+    marked = False
+    if record_documents.using_postgres():
+        raw, marker = _read_role_and_marker(p)
+        marked = marker is not None
+        if raw is None:
+            if marked:
+                raise RosterMissingError(
+                    f"The workspace role list is missing although this installation recorded one. {ROSTER_RECOVERY}")
+            return {}
+    else:
+        raw = _read_store_text(p)
+        if raw is None:
+            return _missing_roster(p, "The workspace role list")
     try:
         data = _decode_json_object(raw, label="tenant RBAC roster")
     except RbacStoreError:
@@ -412,7 +455,8 @@ def _load_tenant() -> dict[str, dict[str, str]]:
                 )
             clean[principal] = role
         out[tenant] = clean
-    _backfill_record(p)
+    if not marked:
+        _backfill_record(p)
     return out
 
 
@@ -436,6 +480,9 @@ def tenant_role_scope_initialized() -> bool:
     from maverick import record_documents
 
     _load_tenant()
+    if record_documents.using_postgres() and _DISPLAY_ROSTERS.get() is not None:
+        raw, _ = _read_role_and_marker(tenant_store_path())
+        return raw is not None
     return record_documents.at(tenant_store_path()).exists()
 
 

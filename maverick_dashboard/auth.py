@@ -681,9 +681,15 @@ _DISPLAY_ROLES = contextvars.ContextVar("second_shift_display_roles", default=No
 @contextmanager
 def display_role_reads():
     """Share each display role for one template render."""
+    if _DISPLAY_ROLES.get() is not None:
+        yield
+        return
+    from .rbac import display_roster_reads
+
     token = _DISPLAY_ROLES.set({})
     try:
-        yield
+        with display_roster_reads():
+            yield
     finally:
         _DISPLAY_ROLES.reset(token)
 
@@ -698,9 +704,14 @@ def _role_of_caller(lookup, request: Request, principal: str | None) -> str | No
     from . import sign_in_roles
 
     roles = _DISPLAY_ROLES.get()
-    key = (id(request), lookup, principal)
-    if roles is not None and key in roles:
-        return roles[key]
+    if roles is not None:
+        from maverick.paths import explicit_tenant_id
+
+        # The active workspace can be pinned during the request, before the
+        # handler's permission checks. Keep the two authority scopes apart.
+        key = (id(request.scope), explicit_tenant_id(), lookup, principal)
+        if key in roles:
+            return roles[key]
     if sign_in_roles.carried(request, principal) is None:
         role = lookup(principal)
     else:

@@ -13,13 +13,13 @@ from contextlib import contextmanager
 
 
 @contextmanager
-def control_barrier() -> Iterator[None]:
+def control_barrier(*, shared: bool = False) -> Iterator[None]:
     """Hold the strict deployment-wide Ekko control barrier."""
     from .file_lock import cross_process_lock
     from .paths import data_dir
 
     target = data_dir("ekko-control", "authority", tenant=None)
-    with cross_process_lock(target, strict=True):
+    with cross_process_lock(target, strict=True, shared=shared):
         yield
 
 

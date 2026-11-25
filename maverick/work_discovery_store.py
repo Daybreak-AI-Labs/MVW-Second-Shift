@@ -565,7 +565,7 @@ class WorkDiscoveryStore:
     def _deployment_control_barrier(self) -> Iterator[None]:
         from .ekko_control import control_barrier
 
-        with control_barrier():
+        with control_barrier(shared=True):
             yield
 
     def _write_consent_authority(self, payload: dict[str, Any]) -> None:
