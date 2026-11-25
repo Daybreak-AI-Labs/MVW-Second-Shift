@@ -20,11 +20,11 @@ from tempfile import TemporaryDirectory
 
 import httpx
 
-from tools.load_check import OP_NAMES, SERVER_KEEPALIVE_SECONDS, expect, prepare, run_app, test_database
+from tools.load_check import OP_NAMES, expect, prepare, run_app, test_database
 
 PAGES = tuple(zip(OP_NAMES[:3], ("/", "/external-agents", "/approvals"), strict=True))
-# Retire idle sockets before the server's close timer can race with the next request.
-_CLIENT_IDLE_SECONDS = SERVER_KEEPALIVE_SECONDS - 2
+# Retire idle sockets before Uvicorn's five-second keepalive expires.
+_CLIENT_IDLE_SECONDS = 3
 
 
 class _StartupPipe:

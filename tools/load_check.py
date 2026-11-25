@@ -25,7 +25,6 @@ from psycopg import sql
 from psycopg.conninfo import conninfo_to_dict, make_conninfo
 
 OP_NAMES = ("Home", "Outside agents", "Approvals", "Screen", "Report run", "Teams card")
-SERVER_KEEPALIVE_SECONDS = 5
 BOT_ID = "0f0f0f0f-1111-2222-3333-444444444444"
 TENANT_ID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 TEAMS_ACTOR = "11111111-aaaa-aaaa-aaaa-111111111111"
@@ -221,8 +220,7 @@ def run_app(pipe, directory, dsn, people, pool_size, workers=1, population=0, re
             os.environ["MAVERICK_AUDIT_SIGNING_KEY"] = signing_key
         with supervisor(workers):
             uvicorn.run("tools.load_check:benchmark_app", factory=True, workers=workers, fd=listener.fileno(),
-                        backlog=4096, access_log=False, log_level="error", lifespan="on",
-                        timeout_keep_alive=SERVER_KEEPALIVE_SECONDS)
+                        backlog=4096, access_log=False, log_level="error", lifespan="on")
 
 
 def expect(response, status, name):
