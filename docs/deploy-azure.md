@@ -7,8 +7,9 @@ and uses PostgreSQL row-level security. The app's records (enrolled agents,
 trust, drift, platform checks, approvals cards, alerts, sign-in roles) are kept
 in PostgreSQL. The settings saved from the Settings page, the signed audit log,
 the emergency-stop file, browser sessions and Ekko's stores stay at
-`/var/lib/second-shift` on Azure Files. The app keeps up to eight database
-connections open for reuse (`SECOND_SHIFT_PG_POOL_SIZE`).
+`/var/lib/second-shift` on Azure Files. The kit sets a limit of eight connections per database pool
+(`SECOND_SHIFT_PG_POOL_SIZE`). See the local load check for total connections
+across the app.
 
 ## 1. Prepare the subscription and vault
 
@@ -410,6 +411,84 @@ and explicitly grant write access to the selected site. A site grant is
 required in addition to the Graph permission. The templates here provision
 the Second Shift service. The factory runtime and its document stores are
 future deployments.
+
+## Local load check
+
+From a Linux checkout with Python 3.12 and the PostgreSQL extra installed,
+point the developer tool at a disposable PostgreSQL 16 service. It requires
+an explicit `127.0.0.1` bootstrap login that can create roles and databases.
+It launches one local app process, creates a fresh database and a
+non-superuser service login for the run, and removes both on exit.
+
+```bash
+docker run --rm -d --name second-shift-load-db -p 127.0.0.1:55432:5432 \
+  -e POSTGRES_PASSWORD=local-load-only postgres:16
+export SECOND_SHIFT_LOAD_DSN='postgresql://postgres:local-load-only@127.0.0.1:55432/postgres'
+.venv/bin/python -m tools.load_check --people 50 --agents 25
+docker stop second-shift-load-db
+unset SECOND_SHIFT_LOAD_DSN
+```
+
+Each person opens Home, Outside agents and Approvals once in sequence using
+a registered, signed-in session. Each enrolled agent screens one low-risk
+proposal and reports one run with its own key. The concurrent burst also
+includes ten card rejections through the Teams webhook. The tool signs
+those activities with a local test key and uses a stand-in for the outbound
+Teams connector. It checks that the returned card records the rejection.
+The runs use row-level security, encrypted records, an explicit workspace
+(`SECOND_SHIFT_CLIENT_ID`), a deployment key with its expected digest
+(`SECOND_SHIFT_ENCRYPTION_KEY_DIGEST`), and the kit's pool setting of eight.
+The tool measures complete HTTP responses on loopback. The test excludes
+sign-in redirects, browser asset downloads and network time to Microsoft or
+Azure, and uses local files for state held on Azure Files in the kit.
+
+The benchmark used Python 3.12.14 on Linux 6.18.57 on an AMD EPYC 9V74
+host. The container had a four-CPU quota and 16 GiB of memory. PostgreSQL
+16.16 ran in a separate local container with a 100-connection limit.
+One test run was made for each combination. Counts are the number of
+clients that started together. Timings include queueing and all attempts,
+including refusals. They describe a local burst with synthetic data.
+
+End-to-end response times are median / 95th percentile in seconds.
+
+| People | Agents | Home | Outside agents | Approvals | Screen | Report run | Teams card | Failed requests |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 50 | 25 | 7.64 / 7.71 | 5.32 / 5.71 | 2.20 / 2.45 | 7.62 / 7.68 | 5.70 / 8.45 | 7.64 / 7.66 | 0 |
+| 50 | 100 | 9.60 / 9.66 | 8.13 / 9.28 | 2.92 / 3.35 | 3.76 / 10.30 | 9.10 / 13.10 | 9.63 / 9.64 | 112 |
+| 200 | 25 | 26.39 / 27.02 | 15.87 / 26.38 | 9.53 / 11.11 | 14.95 / 26.56 | 16.90 / 20.76 | 26.96 / 26.99 | 0 |
+| 200 | 100 | 31.31 / 31.82 | 18.17 / 37.18 | 6.67 / 9.75 | 3.03 / 7.77 | 29.79 / 34.26 | 31.80 / 31.84 | 135 |
+| 1,000 | 25 | 81.10 / 134.47 | 102.47 / 139.35 | 41.90 / 49.50 | 63.52 / 69.73 | 84.42 / 86.67 | 134.53 / 134.53 | 0 |
+| 1,000 | 100 | 86.79 / 152.44 | 123.16 / 164.41 | 41.95 / 50.19 | 9.51 / 63.44 | 51.61 / 114.11 | 152.50 / 152.51 | 136 |
+
+PostgreSQL connections were sampled about every 100 ms. App CPU is the
+average number of logical CPU cores used by the app process during the burst.
+
+| People | Agents | Burst seconds | App CPU cores | Peak open | Peak non-idle | Peak waiting for a database lock |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 50 | 25 | 15.48 | 0.95 | 30 | 13 | 0 |
+| 50 | 100 | 21.04 | 0.91 | 38 | 13 | 0 |
+| 200 | 25 | 51.90 | 1.03 | 37 | 14 | 0 |
+| 200 | 100 | 59.26 | 1.03 | 30 | 15 | 0 |
+| 1,000 | 25 | 241.70 | 1.07 | 36 | 16 | 0 |
+| 1,000 | 100 | 269.19 | 1.07 | 38 | 15 | 0 |
+
+**What limits the app first.** Page latency grew as the one app process
+used roughly one full CPU core. At 1,000 people, the home page took over
+two minutes at the 95th percentile. All page and Teams requests completed,
+and all agent calls in the 25-agent runs completed. In the 100-agent
+bursts, the agent gateway returned 503 responses for 56 to 68 screening
+requests and 56 to 68 run reports per run. The gateway admits up to 32
+authenticated requests concurrently and returns a busy response when a slot
+does not open within one second. It rejected traffic before PostgreSQL
+reached its connection limit.
+
+Peak open connections stayed at or below 38 of the server's 100. The
+configured limit of eight applies to each pool. Connection sampling saw
+no waits for PostgreSQL heavyweight locks. It does not measure short waits
+between samples, per-pool checkout queues, or application locks. The
+local results establish the behavior of these six single-process bursts.
+The Azure kit's CPU allocation, storage and network require a separate
+measurement in the intended deployment.
 
 ## Local verification
 

@@ -88,7 +88,7 @@ Vault (optional), it also enrolls a throwaway agent, has it screen one harmless 
 key, checks a wrong key is refused, and removes the agent again. Prints a pass/fail line per
 check in plain words and exits non-zero on any failure. Never prints a key or token.
 
-## 6. How many people one copy can serve
+## 6. How many people one copy can serve (merged in PR #13)
 
 Branch `codex/load-check`. A developer tool (not a server dependency) under `tools/` that runs
 against a local instance on PostgreSQL and measures response times (median and 95th percentile)
