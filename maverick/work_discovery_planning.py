@@ -105,7 +105,7 @@ class OpportunityPlans:
         return self._read(row) if row else None
 
     def _write(self, conn, value):
-        self.store._assert_database_capacity()
+        self.store._assert_database_capacity(conn)
         value = {**value, "revision": secrets.token_hex(16)}
         blob = self.store._seal(value, purpose="plan")
         conn.execute(

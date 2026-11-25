@@ -4,9 +4,10 @@ This kit creates a public HTTPS Container App with Entra sign-in, a private
 PostgreSQL Flexible Server, Azure Files, Key Vault, an image registry, and
 Log Analytics in one Azure subscription. The service runs with one replica
 with four dashboard workers and uses PostgreSQL row-level security. The app's records (enrolled agents,
-trust, drift, platform checks, approvals cards, alerts, sign-in roles) are kept
-in PostgreSQL. The settings saved from the Settings page, the signed audit log,
-the emergency-stop file, browser sessions and Ekko's stores stay at
+trust, drift, platform checks, approvals cards, alerts, sign-in roles,
+browser sessions, recorder keys and Ekko recordings) are kept in PostgreSQL.
+The settings saved from the Settings page, the signed audit log, the
+emergency-stop file and Ekko's consent and session authority files stay at
 `/var/lib/second-shift` on Azure Files.
 
 The replica has 4 vCPU and 8 GiB, a supported
@@ -17,6 +18,15 @@ for the measured workload. The four workers together admit up to
 32 agent requests and four requests that need a body to verify the sender.
 The limits apply across the replica. One worker runs the scheduled jobs and
 another takes over if it stops. Keep the replica count at one.
+
+An upgrade imports existing browser sessions and recorder keys on their first
+use, and Ekko recordings on the first access to each workspace's store.
+Stop the old revision before upgrading, as described below. Keep the data
+volume and encryption keys available for the import. Verify sessions and
+recordings after the upgrade, then manage the old SQLite files as backups
+under your retention policy. Changes made after the upgrade live in
+PostgreSQL. A database outage causes Second Shift to refuse affected
+requests until it can read the database again.
 
 ## 1. Prepare the subscription and vault
 

@@ -1044,3 +1044,23 @@ def test_with_a_workspace_for_each_person_a_key_writes_only_into_its_person_s(si
     assert recorder.post(HANDOVER, json=_batch(session, [_switch("excel")], batch_id="batch-0002")).status_code == 401
     monkeypatch.setenv("MAVERICK_TENANT_BY_USER", "1")
     assert _count(alice) == 1
+
+
+def test_postgres_handover_rejects_wrong_account_and_replays_once(app, person, records_in_postgres):
+    from maverick import ekko_device_keys
+    from maverick.work_discovery_identity import local_os_principal
+    from maverick.work_discovery_store import WorkDiscoveryStore
+
+    _enroll(person)
+    key = _key(person)
+    session = _start(person)
+    recorder = _recorder(app, key)
+    assert recorder.get(INSTRUCTIONS).status_code == 200
+    batch = _batch(session, [_switch("excel")])
+    assert recorder.post(HANDOVER, json=batch).status_code == 200
+    assert recorder.post(HANDOVER, json=batch).status_code == 200
+    wrong = {**_batch(session, [_switch("excel")], batch_id="batch-0002"), "account": OTHER_ACCOUNT}
+    assert recorder.post(HANDOVER, json=wrong).status_code == 403
+    assert _count(person) == 1
+    assert not ekko_device_keys._path().exists()
+    assert not WorkDiscoveryStore(local_os_principal(), "desk").path.exists()

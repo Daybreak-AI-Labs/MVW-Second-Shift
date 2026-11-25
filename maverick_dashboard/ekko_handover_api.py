@@ -182,7 +182,7 @@ def _live_key(request: Request, device_id: str) -> keys.DeviceKey | None:
         return None
     store = ekko._store(request, device)
     try:
-        enrollment = store.get_enrollment() if store.path.exists() else None
+        enrollment = store.get_enrollment() if store.has_storage() else None
     except EnrollmentRequired:
         enrollment = None
     except WorkDiscoveryStoreError:
@@ -350,7 +350,7 @@ def _device(request: Request, action: str) -> Iterator[_Device]:
     with _in_workspace(key):
         store = _open_store(key)
         try:
-            enrollment = store.get_enrollment() if store.path.exists() else None
+            enrollment = store.get_enrollment() if store.has_storage() else None
         except EnrollmentRequired:
             enrollment = None
         except WorkDiscoveryStoreError as exc:

@@ -122,3 +122,36 @@ Under steady traffic, 1,000/1,000 pages finished under 1 second (highest page p9
 176 ms) with 0 page or Teams failures. All serial requests finished under 200 ms.
 In the burst, 18/100 pages finished under 2 seconds. The burst target remains
 open.
+
+### Sessions and recorder stores in PostgreSQL, 4 vCPU and 8 GiB
+
+[Hosted run](https://github.com/Daybreak-AI-Labs/MVW-Second-Shift/actions/runs/45539524408)
+
+| Scenario | Operation | Median | P95 | Maximum | Under target | Errors |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| Serial | Home | 98.74 | 123.98 | 123.98 | 4/4 | 0 |
+| Serial | Outside agents | 72.84 | 73.39 | 73.39 | 4/4 | 0 |
+| Serial | Approvals | 73.39 | 74.79 | 74.79 | 4/4 | 0 |
+| Serial | Screen | 58.32 | 60.83 | 60.83 | 4/4 | 0 |
+| Serial | Report run | 72.08 | 77.00 | 77.00 | 4/4 | 0 |
+| Serial | Teams card | 116.16 | 141.20 | 141.20 | 4/4 | 0 |
+
+| Scenario | Operation | Median | P95 | Maximum | Under target | Errors |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| Burst | Home | 3,342.76 | 3,386.31 | 3,387.04 | 8/34 | 0 |
+| Burst | Outside agents | 3,353.17 | 3,397.58 | 3,398.04 | 9/33 | 0 |
+| Burst | Approvals | 3,338.92 | 3,382.56 | 3,382.67 | 9/33 | 0 |
+
+| Scenario | Operation | Median | P95 | Maximum | Under target | Errors |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| Steady | Home | 62.97 | 107.61 | 144.75 | 333/333 | 0 |
+| Steady | Outside agents | 36.91 | 80.82 | 105.49 | 334/334 | 0 |
+| Steady | Approvals | 69.87 | 76.41 | 99.52 | 333/333 | 0 |
+| Steady | Screen | 29.88 | 70.75 | 151.19 | 200/200 | 0 |
+| Steady | Report run | 76.02 | 81.82 | 114.85 | 200/200 | 0 |
+| Steady | Teams card | 123.08 | 165.88 | 165.88 | 10/10 | 0 |
+
+Under steady traffic, 1,000/1,000 pages finished under 1 second (highest page p95
+108 ms) with 0 page or Teams failures. All serial requests finished under 200 ms.
+In the burst, 26/100 pages finished under 2 seconds. The burst target remains
+open.

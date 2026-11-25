@@ -9,7 +9,8 @@ carries an opaque session id (``sid``) and is recorded here with who signed
 in, how, whether a second factor was proved, when it was issued, when it was
 last seen, the client address and a short user-agent summary.
 
-Store: ``<maverick_home>/dashboard-sessions.sqlite3`` (0600), stdlib sqlite3.
+PostgreSQL deployments store these sessions in the database. Other
+deployments use ``<maverick_home>/dashboard-sessions.sqlite3`` (0600).
 Rows are kept ``[auth.sessions] retention_days`` (default 30) past their
 expiry, then pruned.
 
@@ -29,6 +30,7 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from maverick import postgres_scoped_sql, record_documents
 from maverick.paths import maverick_home
 
 _LOCK = threading.Lock()
@@ -50,7 +52,32 @@ CREATE TABLE IF NOT EXISTS sessions (
     revoked_by TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS sessions_principal ON sessions (principal);
+CREATE INDEX IF NOT EXISTS sessions_expiry ON sessions (expires_at);
 """
+
+
+_PG = postgres_scoped_sql.ScopedStore(
+    "browser-sessions",
+    _SCHEMA.replace("sid TEXT PRIMARY KEY,",
+                    f"sid TEXT PRIMARY KEY, workspace TEXT NOT NULL DEFAULT {postgres_scoped_sql.workspace_setting()},"),
+    {"sessions": postgres_scoped_sql.workspace_policy("workspace")},
+)
+
+
+def _session_workspace() -> str:
+    # A browser session belongs to the installation's sign-in, before a
+    # verified person may select any of the workspaces they can open.
+    from maverick.client import strict_client_id
+
+    return postgres_scoped_sql.workspace_key(os.environ.get("MAVERICK_TENANT", "").strip() or strict_client_id())
+
+
+def _import_sessions(previous, cursor, workspace: str) -> None:
+    postgres_scoped_sql.bind(cursor, workspace)
+    postgres_scoped_sql.copy_legacy(
+        previous, cursor, "sessions", "sid,principal,via,mfa,mfa_at,issued_at,expires_at,last_seen,"
+        "ip,user_agent,revoked_at,revoked_by", prefix=(workspace,),
+    )
 
 
 class SessionStoreError(RuntimeError):
@@ -149,6 +176,16 @@ def _open_store(path: Path) -> sqlite3.Connection:
 
 @contextmanager
 def _connect():
+    if record_documents.using_postgres():
+        try:
+            scope = _session_workspace()
+            with _PG.transaction(scope, legacy=(_path(), "all", lambda source, cursor: _import_sessions(
+                    source, cursor, scope))) as conn:
+                yield conn
+        except (OSError, ValueError) as exc:
+            raise SessionStoreError("The browser session could not be checked. Try signing in again.") from exc
+        return
+
     from maverick.file_lock import ensure_private_directory, ensure_private_file
 
     path = _path()
@@ -204,8 +241,12 @@ def register(*, sid: str, principal: str, via: str, mfa: bool, mfa_at: float | N
         raise ValueError("session id and principal are required")
     with _connect() as conn:
         conn.execute(
-            "INSERT OR REPLACE INTO sessions (sid, principal, via, mfa, mfa_at, issued_at, "
-            "expires_at, last_seen, ip, user_agent) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO sessions (sid, principal, via, mfa, mfa_at, issued_at, "
+            "expires_at, last_seen, ip, user_agent) VALUES (?,?,?,?,?,?,?,?,?,?) "
+            "ON CONFLICT (sid) DO UPDATE SET principal=excluded.principal, via=excluded.via, "
+            "mfa=excluded.mfa, mfa_at=excluded.mfa_at, issued_at=excluded.issued_at, "
+            "expires_at=excluded.expires_at, last_seen=excluded.last_seen, ip=excluded.ip, "
+            "user_agent=excluded.user_agent, revoked_at=NULL, revoked_by=''",
             (sid, principal, via, 1 if mfa else 0, mfa_at, float(issued_at),
              float(expires_at), float(issued_at), str(ip or ""),
              user_agent_summary(user_agent)),
