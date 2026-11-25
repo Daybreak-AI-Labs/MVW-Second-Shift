@@ -19,7 +19,7 @@ several copies.
 
 ---
 
-## 1. Continuous integration (do this first)
+## 1. Continuous integration (merged in PR #8)
 
 Branch `codex/ci`. `.github/workflows/ci.yml`, on pull requests and pushes to
 `claude/friendly-shannon-e8jwva`:
