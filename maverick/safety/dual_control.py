@@ -187,9 +187,17 @@ def separate_approver_mode() -> str:
 def separate_approver_applies(risk: str | None, approvals_required: object = 1) -> bool:
     """Whether :func:`separate_approver_mode` governs a request.
 
-    High or critical risk with one approver. With two or more, distinct people
-    approve anyway, and :func:`allow_self_approval` alone decides whether the
-    requester's vote counts as one of them."""
+    A deployment can extend the rule to every waiting request. Otherwise it
+    applies to high or critical risk with one approver."""
+    from ..config import config_source_errors, load_config
+
+    try:
+        approval = load_config().get("approval") or {}
+        all_requests = approval.get("separate_approver_all_requests", False)
+        if config_source_errors() or all_requests is not False:
+            return True
+    except (AttributeError, OSError, TypeError, ValueError, RuntimeError):
+        return True
     return (str(risk or "").strip().lower() in _SEPARATE_APPROVER_RISKS
             and _coerce_int(approvals_required, 1) <= 1)
 

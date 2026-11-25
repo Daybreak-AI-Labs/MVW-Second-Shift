@@ -249,6 +249,8 @@ def _build() -> tuple[Setting, ...]:
                 default=second_person.default, choices=second_person.options, env=second_person.dashboard_env,
                 choice_labels={"always": "Always a different person", "when_available": "A different person when there is one",
                                "never": "The same person may approve"}),
+        Setting("approval.separate_approver_all_requests", "approvals", "bool", "Apply the separate-approver rule to every request",
+                "Includes low-risk requests and requests requiring more than one approver.", default=False),
         Setting("approval.reminder_fraction_left", "approvals", "float", "Reminder before a request runs out",
                 "One reminder when this share of a waiting request's time is left (0.25 is a quarter). 0 means never.",
                 default=0.25, minimum=0.0, maximum=0.9),
@@ -381,6 +383,8 @@ def _build() -> tuple[Setting, ...]:
                 default="UTC", pattern=_ZONE, pattern_help="a time zone name such as Europe/London", max_length=64),
         Setting("owner_note.teams", "owner_note", "bool", "Also message owners in Teams",
                 "When Teams is set up, the same short list also goes to the owner's own Teams chat.", default=False),
+        Setting("external_agents.allow_legacy_signatures", "keys", "bool", "Accept older agent request signatures",
+                "Allows version 1 request signatures only for agents whose enrollment permits them.", default=True),
         # ----------------------------------------------------------------- models
         *_model_settings(),
     ]

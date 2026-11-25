@@ -9,3 +9,23 @@ provider = "azure"
 "SecondShift.Responder" = "responder"
 "SecondShift.Auditor" = "auditor"
 "SecondShift.Viewer" = "viewer"
+
+[settings]
+locked = [
+  "approval.separate_approver",
+  "approval.separate_approver_all_requests",
+  "copilot_studio_gate.on_error",
+  "copilot_studio_gate.unenrolled",
+  "external_agents.allow_legacy_signatures",
+]
+
+[approval]
+separate_approver = "always"
+separate_approver_all_requests = true
+
+[copilot_studio_gate]
+on_error = "block"
+unenrolled = "block"
+
+[external_agents]
+allow_legacy_signatures = false
