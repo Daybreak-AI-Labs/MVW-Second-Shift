@@ -1177,13 +1177,23 @@ _OIDC_VERIFY_SLOTS = 8
 _OIDC_ADMISSION_SECONDS = 0.25
 
 
+def _resolve_principal_and_pin_choice(request, websocket):
+    principal = _resolve_principal(request=request, websocket=websocket)
+    connection = request if request is not None else websocket
+    choice = _UNDECIDED
+    if (connection is not None and principal is not None
+            and getattr(connection.state, "paired_device_verified", False) is not True):
+        choice = _tenant_pin_choice(connection, principal)
+    return principal, choice
+
+
 async def _verify_off_loop(request, websocket):
     connection = request if request is not None else websocket
     explicit = connection is not None and connection.headers.get("authorization", "")
     remote_bearer = (explicit and not _dashboard_token_authenticated(connection)
                      and (request is None or not _self_authenticated_path(route_path(request))))
     if not remote_bearer:
-        return await run_in_threadpool(_resolve_principal, request=request, websocket=websocket)
+        return await run_in_threadpool(_resolve_principal_and_pin_choice, request, websocket)
     # Cap potentially remote verification before borrowing a worker. Probes and
     # local/session authentication retain worker capacity during a slow IdP.
     loop = asyncio.get_running_loop()
@@ -1196,7 +1206,7 @@ async def _verify_off_loop(request, websocket):
     except TimeoutError as exc:
         raise HTTPException(status_code=503, detail="identity verification is busy",
                             headers={"Retry-After": "1"}) from exc
-    worker = asyncio.create_task(run_in_threadpool(_resolve_principal, request=request, websocket=websocket))
+    worker = asyncio.create_task(run_in_threadpool(_resolve_principal_and_pin_choice, request, websocket))
 
     def finished(task):
         limiter.release()
@@ -1224,14 +1234,8 @@ async def require_principal_in_request_context(
         or route_path(request).startswith("/api/v1/external/")
     ):
         return None  # probes and external integrations have no browser principal
-    principal = await _verify_off_loop(request, websocket)
+    principal, pin_choice = await _verify_off_loop(request, websocket)
     connection = request if request is not None else websocket
-    pin_choice: object = _UNDECIDED
-    if (connection is not None and principal is not None
-            and getattr(connection.state, "paired_device_verified", False) is not True):
-        # The workspace selection, roster and membership are file reads: decide
-        # in the thread pool, then pin in this request's own context.
-        pin_choice = await run_in_threadpool(_tenant_pin_choice, connection, principal)
     if _bind_identity(connection, principal, pin_choice):
         # The policies read the configuration (the workspace's overlay once the
         # tenant is pinned, which the thread's copied context carries): keep
