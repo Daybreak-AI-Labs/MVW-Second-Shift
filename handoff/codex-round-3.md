@@ -98,7 +98,7 @@ webhook answering card actions. Number of people and agents are parameters. Writ
 for 50, 200 and 1,000 people and 25 and 100 agents in `docs/deploy-azure.md`, with the machine it
 ran on, and say what limits first (CPU, database connections, the pool size, locks).
 
-## 7. Lock the settings that must not change in production
+## 7. Lock the settings that must not change in production (merged in PR #14)
 
 Branch `codex/locked-settings`. In the Azure kit's settings overlay (the file
 `SECOND_SHIFT_CONFIG_OVERLAY` points at) and with the deployment-lock mechanism the Settings page
