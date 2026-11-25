@@ -1,5 +1,8 @@
 # Work for Codex on Second Shift, round 3
 
+Codex now does the building, the reviewing and the merging; Claude only reviews a batch of
+security-sensitive changes later. Read "Working without Claude" at the end before job 1.
+
 Each job: start from the latest `claude/friendly-shannon-e8jwva`, read `AGENTS.md`, work on its
 own branch, open a pull request against `claude/friendly-shannon-e8jwva`. Before opening it,
 run the whole suite in both postures and lint, as `AGENTS.md` says, and say in the pull request
@@ -8,7 +11,8 @@ types and API versions, Graph permission names, CLI flags) from Microsoft's own 
 cite the URL next to it; say plainly what you could not confirm. Nothing here has a live Azure
 subscription or tenant to test against: write it so it can be checked without one, and list what
 still needs a real tenant. Do not add attribution or co-author lines to commits or pull requests.
-Delete this file in the last pull request you open.
+Keep this file up to date: tick off each job as it merges, and delete the file only when
+every job is merged.
 
 The app runs as one copy for everyone (one Container App replica, one process). Do not design for
 several copies.
@@ -93,3 +97,69 @@ Approvals pages; outside agents screening actions and reporting runs with their 
 webhook answering card actions. Number of people and agents are parameters. Write the results
 for 50, 200 and 1,000 people and 25 and 100 agents in `docs/deploy-azure.md`, with the machine it
 ran on, and say what limits first (CPU, database connections, the pool size, locks).
+
+## 7. Lock the settings that must not change in production
+
+Branch `codex/locked-settings`. In the Azure kit's settings overlay (the file
+`SECOND_SHIFT_CONFIG_OVERLAY` points at) and with the deployment-lock mechanism the Settings page
+already honours (`[settings] locked = [...]` or the environment variables; read
+`maverick/editable_settings.py` and `docs/defaults.md`), lock these, which Claude recommended and
+Chris may change:
+
+- a second person must approve every waiting request (`[approval] separate_approver = "always"`);
+- when the Copilot Studio gate cannot decide, it refuses (its `on_error` setting: refuse, not allow);
+- Copilot Studio agents that are not enrolled are refused;
+- older request signatures are refused for the whole deployment
+  (`[external_agents] allow_legacy_signatures = false`).
+
+Tests: each locked setting cannot be changed from the Settings page or its API and the page says
+it is set by the deployment. Document the list in `docs/deploy-azure.md`.
+
+## 8. First real deployment (when Chris has an Azure test subscription)
+
+Do not start until Chris says the subscription and tenant exist. Then follow
+`docs/deploy-azure.md` step by step with Chris, run `deploy/azure/check-deployment.sh`, and fix
+the guide wherever reality differs. Keep a short log in `handoff/first-deployment.md` of what
+failed and what was changed.
+
+---
+
+## Working without Claude
+
+**Merging.** After job 1 lands, every pull request runs CI. Merge your own pull request into
+`claude/friendly-shannon-e8jwva` only when CI is green, both suites passed locally, and you have
+re-read your own diff against the rules below. Until CI exists, merge job 1 after the full local
+runs pass.
+
+**Claude's review queue.** If a pull request changes any of these, still merge it when green, but
+add one line (pull request link, files, one sentence on what changed) to
+`handoff/claude-review-queue.md` so Claude can review them in one batch later:
+`maverick_dashboard/auth.py`, `maverick_dashboard/external_gateway.py`,
+`maverick/external_identity.py`, `maverick/agent_trust.py`, `maverick/external_agents.py`,
+`maverick/record_documents.py`, `maverick_dashboard/oidc_login.py`,
+`maverick_dashboard/sign_in_roles.py`, `maverick_dashboard/rbac.py`,
+`maverick_dashboard/teams_bot.py`, `maverick/copilot_studio_gate.py`, any `deploy/azure/*.bicep`
+that changes network access, identities or Key Vault access, and anything about secrets.
+
+**Rules Claude has been enforcing in review** (in addition to `AGENTS.md`):
+
+1. A record the app keeps goes through `maverick.record_documents` (`at(path).read_text()`,
+   `write_text`, `exists`, `locked`), never straight to a file, so it lands in Postgres when the
+   database is Postgres. Tests for it use the `records_in_postgres` fixture in
+   `tests/new/conftest.py` and assert no file appeared and the row is in `second_shift_records`.
+2. A record that was encrypted with the deployment key stays encrypted in Postgres
+   (`crypto_at_rest.seal_to_str` / `unseal_from_str`).
+3. Fail closed: unreadable, corrupt or unreachable means refuse, never "empty, carry on" for
+   anything that decides access, approval, containment or replay.
+4. Never skip, loosen or delete a test to get green. If an existing test must change, say why in
+   the pull request.
+5. Write the failing test before the fix, and run it to see it fail.
+6. Messages people read say what happened and what to do next, and the advice must fit where the
+   record lives (a file or the database).
+7. Every Microsoft, Azure, ServiceNow or Workday fact gets a documentation link beside it, and
+   the pull request says what was not confirmed. Do not guess.
+8. Commits are authored as Chris (`Christopher Day
+   <131784708+cdayAI@users.noreply.github.com>`), with no AI attribution or co-author lines.
+9. Local Postgres for the second suite: a PostgreSQL 16 login that may create databases in
+   `MAVERICK_PG_DSN`. If Postgres was stopped (connection refused everywhere), start it again;
+   that is not a test failure.
