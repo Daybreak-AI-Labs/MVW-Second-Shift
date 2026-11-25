@@ -241,6 +241,51 @@ its local SQLite-backed workflows on your storage before enabling them.
 Second Shift strips callback queries from its Uvicorn access log. Apply
 the same rule to any ingress or proxy logs and restrict log access.
 
+## 5. Enable approvals in Microsoft Teams (optional)
+
+Create a dedicated single-tenant Entra registration for the bot in the
+subscription's tenant and create its client secret. Save the client ID and
+store the secret value as `teams-bot-secret` in the deployment vault. Use
+the `store_secret` helper in step 1 with Bash tracing off.
+[Single-tenant bot credentials](https://learn.microsoft.com/en-us/microsoftteams/platform/teams-sdk/teams/app-authentication/client-secret)
+
+```bash
+read -rsp 'Teams bot client secret: ' value
+printf '\n'
+printf '%s' "$value" | store_secret teams-bot-secret
+unset value
+teams_bot_client='<bot Application (client) ID>'
+```
+
+Include `enableTeams=true teamsBotAppId="$teams_bot_client"` after
+`--parameters` on the app deployment in step 4. Register the
+`Microsoft.BotService` provider if it is not already registered. The
+template sets the bot's messaging endpoint to `$origin/webhook/teams`,
+enables its Teams channel, and resolves the secret through the app's
+user-assigned identity. When omitted, the Teams parameter defaults to off.
+[Register a resource provider](https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/resource-providers-and-types#register-resource-provider)
+[Azure Bot and Teams channel](https://learn.microsoft.com/en-us/azure/templates/microsoft.botservice/2022-09-15/botservices/channels)
+
+In the deployment's `config.toml`, enable `[teams]`, use the bot client
+ID and subscription tenant ID, and set
+`app_secret_env = "SECOND_SHIFT_TEAMS_BOT_SECRET"`. See [Teams settings](teams-approvals.md#3-settings)
+for the full table and optional channel settings. Build the package from
+the repository root.
+
+```bash
+python3 teams-app/build_package.py --bot-app-id "$teams_bot_client" --hostname "${origin#https://}"
+```
+
+In the Teams admin center, open **Teams apps → Manage apps**, select
+**Upload new app**, and upload `second-shift-teams.zip`. Make the app
+available to the people who should receive cards and have them install it
+or assign it with an app setup policy.
+[Manage apps in the Teams admin center](https://learn.microsoft.com/en-us/microsoftteams/manage-apps)
+
+The templates and Teams ZIP were checked locally. Confirm bot creation,
+channel activation, app upload, and the test card and button press in a
+real tenant before using it for approvals.
+
 ## Limit traffic at the gateway
 
 For Internet-facing deployments, put Azure Front Door Premium with a WAF

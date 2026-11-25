@@ -29,6 +29,10 @@ before that.
 
 ## 1. Create the Azure Bot (single tenant)
 
+If you are using the Azure kit, follow [Enable approvals in Microsoft Teams](deploy-azure.md#5-enable-approvals-in-microsoft-teams-optional)
+to provision the bot and channel from the existing single-tenant app
+registration. For another deployment, use the steps below.
+
 Microsoft stopped allowing new multi-tenant Azure Bots after 31 July 2025, so
 Second Shift supports a **single-tenant** bot: one that belongs to your own
 Microsoft Entra tenant.
@@ -103,7 +107,8 @@ This writes `second-shift-teams.zip`. The files it is built from are in
 `teams-app/`: `manifest.template.json`, `color.png` (192 by 192) and
 `outline.png` (32 by 32). Change the icons if you like; keep those sizes.
 
-An administrator uploads it and makes it available:
+An administrator uploads it and makes it available.
+[Manage apps in the Teams admin center](https://learn.microsoft.com/en-us/microsoftteams/manage-apps)
 
 1. In the **Teams admin center** open **Teams apps > Manage apps**, choose
    **Upload new app** and select the zip. The app is usually available to

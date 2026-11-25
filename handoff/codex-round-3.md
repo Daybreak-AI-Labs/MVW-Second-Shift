@@ -59,7 +59,7 @@ It never grants admin consent itself: it prints the consent link for an administ
 prints or stores a secret; a client secret, if the kit needs one, goes straight into Key Vault.
 It prints the ids the rest of the kit asks for. Update `docs/deploy-azure.md` section 3 to use it.
 
-## 3. The Teams bot in the Azure kit
+## 3. The Teams bot in the Azure kit (merged in PR #10)
 
 Branch `codex/teams-bot-azure`. Add the Azure Bot resource to the Bicep kit: single-tenant,
 messaging endpoint `<public origin>/webhook/teams` (`maverick_dashboard/teams_bot.py`), the
