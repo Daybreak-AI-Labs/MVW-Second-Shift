@@ -10,8 +10,7 @@ neither removes the record.
 Store: ``<maverick_home>/account-profiles.json`` (0600), one installation-wide
 file keyed by sign-in, written atomically under a cross-process lock and
 sealed with the deployment key when at-rest encryption is on. With Postgres as the
-main database it is kept with the other records (``maverick.record_documents``),
-sealed with the same key in text form. Bounded to
+main database it is kept as one row per sign-in, sealed with the same key. Bounded to
 ``_MAX_ENTRIES`` by last sign-in. It grants nothing: it only names people
 where they are already shown. My data exports it and its reviewed deletion
 erases it; deleting the account in the company directory (SCIM) erases it too.
@@ -30,7 +29,7 @@ import unicodedata
 from contextlib import contextmanager
 from pathlib import Path
 
-from maverick import record_documents
+from maverick import keyed_records, record_documents
 from maverick.paths import maverick_home
 
 _MAX_ENTRIES = 50_000
@@ -64,7 +63,7 @@ def _locked():
         yield
 
 
-def _read() -> dict[str, dict]:
+def _read_legacy() -> dict[str, dict]:
     from maverick import crypto_at_rest
 
     if record_documents.using_postgres():
@@ -90,6 +89,60 @@ def _read() -> dict[str, dict]:
     return profiles
 
 
+def _keyed() -> keyed_records.KeyedRecords:
+    return keyed_records.KeyedRecords(_path())
+
+
+def _encode(profile: dict) -> str:
+    from maverick import crypto_at_rest
+
+    text = json.dumps(profile, sort_keys=True)
+    if crypto_at_rest.deployment_at_rest_enabled():
+        with crypto_at_rest.deployment_key_scope():
+            return crypto_at_rest.seal_to_str(text)
+    return text
+
+
+def _decode(text: str) -> dict:
+    from maverick import crypto_at_rest
+
+    if crypto_at_rest.is_sealed_str(text):
+        with crypto_at_rest.deployment_key_scope():
+            text = crypto_at_rest.unseal_from_str(text)
+    data = json.loads(text)
+    if not isinstance(data, dict):
+        raise ValueError("The account name record is not readable.")
+    return data
+
+
+def _migrate(collection: keyed_records.Collection) -> None:
+    collection.rows("people").seed((principal, _encode(value), "", float(value.get("at", 0)))
+                                   for principal, value in _read_legacy().items())
+
+
+def _read() -> dict[str, dict]:
+    if record_documents.using_postgres():
+        with _keyed().transaction(_migrate) as store:
+            return {key: _decode(body) for key, body in store.rows("people").select().items()}
+    return _read_legacy()
+
+
+def _record_keyed(principal: str, current: dict) -> None:
+    with _keyed().transaction(_migrate, write=True) as store:
+        people = store.rows("people")
+        before = people.get(principal)
+        if not (current["email"] or current["name"]):
+            people.discard(principal)
+            return
+        now = time.time()
+        if before is not None:
+            previous = _decode(before)
+            if all(previous.get(key) == value for key, value in current.items()) and now - float(previous.get("at", 0)) < 86_400:
+                return
+        people.put(principal, _encode({**current, "at": now}), stamp=now)
+        people.trim(_MAX_ENTRIES)
+
+
 def _write(profiles: dict[str, dict]) -> None:
     from maverick import crypto_at_rest
 
@@ -97,13 +150,6 @@ def _write(profiles: dict[str, dict]) -> None:
         newest = sorted(profiles, key=lambda key: profiles[key].get("at", 0), reverse=True)[:_MAX_ENTRIES]
         profiles = {key: profiles[key] for key in newest}
     payload = json.dumps({"schema": 1, "profiles": profiles}, sort_keys=True).encode("utf-8")
-    if record_documents.using_postgres():
-        text = payload.decode("utf-8")
-        if crypto_at_rest.deployment_at_rest_enabled():
-            with crypto_at_rest.deployment_key_scope():
-                text = crypto_at_rest.seal_to_str(text)
-        record_documents.at(_path()).write_text(text)
-        return
     from maverick.file_lock import atomic_write_bytes, ensure_private_directory
 
     if crypto_at_rest.deployment_at_rest_enabled():
@@ -135,8 +181,11 @@ def record_sign_in(principal: str, claims: dict) -> None:
     if not isinstance(principal, str) or not principal.startswith("user:") or not enabled():
         return
     current = from_claims(claims or {})
+    if record_documents.using_postgres():
+        _record_keyed(principal, current)
+        return
     with _locked():
-        profiles = _read()
+        profiles = _read_legacy()
         before = profiles.get(principal)
         if not (current["email"] or current["name"]):
             if before is None:

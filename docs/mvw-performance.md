@@ -155,3 +155,59 @@ Under steady traffic, 1,000/1,000 pages finished under 1 second (highest page p9
 108 ms) with 0 page or Teams failures. All serial requests finished under 200 ms.
 In the burst, 26/100 pages finished under 2 seconds. The burst target remains
 open.
+
+### Size of the old identity records
+
+The sample uses one fixed-length synthetic person, sign-in name, name and
+revocation timestamp per employee. Each person has two subject identifiers
+(an Entra object ID and an email) and one Teams link. Sizes use the old JSON
+formatters and measure the payload before any account profile encryption.
+
+| Record | Bytes per additional person | Serialized bytes at 20,000 people |
+| --- | ---: | ---: |
+| Account names | 148 | 2,960,027 |
+| Sign-in subject identifiers | 300 | 6,000,000 |
+| Teams links | 240 | 4,800,057 |
+| Signed-out sessions | 74 | 1,480,002 |
+
+The old subject directory accepted 13,981 such people (4,194,300 bytes).
+It refused at 13,982 (4,194,600 bytes). The old Teams limit allowed 5,000
+links (1,200,057 bytes) and refused the 5,001st link.
+
+PostgreSQL now updates individual records. Sign-in uses the same indexed
+statements and touches the same number of rows with 25 or 25,000 people
+already recorded. The sign-in directory and Teams each support at least
+50,000 people in PostgreSQL.
+
+### Per-person records, 4 vCPU and 8 GiB
+
+[Hosted run](https://github.com/Daybreak-AI-Labs/MVW-Second-Shift/actions/runs/45540903746)
+
+| Scenario | Operation | Median | P95 | Maximum | Under target | Errors |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| Serial | Home | 104.91 | 106.01 | 106.01 | 4/4 | 0 |
+| Serial | Outside agents | 75.20 | 76.31 | 76.31 | 4/4 | 0 |
+| Serial | Approvals | 77.72 | 104.94 | 104.94 | 4/4 | 0 |
+| Serial | Screen | 60.91 | 60.97 | 60.97 | 4/4 | 0 |
+| Serial | Report run | 74.62 | 79.07 | 79.07 | 4/4 | 0 |
+| Serial | Teams card | 121.84 | 153.06 | 153.06 | 4/4 | 0 |
+
+| Scenario | Operation | Median | P95 | Maximum | Under target | Errors |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| Burst | Home | 3,322.23 | 3,736.84 | 3,737.05 | 7/34 | 0 |
+| Burst | Outside agents | 3,365.01 | 3,741.69 | 3,743.86 | 7/33 | 0 |
+| Burst | Approvals | 3,311.10 | 3,732.69 | 3,733.47 | 9/33 | 0 |
+
+| Scenario | Operation | Median | P95 | Maximum | Under target | Errors |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| Steady | Home | 76.05 | 110.92 | 122.30 | 333/333 | 0 |
+| Steady | Outside agents | 40.70 | 83.12 | 115.77 | 334/334 | 0 |
+| Steady | Approvals | 72.05 | 79.99 | 115.95 | 333/333 | 0 |
+| Steady | Screen | 32.31 | 71.44 | 122.60 | 200/200 | 0 |
+| Steady | Report run | 79.06 | 85.15 | 119.64 | 200/200 | 0 |
+| Steady | Teams card | 131.96 | 212.21 | 212.21 | 10/10 | 0 |
+
+Every serial sample finished under 200 ms. All 1,000 steady pages finished
+within one second (highest page p95 111 ms) with no page or Teams failures.
+In the 100-person burst, 23 pages finished within two seconds and page p95
+reached 3.74 seconds. The burst target remains open.

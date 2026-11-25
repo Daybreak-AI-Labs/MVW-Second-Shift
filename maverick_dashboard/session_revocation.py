@@ -21,7 +21,7 @@ import time
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
-from maverick import record_documents
+from maverick import keyed_records, record_documents
 from maverick.paths import maverick_home
 
 _LOCK = threading.Lock()
@@ -106,6 +106,26 @@ def _load() -> dict:
     return validated
 
 
+def _keyed() -> keyed_records.KeyedRecords:
+    return keyed_records.KeyedRecords(_path())
+
+
+def _migrate(collection: keyed_records.Collection) -> None:
+    collection.rows("people").seed((key, json.dumps(epoch), "", epoch) for key, epoch in _load().items())
+
+
+def _epoch(value: str | None) -> float:
+    if value is None:
+        return 0.0
+    try:
+        parsed = json.loads(value)
+        if isinstance(parsed, bool) or not isinstance(parsed, (int, float)) or not math.isfinite(parsed) or parsed <= 0:
+            raise ValueError("invalid session epoch")
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise RevocationStoreError("The sign-out record could not be read.") from exc
+    return float(parsed)
+
+
 def revoke_principal(principal: str, *, at: float | None = None) -> None:
     """Invalidate every credential issued to ``principal`` before now.
 
@@ -120,6 +140,14 @@ def revoke_principal(principal: str, *, at: float | None = None) -> None:
         raise ValueError("revocation epoch must be a finite positive number") from exc
     if not math.isfinite(ts) or ts <= 0:
         raise ValueError("revocation epoch must be a finite positive number")
+    if record_documents.using_postgres():
+        from maverick.authority_effects import authority_effect_fence
+
+        with authority_effect_fence(), _keyed().transaction(_migrate, write=True) as store:
+            people = store.rows("people")
+            epoch = max(_epoch(people.get(p)), ts)
+            people.put(p, json.dumps(epoch), stamp=epoch)
+        return
     with _locked():
         data = _load()
         data[p] = max(float(data.get(p, 0.0) or 0.0), ts)
@@ -129,7 +157,14 @@ def revoke_principal(principal: str, *, at: float | None = None) -> None:
 def revocation_epoch(principal: str) -> float:
     """The earliest issued-at a credential for ``principal`` may carry; 0 = never
     revoked."""
-    return float(_load().get((principal or "").strip(), 0.0) or 0.0)
+    key = (principal or "").strip()
+    if record_documents.using_postgres():
+        try:
+            with _keyed().transaction(_migrate) as store:
+                return _epoch(store.rows("people").get(key))
+        except OSError as exc:
+            raise RevocationStoreError("The sign-out record could not be read.") from exc
+    return float(_load().get(key, 0.0) or 0.0)
 
 
 def is_revoked(principal: str, issued_at: float | None) -> bool:
