@@ -9,11 +9,11 @@ connector. Timings are end-to-end HTTP milliseconds.
 
 The serial run samples each operation four times without concurrency.
 The 100-person burst starts one page request per person at the same time,
-with traffic split among the three pages. The 500-person steady run lasts
-60 seconds. Each person opens a page every 30 seconds, and each of 100
-agents screens and reports a run every 30 seconds. Ten Teams card decisions
-are distributed over the same interval. All attempts count in the
-distribution, including refused requests.
+with traffic split among the three pages. The initial 500-person steady
+comparisons last 60 seconds. Each person opens a page every 30 seconds.
+Each of 100 agents screens and reports a run every 30 seconds. Ten Teams
+card decisions are distributed over the same interval. All attempts count
+in the distribution, including refused requests.
 
 The serial target is under 200 ms for every sample. The burst target is 95%
 of pages under 2 seconds. The steady target is 95% of pages under 1 second
@@ -211,3 +211,71 @@ Every serial sample finished under 200 ms. All 1,000 steady pages finished
 within one second (highest page p95 111 ms) with no page or Teams failures.
 In the 100-person burst, 23 pages finished within two seconds and page p95
 reached 3.74 seconds. The burst target remains open.
+
+### Full MVW workload, 20,000 people and the selected Azure limits
+
+[Hosted run](https://github.com/Daybreak-AI-Labs/MVW-Second-Shift/actions/runs/45551358398/job/138993038063)
+
+| Scenario | Operation | Median | P95 | Maximum | Under target | Errors |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| Serial | Home | 72.96 | 73.86 | 73.86 | 4/4 | 0 |
+| Serial | Outside agents | 62.17 | 62.45 | 62.45 | 4/4 | 0 |
+| Serial | Approvals | 60.49 | 61.97 | 61.97 | 4/4 | 0 |
+| Serial | Screen | 59.76 | 61.90 | 61.90 | 4/4 | 0 |
+| Serial | Report run | 74.55 | 76.21 | 76.21 | 4/4 | 0 |
+| Serial | Teams card | 117.17 | 151.83 | 151.83 | 4/4 | 0 |
+
+| Scenario | Operation | Median | P95 | Maximum | Under target | Errors |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| Burst | Home | 904.43 | 1,420.32 | 1,426.68 | 34/34 | 0 |
+| Burst | Outside agents | 815.77 | 1,368.75 | 1,407.08 | 33/33 | 0 |
+| Burst | Approvals | 870.61 | 1,381.34 | 1,384.05 | 33/33 | 0 |
+
+| Scenario | Operation | Median | P95 | Maximum | Under target | Errors |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| Steady | Home | 34.62 | 54.82 | 88.12 | 667/667 | 0 |
+| Steady | Outside agents | 23.56 | 37.50 | 78.34 | 667/667 | 0 |
+| Steady | Approvals | 18.40 | 30.08 | 52.27 | 666/666 | 0 |
+| Steady | Screen | 34.97 | 46.46 | 94.02 | 400/400 | 0 |
+| Steady | Report run | 38.96 | 58.37 | 105.33 | 400/400 | 0 |
+| Steady | Teams card | 114.47 | 180.51 | 180.51 | 10/10 | 0 |
+
+| Scenario | Operation | Median | P95 | Maximum | Under target | Errors |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| 500 arriving | Home | 2,586.60 | 4,986.82 | 5,214.89 | 63/167 | 0 |
+| 500 arriving | Outside agents | 2,587.75 | 4,857.71 | 5,203.69 | 63/167 | 0 |
+| 500 arriving | Approvals | 2,468.06 | 4,772.29 | 5,174.12 | 68/166 | 0 |
+| Steady with 25 agents | Home | 34.72 | 42.07 | 78.90 | 667/667 | 0 |
+| Steady with 25 agents | Outside agents | 23.82 | 29.14 | 60.71 | 667/667 | 0 |
+| Steady with 25 agents | Approvals | 15.36 | 18.63 | 49.92 | 666/666 | 0 |
+| Steady with 25 agents | Screen | 32.68 | 49.10 | 78.89 | 100/100 | 0 |
+| Steady with 25 agents | Report run | 39.44 | 57.85 | 79.11 | 100/100 | 0 |
+| Steady with 25 agents | Teams card | 91.03 | 122.66 | 122.66 | 10/10 | 0 |
+| 100 agents arriving | Screen | 985.96 | 2,946.68 | 3,104.47 | 76/100 | 0 |
+| 100 agents arriving | Report run | 845.87 | 2,626.29 | 2,856.14 | 87/100 | 0 |
+
+The speed gates passed with 100/100 burst pages under two seconds and
+2,000/2,000 steady pages under one second. Every serial sample finished
+within 152 ms. The 100-agent steady workload had zero page or Teams
+failures. Both steady workloads ran for 120 seconds.
+
+Two more runs passed on the same Intel Xeon model. The worst serial
+response across all three was 157 ms, and the highest burst page p95 was
+1.50 seconds. An earlier build on AMD EPYC 7763 met the steady gate and
+completed 46 of 100 burst pages within two seconds.
+[Earlier AMD run](https://github.com/Daybreak-AI-Labs/MVW-Second-Shift/actions/runs/45548121662/job/138985528161)
+
+The one-hour workload scheduled 2,000 synthetic recorders to poll every
+five seconds and hand over activity every 30 seconds. The hosted output
+reports 1,440,000 scheduled instruction polls, while the cadence yields
+720,000. The poll totals remain unverified.
+
+| Recorder operation | Scheduled | Attempted | Completed successfully | Devices with successes | P95 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Recorder hand-over | 238,000 | 137,629 | 51,835 | 2,000 | 7,465 ms |
+
+The app returned 85,660 capacity refusals. The driver canceled 134
+remaining attempts at the deadline and left 100,371 hand-overs
+unattempted.
+
+[One-hour recorder run](https://github.com/Daybreak-AI-Labs/MVW-Second-Shift/actions/runs/45547283337/job/138979818081)
