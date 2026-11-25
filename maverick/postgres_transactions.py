@@ -87,7 +87,8 @@ def _shared_pool(dsn: str, kwargs: dict, size: int, timeout: float, io_timeout: 
                 dsn, min_size=min_size, max_size=size, max_waiting=64,
                 timeout=timeout, reconnect_timeout=timeout,
                 connection_class=BoundedConnection,
-                kwargs={**kwargs, "io_timeout_seconds": io_timeout}, reset=_reset_connection,
+                kwargs={**kwargs, "io_timeout_seconds": io_timeout},
+                configure=_reset_connection, reset=_reset_connection,
                 name="governed-" + key[:12], open=True,
             ))
             _POOLS[key] = entry
