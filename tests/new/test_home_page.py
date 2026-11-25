@@ -177,6 +177,33 @@ def test_the_most_serious_comes_first(person, installation, monkeypatch):
     assert agents.index("blocked for breaking rules") < agents.index("over its budget")
 
 
+def test_home_formats_only_the_five_highest_priority_visible_approvals(monkeypatch):
+    from types import SimpleNamespace
+
+    from maverick.safety import secret_detector
+    from maverick_dashboard import _shared, content_access, home_page
+
+    approvals = [SimpleNamespace(id=index, action=f"Request {index}", requested_at=index,
+                                 risk="critical" if index < 4 else "medium", provenance="external_agents")
+                 for index in range(10)]
+    world = SimpleNamespace(pending_approvals=lambda: approvals)
+    monkeypatch.setattr(_shared, "_world", lambda: world)
+    monkeypatch.setattr(content_access, "readable_approvals", lambda request, rows, world: rows[1:])
+    formatted = []
+    redact = secret_detector.redact
+
+    def track(text):
+        formatted.append(text)
+        return redact(text)
+
+    monkeypatch.setattr(secret_detector, "redact", track)
+    section = {}
+    home_page._approvals(section, None)
+    assert [item["href"] for item in section["lines"]] == [f"/approvals#approval-{index}" for index in (3, 2, 1, 9, 8)]
+    assert section["count"] == 9
+    assert formatted == [item["text"] for item in section["lines"]]
+
+
 # ----------------------------------------------------------------- escaping
 
 def test_names_and_reasons_from_agents_and_platforms_are_escaped(person, installation, monkeypatch):

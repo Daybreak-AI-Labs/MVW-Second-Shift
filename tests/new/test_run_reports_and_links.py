@@ -69,6 +69,54 @@ def test_closing_a_live_run_carries_the_same_two_fields(client, agent):
     assert seen["config"]["declared"]["version"] == "2.0"
 
 
+def test_live_agent_storage_runs_off_the_event_loop_with_the_dashboard_world(agent, monkeypatch):
+    import asyncio
+    from functools import wraps
+
+    from maverick import external_agents
+    from maverick_dashboard import _shared
+
+    world = _shared._world()
+    calls = []
+
+    def observe(name, operation):
+        @wraps(operation)
+        def observed(*args, **kwargs):
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                off_loop = True
+            else:
+                off_loop = False
+            factory = kwargs.get("world_factory")
+            calls.append((name, off_loop, factory is not None and factory() is world))
+            return operation(*args, **kwargs)
+
+        return observed
+
+    for name in ("start_run", "heartbeat", "finish_run", "approval_status"):
+        monkeypatch.setattr(external_agents, name, observe(name, getattr(external_agents, name)))
+
+    started = agent.post("/api/v1/external/runs/start", json={"title": "Reset a password"})
+    assert started.status_code == 201, started.text
+    path = f"/api/v1/external/runs/{started.json()['goal_id']}"
+    assert agent.post(f"{path}/heartbeat").json()["continue"] is True
+    assert agent.post(f"{path}/finish", json={"outcome": "success"}).status_code == 200
+    assert agent.get("/api/v1/external/approvals/999").status_code == 404
+    assert calls == [(name, True, True) for name in ("start_run", "heartbeat", "finish_run", "approval_status")]
+
+
+def test_agent_only_routes_do_not_dispatch_browser_identity_or_visibility(agent, monkeypatch):
+    from maverick_dashboard import app, auth
+
+    def browser_only(*args, **kwargs):
+        pytest.fail("The gateway already verified its own credential")
+
+    monkeypatch.setattr(auth, "_verify_off_loop", browser_only)
+    monkeypatch.setattr(app, "enforce_page_visibility", browser_only)
+    assert agent.post("/api/v1/external/screen", json={"tool": "lookup_user", "risk": "low"}).json()["allowed"]
+
+
 def test_a_report_without_the_new_fields_is_still_accepted(client, agent):
     sent = agent.post("/api/v1/external/runs", json={"title": "Reset a password", "outcome": "success"})
     assert sent.status_code == 201, sent.text

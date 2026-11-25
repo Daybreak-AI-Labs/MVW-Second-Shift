@@ -574,7 +574,7 @@ def enforce_page_visibility(
 async def _page_visibility(request: Request = None) -> None:  # type: ignore[assignment]
     """The app-level page-policy dependency: the check reads the settings, so
     it runs in the worker pool, except for a probe, which is no page."""
-    if request is None or probe_path(request.scope) or route_path(request).startswith("/api/v1/external/ekko/"):
+    if request is None or probe_path(request.scope) or route_path(request).startswith("/api/v1/external/"):
         return
     await run_in_threadpool(enforce_page_visibility, request)
 

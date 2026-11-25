@@ -84,7 +84,8 @@ class Workload:
                 item["retried"] = self.retries[name]
         return result
 
-    async def request(self, name, method, path, headers, payload=None, *, retry_busy=False):
+    async def request(self, name, method, path, headers, payload=None, *, retry_busy=False,
+                      expected=200, check=None):
         began = time.perf_counter()
         try:
             for attempt in range(3):
@@ -96,7 +97,6 @@ class Workload:
                     break
                 self.retries[name] += 1
                 await asyncio.sleep(1)
-            expected = 201 if name == "Report run" else 200
             if reply.status_code != expected:
                 code = str(reply.status_code)
                 if code == "503" and b"external request capacity is busy" in reply.content:
@@ -110,6 +110,8 @@ class Workload:
                 self.errors[name]["recording not active"] += 1
             elif name == "Recorder hand-over" and reply.json().get("accepted") != 1:
                 self.errors[name]["activity not accepted"] += 1
+            elif check is not None and not check(reply.json()):
+                self.errors[name]["unexpected reply"] += 1
             else:
                 return True
         except asyncio.CancelledError:
@@ -131,10 +133,42 @@ class Workload:
         await self.request("Report run", "POST", "/api/v1/external/runs", headers, {
             "title": "Local MVW load check", "outcome": "success", "tools": ["load_read"],
             "tool_calls": 1, "idempotency_key": key,
-        }, retry_busy=True)
+        }, retry_busy=True, expected=201)
 
     async def teams(self, card):
         await self.request("Teams card", "POST", "/webhook/teams", {"Authorization": f"Bearer {self.team_token}"}, card)
+
+    async def live_agent(self, headers, card):
+        goal_id = None
+
+        def remember_goal(reply):
+            nonlocal goal_id
+            value = reply.get("goal_id") if isinstance(reply, dict) else None
+            if type(value) is not int or value < 1:
+                return False
+            goal_id = value
+            return True
+
+        started = await self.request("Start live run", "POST", "/api/v1/external/runs/start", headers,
+                                     {"title": "Local MVW live run"}, retry_busy=True, expected=201,
+                                     check=remember_goal)
+        if not started:
+            return False
+        screened = await self.request("Screen", "POST", "/api/v1/external/screen", headers,
+                                      {"tool": "load_read", "risk": "low"}, retry_busy=True)
+        data = card["value"]["action"]["data"]
+        approval = f"/api/v1/external/approvals/{data['approval_id']}?binding_sha256={data['binding']}"
+        pending = await self.request("Approval poll", "GET", approval, headers, retry_busy=True,
+                                     check=lambda reply: isinstance(reply, dict) and reply.get("status") == "pending"
+                                     and reply.get("approval_binding_sha256") == data["binding"])
+        run = f"/api/v1/external/runs/{goal_id}"
+        continued = await self.request("Heartbeat", "POST", run + "/heartbeat", headers, retry_busy=True,
+                                       check=lambda reply: isinstance(reply, dict) and reply.get("continue") is True)
+        finished = await self.request("Finish live run", "POST", run + "/finish", headers, {
+            "outcome": "success" if screened and continued else "failure",
+            "tools": ["load_read"] if screened and continued else [],
+        }, retry_busy=True, check=lambda reply: isinstance(reply, dict) and reply.get("goal_id") == goal_id)
+        return screened and pending and continued and finished
 
 
 async def wait_for_ready(client):
@@ -162,6 +196,17 @@ async def burst(client, token, people, size):
     work = Workload(client, token)
     await asyncio.gather(*(work.page(person, index) for index, person in enumerate(people[:size])))
     return work.report(2000)
+
+
+async def mixed_live(client, token, people, keys, cards):
+    """Arriving employees share the app with live agents and a Teams decision."""
+    work = Workload(client, token)
+    flows = asyncio.gather(*(work.live_agent(key, card) for key, card in zip(keys, cards[:-1], strict=True)))
+    await asyncio.gather(
+        *(work.page(person, index) for index, person in enumerate(people)),
+        work.teams(cards[-1]), flows,
+    )
+    return work.report(2000), {"attempted": len(keys), "completed": sum(flows.result())}
 
 
 async def steady(client, token, people, keys, cards, seconds):
@@ -307,6 +352,12 @@ async def measure(payload, args):
         await wait_for_ready(client)
         if args.recorders:
             return {"recorder": await recorder_hour(client, token, payload[4], args.seconds)}
+        if args.mixed_live:
+            keys, cards = await prepare(client, origin, administrator, args.agents, args.agents + 1)
+            for _, path in PAGES:
+                expect(await client.get(path, headers={"Cookie": f"ss_session={people[0]}"}), 200, "Page warm-up")
+            results, flows = await mixed_live(client, token, people[:args.burst], keys, cards)
+            return {"mixed_live": results, "live_flows": flows}
         agents = 1 if args.profile else args.agents
         card_count = 4 if args.profile else 24 if args.mvw else 14
         keys, cards = await prepare(client, origin, administrator, agents, card_count)
@@ -392,6 +443,7 @@ def main():
     parser.add_argument("--seconds", type=int, default=60)
     parser.add_argument("--profile", action="store_true")
     parser.add_argument("--mvw", action="store_true", help="also measure 500 arrivals and 25 agents")
+    parser.add_argument("--mixed-live", action="store_true", help="run a browser burst with concurrent live agent work")
     parser.add_argument("--quick", action="store_true", help="measure only the serial and 100-arrival cases")
     parser.add_argument("--require-targets", action="store_true", help="fail when a measured workload misses an MVW target")
     parser.add_argument("--population", type=int, default=0)
@@ -403,6 +455,7 @@ def main():
     if (not 0 <= args.population <= 50_000 or not 0 <= args.recorders <= 2_500 or args.seconds > 3600
             or (args.mvw and (args.people < 500 or args.agents < 25))
             or (args.profile and (args.mvw or args.recorders))
+            or (args.mixed_live and (args.mvw or args.quick or args.profile or args.recorders))
             or (args.require_targets and (not args.mvw or args.quick or args.recorders))):
         parser.error("Use realistic workload counts and run the profiler and recorder load separately.")
     dsn = os.environ.get("SECOND_SHIFT_LOAD_DSN")

@@ -89,6 +89,7 @@ def configure_app(directory, origin, dsn, pool_size, recorders=0):
     Path(os.environ["MAVERICK_CONFIG"]).write_text(
         '[auth.oidc.role_map]\n"Load.Operator" = "operator"\n"Load.Admin" = "admin"\n'
         '[external_agents]\nmax_enrolled = 500\n'
+        f'[governed_records]\npool_size = {pool_size}\n'
         f'[teams]\nenabled = true\napp_id = "{BOT_ID}"\ntenant_id = "{TENANT_ID}"\n'
         'app_secret_env = "SECOND_SHIFT_LOAD_BOT_SECRET"\n'
         + ('[ekko]\nenable = true\nallowed_apps = ["excel", "word"]\n' if recorders else ""), encoding="utf-8")
