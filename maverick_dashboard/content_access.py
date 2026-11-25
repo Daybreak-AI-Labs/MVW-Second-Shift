@@ -170,6 +170,26 @@ def can_read_approval(request, approval, world=None) -> bool:
         resource_id=resource["resource_id"], resource_revision=resource["resource_revision"])
 
 
+def readable_approvals(request, approvals, world) -> list:
+    """Filter one page of approval rows, checking the common queue role once."""
+    from . import auth
+
+    if (auth.api_key_permissions(request) is not None
+            and not auth.has_permission(request, "approve", api_scope="approvals:decide")):
+        return []
+    governance_allowed = None
+    visible = []
+    for row in approvals:
+        if _governance_request(row):
+            if governance_allowed is None:
+                governance_allowed = auth.has_permission(request, "approve")
+            if governance_allowed:
+                visible.append(row)
+        elif can_read_approval(request, row, world):
+            visible.append(row)
+    return visible
+
+
 def approval_readers(approval, world, *, among=None) -> set[str]:
     """The people who can open this approval card on the Approvals page.
 

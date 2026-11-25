@@ -3016,6 +3016,26 @@ class PostgresWorldModel:
             audit_pending = int(cur.fetchone()[0])
         return _approval_state_view(appr, approvers, audit_pending)
 
+    def pending_approval_signoffs(self, approval_ids: list[int]) -> dict[int, list[str]]:
+        """Approved votes on the requested rows that are pending in this tenant."""
+        if not approval_ids:
+            return {}
+        scope, params = _tenant_scope("a.tenant_id")
+        with self._tx() as cur:
+            cur.execute(
+                "SELECT a.id, s.approver FROM approvals a LEFT JOIN approval_signoffs s "
+                "ON s.approval_id = a.id AND s.decision = 'approved' "
+                f"WHERE a.status = 'pending' AND a.id = ANY(%s) AND {scope} "
+                "ORDER BY a.id, s.decided_at, s.approver", (approval_ids, *params),
+            )
+            rows = cur.fetchall()
+        result: dict[int, list[str]] = {}
+        for approval_id, approver in rows:
+            votes = result.setdefault(approval_id, [])
+            if approver is not None:
+                votes.append(approver)
+        return result
+
     # ----- conversations / turns (multi-turn channel memory) -----
 
     # ----- messages (goal-scoped log) -----

@@ -320,12 +320,25 @@ def _backfill_record(path: Path) -> None:
 
 
 def _load() -> dict[str, str]:
+    from maverick import record_documents
+
     p = store_path()
-    doc = _read_store(p)
-    if doc is None:
-        return _missing_roster(p, "The role list")
+    marked = False
     try:
-        data = _decode_json_object(_read_text(doc, p), label="RBAC roster")
+        if record_documents.using_postgres():
+            raw, marker = record_documents.read_texts(p, _presence_marker(p))
+            marked = marker is not None
+            if raw is None:
+                if marked:
+                    raise RosterMissingError(
+                        f"The role list is missing although this installation recorded one. {ROSTER_RECOVERY}")
+                return {}
+        else:
+            doc = _read_store(p)
+            if doc is None:
+                return _missing_roster(p, "The role list")
+            raw = _read_text(doc, p)
+        data = _decode_json_object(raw, label="RBAC roster")
     except RbacStoreError:
         raise
     except (OSError, ValueError) as exc:
@@ -339,7 +352,8 @@ def _load() -> dict[str, str]:
         if not is_known_role(role):
             raise RbacStoreError(f"RBAC roster corrupt: invalid role for {principal!r}")
         out[principal] = role
-    _backfill_record(p)
+    if not marked:
+        _backfill_record(p)
     return out
 
 

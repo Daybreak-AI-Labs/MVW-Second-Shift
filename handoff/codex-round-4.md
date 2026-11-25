@@ -26,7 +26,7 @@ and 1 GiB. That is not usable for 2,000 people.
 
 ---
 
-## 1. Make each request cheaper
+## 1. Make each request cheaper (PR #15)
 
 Branch `codex/request-cost`. Profile the load check (cProfile or py-spy) for Home, Outside
 agents, Approvals, the agent screen and run report, and a Teams card action. Fix the largest

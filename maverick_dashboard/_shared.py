@@ -9,11 +9,13 @@ reintroducing the cycle; both modules ``from ._shared import`` these.
 from __future__ import annotations
 
 import os
+import threading
 from typing import Any
 
 # One process-wide WorldModel cache keyed by absolute DB path (was a
 # separate dict per module). Tests clear it via ``<module>._world_cache``.
 _world_cache: dict[str, Any] = {}
+_world_open_lock = threading.Lock()
 
 
 def dashboard_token() -> str:
@@ -68,9 +70,13 @@ def _world():
     if is_postgres_configured():
         cached = _world_cache.get("__postgres__")
         if cached is None:
-            from maverick.world_model import open_world
-            cached = open_world()  # also enforces the at-rest fail-closed guard
-            _world_cache["__postgres__"] = cached
+            with _world_open_lock:
+                cached = _world_cache.get("__postgres__")
+                if cached is None:
+                    from maverick.world_model import open_world
+
+                    cached = open_world()  # also enforces the at-rest fail-closed guard
+                    _world_cache["__postgres__"] = cached
         return cached
     from maverick.paths import current_tenant_id
     tid = current_tenant_id()
