@@ -2201,6 +2201,7 @@ body.glass-on:not(.theme-hicontrast) .settings-index { backdrop-filter: blur(22p
     position: absolute;
     inset: 0 0 0 26%;
     pointer-events: none;
+    mask-image: linear-gradient(90deg, transparent, black 27%);
     background:
       linear-gradient(90deg, #0b0e15 0%, transparent 53%),
       url("/static/second-shift-glass.webp") center 49% / cover no-repeat, #08051a;

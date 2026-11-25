@@ -71,5 +71,5 @@
     </article>
   {% endfor %}
 
-<script defer src="/static/second-shift-approvals.js"></script>
+<script defer nonce="{{ csp_script_nonce }}" src="/static/second-shift-approvals.js"></script>
 {% endblock %}

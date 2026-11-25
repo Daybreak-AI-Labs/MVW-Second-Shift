@@ -249,5 +249,5 @@
   {% if outside_agent_tabs %}</div>{% endif %}
 
 <script type="application/json" id="xa-starters">{{ starters | tojson }}</script>
-<script defer src="/static/second-shift-outside-agents.js"></script>
+<script defer nonce="{{ csp_script_nonce }}" src="/static/second-shift-outside-agents.js"></script>
 {% endblock %}

@@ -1483,7 +1483,7 @@ class PostgresWorldModel:
         )
 
     @contextmanager
-    def _tx(self, *, snapshot: bool = False) -> Iterator:
+    def _tx(self, *, snapshot: bool = False, pipeline: bool = False) -> Iterator:
         """Cursor scope that commits on success and ROLLS BACK on error.
 
         Critical for autocommit=False: a single failed statement aborts
@@ -1503,10 +1503,17 @@ class PostgresWorldModel:
         A ``_tx`` opened while this thread already holds one joins it under a
         savepoint (see :meth:`_nested_tx`): it never commits the outer
         transaction early, nor waits for a second pooled connection.
+
+        Fixed reads can pipeline the scope bind and query. PostgreSQL applies
+        the local settings before executing subsequent statements in order.
         """
         if getattr(self._tx_depth, "value", 0):
             yield from self._nested_tx()
             return
+        if pipeline:
+            from psycopg import Pipeline
+
+            pipeline = Pipeline.is_supported()
         if self._pool is not None:
             # Pooled: each tx gets its own connection; the pool's context
             # commits on success and rolls back on error, so no shared lock.
@@ -1514,16 +1521,17 @@ class PostgresWorldModel:
             with self._pool.connection() as conn:
                 cur = conn.cursor()
                 try:
-                    if snapshot:
-                        cur.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
-                    self._set_tenant_guc(cur)
-                    self._note_encryption_posture(cur)
-                    self._tx_depth.value, self._tx_depth.conn = 1, conn
-                    self._tx_depth.scope = (_active_tenant(), _active_workspace())
-                    try:
-                        yield cur
-                    finally:
-                        self._tx_depth.value, self._tx_depth.conn = 0, None
+                    with conn.pipeline() if pipeline else nullcontext():
+                        if snapshot:
+                            cur.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+                        self._set_tenant_guc(cur)
+                        self._note_encryption_posture(cur)
+                        self._tx_depth.value, self._tx_depth.conn = 1, conn
+                        self._tx_depth.scope = (_active_tenant(), _active_workspace())
+                        try:
+                            yield cur
+                        finally:
+                            self._tx_depth.value, self._tx_depth.conn = 0, None
                 finally:
                     cur.close()
             return
@@ -1533,16 +1541,17 @@ class PostgresWorldModel:
             cur = None
             try:
                 cur = self.conn.cursor()
-                if snapshot:
-                    cur.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
-                self._set_tenant_guc(cur)
-                self._note_encryption_posture(cur)
-                self._tx_depth.value, self._tx_depth.conn = 1, self.conn
-                self._tx_depth.scope = (_active_tenant(), _active_workspace())
-                try:
-                    yield cur
-                finally:
-                    self._tx_depth.value, self._tx_depth.conn = 0, None
+                with self.conn.pipeline() if pipeline else nullcontext():
+                    if snapshot:
+                        cur.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+                    self._set_tenant_guc(cur)
+                    self._note_encryption_posture(cur)
+                    self._tx_depth.value, self._tx_depth.conn = 1, self.conn
+                    self._tx_depth.scope = (_active_tenant(), _active_workspace())
+                    try:
+                        yield cur
+                    finally:
+                        self._tx_depth.value, self._tx_depth.conn = 0, None
                 self.conn.commit()
             except (psycopg.OperationalError, psycopg.InterfaceError):
                 try:
@@ -2614,7 +2623,7 @@ class PostgresWorldModel:
         if frag:
             sql += " AND " + frag
         sql += " ORDER BY id"
-        with self._tx() as cur:
+        with self._tx(pipeline=True) as cur:
             cur.execute(sql, tuple(params))
             rows = cur.fetchall()
         return self._decode_approval_rows(rows)
@@ -3048,7 +3057,7 @@ class PostgresWorldModel:
         if not approval_ids:
             return {}
         scope, params = _tenant_scope("a.tenant_id")
-        with self._tx() as cur:
+        with self._tx(pipeline=True) as cur:
             cur.execute(
                 "SELECT a.id, s.approver FROM approvals a LEFT JOIN approval_signoffs s "
                 "ON s.approval_id = a.id AND s.decision = 'approved' "
@@ -3137,7 +3146,7 @@ class PostgresWorldModel:
         return bool(deleted and deleted > 0)
 
     def active_halt(self) -> dict | None:
-        with self._tx() as cur:
+        with self._tx(pipeline=True) as cur:
             cur.execute(
                 "SELECT reason, source, armed_by, armed_at, generation "
                 "FROM halt WHERE scope = ''")

@@ -282,7 +282,7 @@ FAILURES = {
     "approvals": ("Requests waiting for a decision could not be read.", "world"),
     "drift": ("Drift findings could not be read.", "maverick.agent_drift:roster_view"),
     "agents": ("Outside agents could not be read.", "maverick.external_agents:roster"),
-    "platforms": ("Platform checks could not be read.", "maverick.agent_watch:status"),
+    "platforms": ("Platform checks could not be read.", "maverick.agent_watch:_load_store"),
     "keys": ("Access key dates could not be read.", "maverick.agent_trust:load_registry"),
     "alerts": ("Alert settings could not be read.", "maverick.ops_alert:delivery_status"),
 }
