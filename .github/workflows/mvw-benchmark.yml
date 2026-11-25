@@ -10,6 +10,7 @@ on:
       - codex/load-check-mvw
       - codex/ekko-throughput
       - codex/platform-speed
+      - codex/burst-latency
     paths-ignore:
       - 'docs/**'
       - 'handoff/**'
@@ -27,7 +28,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        scenario: ${{ fromJSON(github.ref_name == 'codex/platform-speed' && '["requested","mixed-live"]' || contains(github.event.head_commit.message, 'paired app comparison') && '["requested","comparison","sustained"]' || contains(github.event.head_commit.message, 'Measure final recorder hour') && '["requested","comparison"]' || '["requested"]') }}
+        scenario: ${{ fromJSON(github.ref_name == 'codex/burst-latency' && '["requested","mixed-live","mixed-live-500"]' || github.ref_name == 'codex/platform-speed' && '["requested","mixed-live"]' || contains(github.event.head_commit.message, 'paired app comparison') && '["requested","comparison","sustained"]' || contains(github.event.head_commit.message, 'Measure final recorder hour') && '["requested","comparison"]' || '["requested"]') }}
     timeout-minutes: 85
     services:
       postgres:
@@ -67,10 +68,11 @@ jobs:
           pool=$(sed -nE "s/.*SECOND_SHIFT_PG_POOL_SIZE: '([0-9]+)'.*/\1/p" deploy/azure/app.bicep)
           args=()
           recorder_seconds=0
-          if [[ "$GITHUB_REF_NAME" =~ ^codex/(load-check-mvw|ekko-throughput|platform-speed)$ ]]; then
+          if [[ "$GITHUB_REF_NAME" =~ ^codex/(load-check-mvw|ekko-throughput|platform-speed|burst-latency)$ ]]; then
             args=(--mvw --population 20000 --seconds 120 --require-targets)
             case "$BENCHMARK_SCENARIO:$BENCHMARK_TITLE" in
               mixed-live:*) args=(--mixed-live --population 20000 --agents 25 --burst 100) ;;
+              mixed-live-500:*) args=(--mixed-live --population 20000 --agents 25 --burst 500) ;;
               requested:*"Measure recorder hour"*|requested:*"Measure final recorder hour"*)
                 args=(--recorders 2000 --population 20000 --seconds 3600) ;;
               requested:*"Measure recorder pilot"*) args=(--recorders 2000 --population 20000 --seconds 90) ;;
@@ -86,11 +88,15 @@ jobs:
             printf 'The PostgreSQL container did not receive the expected 2 vCPU and 8 GiB.\n' >&2
             exit 1
           fi
-          if [ "$BENCHMARK_SCENARIO" = mixed-live ]; then
+          if [[ "$BENCHMARK_SCENARIO" == mixed-live* ]]; then
             baseline="$RUNNER_TEMP/second-shift-baseline"
+            baseline_ref=refs/heads/claude/friendly-shannon-e8jwva
+            if [ "$GITHUB_REF_NAME" = codex/burst-latency ]; then
+              baseline_ref=8d2219761111780f6bdd4eda78e1a17d0673cd30
+            fi
             mkdir -p "$baseline"
             curl --fail --silent --show-error --location --retry 2 --max-time 45 \
-              "https://codeload.github.com/$GITHUB_REPOSITORY/tar.gz/refs/heads/claude/friendly-shannon-e8jwva" |
+              "https://codeload.github.com/$GITHUB_REPOSITORY/tar.gz/$baseline_ref" |
               tar -xz --strip-components=1 -C "$baseline"
             cp tools/mvw_benchmark.py "$baseline/tools/"
             (cd "$baseline" && python -m tools.mvw_benchmark --cpus "$cpu" --memory-gib "$memory" \

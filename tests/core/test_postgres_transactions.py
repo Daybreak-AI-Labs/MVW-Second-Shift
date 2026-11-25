@@ -27,6 +27,7 @@ class StopWork(BaseException):
 class Connection:
     def __init__(self):
         self.commits = self.rollbacks = self.closes = self.cursor_closes = 0
+        self.autocommit = False
         self.commit_error = self.rollback_error = None
         self.statements = []
 
@@ -192,6 +193,16 @@ def test_pool_shared_across_namespaces_but_not_credentials_or_options(fake_pool)
     assert pool.kwargs["max_waiting"] == 64 and pool.kwargs["min_size"] == 1
     assert "dsn-one" not in repr(pt._POOLS.keys())
     assert pool.connection.statements[-1][0] == "SELECT set_config('maverick.tenant', '', false)"
+
+
+def test_pool_reset_clears_session_scope_without_opening_another_transaction(fake_pool):
+    facility = pt.PostgresTransactions("dsn", pool_size=1)
+    with facility.transaction():
+        pass
+    pool = fake_pool.instances[0]
+    assert pool.connection.commits == 1
+    assert pool.connection.autocommit is False
+    assert pool.connection.statements == [("SELECT set_config('maverick.tenant', '', false)", None)]
 
 
 def test_pool_acquisition_timeout_does_not_start_or_retry_transaction(fake_pool):

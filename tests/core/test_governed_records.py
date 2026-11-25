@@ -153,30 +153,12 @@ class _MemoryCursor:
             self.result = [(self.database.clock_time,)]
             self.rowcount = 1
             return
-        if sql.startswith("SELECT rolsuper, rolbypassrls"):
-            self.result = [(
-                self.database.superuser,
-                self.database.bypassrls,
-            )]
+        if sql.startswith("WITH relation AS"):
+            db = self.database
+            self.result = [(db.superuser, db.bypassrls, db.table_exists, db.table_exists,
+                            db.rls_enabled, db.rls_forced, db.columns, db.primary_key,
+                            db.checks, db.policies)]
             self.rowcount = 1
-            return
-        if sql.startswith("SELECT to_regclass("):
-            self.result = [(
-                "governed_records" if self.database.table_exists else None,
-            )]
-            self.rowcount = 1
-            return
-        if sql.startswith("SELECT column_name, data_type, is_nullable"):
-            self.result = list(self.database.columns)
-            self.rowcount = len(self.result)
-            return
-        if sql.startswith("SELECT array_agg(a.attname"):
-            self.result = [(list(self.database.primary_key),)]
-            self.rowcount = 1
-            return
-        if sql.startswith("SELECT pg_get_constraintdef(oid)"):
-            self.result = [(check,) for check in self.database.checks]
-            self.rowcount = len(self.result)
             return
         if sql.startswith("CREATE TABLE "):
             if not self.database.allow_ddl:
@@ -226,17 +208,6 @@ class _MemoryCursor:
                 expression,
             ))
             self.rowcount = 1
-            return
-        if sql.startswith("SELECT relrowsecurity"):
-            self.result = [(
-                self.database.rls_enabled,
-                self.database.rls_forced,
-            )]
-            self.rowcount = 1
-            return
-        if sql.startswith("SELECT policyname, permissive"):
-            self.result = list(self.database.policies)
-            self.rowcount = len(self.result)
             return
         if sql.startswith((
             "SELECT set_config(",

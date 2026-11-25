@@ -361,3 +361,35 @@ The first revision of this work missed the serial and 100-person burst
 targets on AMD EPYC 7763. In that run 84 of 100 pages finished within two
 seconds and the slowest Teams request took 205 ms.
 [Earlier Round 4 workload](https://github.com/Daybreak-AI-Labs/MVW-Second-Shift/actions/runs/45585493052/job/139105897794)
+
+### Simultaneous arrivals after reducing request overhead
+
+The browser admission and response middleware now pass requests and bodies
+directly through ASGI. Authenticated external integrations still use bounded
+body reads. Browser verification and workspace selection share a worker
+dispatch, and every request still checks its current authority. PostgreSQL
+clears the pooled tenant setting in one statement and verifies the current
+governed-record catalog in one snapshot.
+
+Each comparison used the same runner and database limits for both revisions.
+The app used 4 vCPU, 8 GiB and four workers, with PostgreSQL capped at 2 vCPU
+and 8 GiB. Both revisions handled 25 live agents and one Teams decision with
+zero errors in each comparison.
+
+| Simultaneous arrivals | Measure | Baseline | Revised |
+| --- | --- | ---: | ---: |
+| 100 | Slowest page p95 | 1.89 s | 1.90 s |
+| 100 | Pages under two seconds | 100 / 100 | 100 / 100 |
+| 100 | Teams card (one request) | 1.45 s | 558 ms |
+| 500 | Home p95 | 7.97 s | 6.12 s |
+| 500 | Outside agents p95 | 7.92 s | 6.10 s |
+| 500 | Approvals p95 | 7.86 s | 6.14 s |
+| 500 | Pages under two seconds | 111 / 500 | 101 / 500 |
+| 500 | Start live run p95 | 2.31 s | 1.89 s |
+| 500 | Teams card (one request) | 2.64 s | 1.18 s |
+
+The 500-person burst had a shorter tail and fewer pages in the first two
+seconds. Screening, approval polling and heartbeat p95 rose in that burst.
+The single Teams sample per run cannot establish a percentile.
+[100-person comparison](https://github.com/Daybreak-AI-Labs/MVW-Second-Shift/actions/runs/45590301770/job/139122590551) ·
+[500-person comparison](https://github.com/Daybreak-AI-Labs/MVW-Second-Shift/actions/runs/45590301770/job/139122590124)

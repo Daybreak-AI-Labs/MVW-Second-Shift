@@ -26,7 +26,10 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from starlette.concurrency import run_in_threadpool
+from starlette.datastructures import MutableHeaders
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from . import __version__ as _dashboard_version
 from . import auth_metrics as _auth_metrics
@@ -184,7 +187,7 @@ templates.context_processors.append(_theme_context)
 
 
 # Context processor: every page template gets this response's CSP script nonce
-# (drawn per request by security_headers) for its inline <script> tags.
+# (drawn per request by the security-header middleware) for its inline <script> tags.
 def _csp_nonce_context(request: Request) -> dict:
     return {"csp_script_nonce": getattr(request.state, "csp_script_nonce", "")}
 
@@ -825,7 +828,7 @@ _DOCS_CSP = (
     "object-src 'none'"
 )
 
-# {script_nonce} is filled per response by security_headers.
+# {script_nonce} is filled per response by the security-header middleware.
 _DEFAULT_CSP = (
     "default-src 'self'; "
     "img-src 'self' data:; "
@@ -997,13 +1000,9 @@ async def _take_external_body_slot(needs_body_to_authenticate: bool, *, recorder
     return limiter
 
 
-@app.middleware("http")
 async def bound_public_governance_body(request: Request, call_next):
     """Authenticate bearers first and bound body reads for signed integrations."""
     path = route_path(request)
-    if not path.startswith("/api/v1/external/") or path == "/api/v1/external/openapi.json":
-        return await call_next(request)
-
     from .external_gateway import _gate, agent_credential, authenticate_agent
 
     try:
@@ -1048,6 +1047,25 @@ async def bound_public_governance_body(request: Request, call_next):
             admitted.release()
     except HTTPException as exc:
         return JSONResponse({"detail": exc.detail}, status_code=exc.status_code, headers=exc.headers)
+
+
+class _ExternalGovernanceMiddleware:
+    """Buffer bodies only on integrations that authenticate or limit them."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+        self.bounded = BaseHTTPMiddleware(app, dispatch=bound_public_governance_body)
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "http":
+            path = route_path(Request(scope))
+            if path.startswith("/api/v1/external/") and path != "/api/v1/external/openapi.json":
+                await self.bounded(scope, receive, send)
+                return
+        await self.app(scope, receive, send)
+
+
+app.add_middleware(_ExternalGovernanceMiddleware)
 
 
 # Safe methods skip the CSRF check (browsers send Origin/Referer
@@ -1161,8 +1179,7 @@ def _api_key_bearer_present(request: Request) -> bool:
         return False
 
 
-@app.middleware("http")
-async def bearer_auth(request: Request, call_next):
+def _browser_auth_refusal(request: Request) -> Response | None:
     path = route_path(request)
     if (
         path in _AUTH_EXEMPT
@@ -1208,7 +1225,7 @@ async def bearer_auth(request: Request, call_next):
         # yet; the single-use token IS the auth, verified (and same-origin-
         # gated on the consuming POST) in the route, which 404s when invites
         # are disabled.
-        return await call_next(request)
+        return None
     expected = _dashboard_token() or None
     if not expected:
         # Any configured identity mechanism disables legacy loopback-as-admin,
@@ -1236,7 +1253,7 @@ async def bearer_auth(request: Request, call_next):
                     },
                     status_code=403,
                 )
-            return await call_next(request)
+            return None
         # Client-bound / enterprise: loopback-trust (no-token) mode is DISABLED.
         # In a hosted/regulated deployment any process sharing the loopback
         # namespace (a sidecar, a co-located container, an SSRF pivot to
@@ -1264,7 +1281,7 @@ async def bearer_auth(request: Request, call_next):
         # verify it (it fails closed), so a script can reach Second Shift from
         # another computer without a shared static token.
         if _api_key_bearer_present(request):
-            return await call_next(request)
+            return None
         # No token configured: serve loopback only. An operator who binds
         # --host 0.0.0.0 without setting a token must NOT silently expose
         # run history, spend, and the control surface unauthenticated to
@@ -1306,7 +1323,7 @@ async def bearer_auth(request: Request, call_next):
                     },
                     status_code=403,
                 )
-            return await call_next(request)
+            return None
         # A VERIFIED invite-minted session is a real credential: accept it for
         # remote access in no-token mode (same-origin-gated like every other
         # cookie mode), so an invites-only deployment works over the network
@@ -1325,7 +1342,7 @@ async def bearer_auth(request: Request, call_next):
                         },
                         status_code=403,
                     )
-                return await call_next(request)
+                return None
         except Exception:  # pragma: no cover - invites must never open access
             pass
         _auth_metrics.record_auth_failure("remote_no_token")
@@ -1345,14 +1362,14 @@ async def bearer_auth(request: Request, call_next):
     # access logs, and any logging proxy in front. Require the
     # ``Authorization: Bearer`` header.
     if header_token and hmac.compare_digest(header_token.encode(), expected.encode()):
-        return await call_next(request)
+        return None
     if auth:
         # A non-static bearer may be an OIDC token in a mixed deployment. Let
         # the global dependency verify it; malformed/invalid credentials never
         # fall back to proxy or cookie identity there.
         if (header_token.startswith("ssdev1_") or _configured_oidc_bearer_present(request)
                 or _api_key_bearer_present(request)):
-            return await call_next(request)
+            return None
         _auth_metrics.record_auth_failure("bad_token")
         return JSONResponse({"detail": "unauthorized"}, status_code=401)
     if non_static_auth_configured():
@@ -1368,11 +1385,28 @@ async def bearer_auth(request: Request, call_next):
                 },
                 status_code=403,
             )
-        return await call_next(request)
+        return None
     # The bad/missing-bearer case — the credential-stuffing signal an alert
     # rule watches (a flood here means someone is probing the token).
     _auth_metrics.record_auth_failure("bad_token")
     return JSONResponse({"detail": "unauthorized"}, status_code=401)
+
+class _BrowserAuthMiddleware:
+    """Apply the browser admission and same-origin checks before routing."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "http":
+            refusal = _browser_auth_refusal(Request(scope))
+            if refusal is not None:
+                await refusal(scope, receive, send)
+                return
+        await self.app(scope, receive, send)
+
+
+app.add_middleware(_BrowserAuthMiddleware)
 
 
 def _wants_html(request: Request) -> bool:
@@ -1659,21 +1693,10 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
                         status_code=status, headers=headers)
 
 
-@app.middleware("http")
-async def security_headers(request: Request, call_next):
-    """Apply baseline browser-security headers to every response.
-
-    These are cheap, well-supported, and close a class of attacks
-    (clickjacking, MIME sniffing, Referer leakage, cross-origin
-    exfiltration) the dashboard had no defense against before.
-    """
-    # One script nonce per response, for the inline <script> tags the templates
-    # render (csp_script_nonce, see _csp_nonce_context).
-    script_nonce = secrets.token_urlsafe(16)
-    request.state.csp_script_nonce = script_nonce
-    response = await call_next(request)
-    response.headers.setdefault("X-Frame-Options", "DENY")
-    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+def _set_security_headers(request: Request, headers: MutableHeaders, script_nonce: str) -> None:
+    """Apply the response's security policy and keep explicit route headers."""
+    headers.setdefault("X-Frame-Options", "DENY")
+    headers.setdefault("X-Content-Type-Options", "nosniff")
     # "same-origin", NOT "no-referrer": under no-referrer the Fetch spec makes
     # browsers send "Origin: null" on same-origin form POST navigations, which
     # the CSRF guard (_is_same_origin) must reject — so every native form save
@@ -1682,15 +1705,15 @@ async def security_headers(request: Request, call_next):
     # (explicit Origin header) still passed. same-origin keeps the privacy win
     # (no Referer leaks to external sites) and restores Origin/Referer on
     # first-party requests.
-    response.headers.setdefault("Referrer-Policy", "same-origin")
-    response.headers.setdefault(
+    headers.setdefault("Referrer-Policy", "same-origin")
+    headers.setdefault(
         "Cross-Origin-Opener-Policy",
         "same-origin",
     )
     # Drop the ambient-capability attack surface. microphone=(self) because
     # the chat pages capture voice in-browser (getUserMedia); camera,
     # geolocation, and payment are never used, so deny them outright.
-    response.headers.setdefault(
+    headers.setdefault(
         "Permissions-Policy",
         "geolocation=(), camera=(), payment=(), microphone=(self)",
     )
@@ -1698,7 +1721,7 @@ async def security_headers(request: Request, call_next):
     # JSON aren't left in the browser's back/forward cache or a shared proxy
     # after logout. setdefault preserves the explicit caching the static-asset
     # and SSE routes already set (public max-age / no-cache).
-    response.headers.setdefault("Cache-Control", "no-store")
+    headers.setdefault("Cache-Control", "no-store")
     # HSTS only when the request actually arrived over TLS (directly or via a
     # terminating proxy) — never on plain-HTTP loopback dev, which HSTS would
     # otherwise pin to https and break.
@@ -1706,7 +1729,7 @@ async def security_headers(request: Request, call_next):
         request.url.scheme == "https"
         or request.headers.get("x-forwarded-proto", "").split(",")[0].strip() == "https"
     ):
-        response.headers.setdefault(
+        headers.setdefault(
             "Strict-Transport-Security",
             "max-age=31536000; includeSubDomains",
         )
@@ -1727,8 +1750,32 @@ async def security_headers(request: Request, call_next):
         csp = _DOCS_CSP.format(script_nonce=script_nonce)
     else:
         csp = _DEFAULT_CSP.format(script_nonce=script_nonce)
-    response.headers.setdefault("Content-Security-Policy", csp)
-    return response
+    headers.setdefault("Content-Security-Policy", csp)
+
+
+class _SecurityHeadersMiddleware:
+    """Add headers before sending the response body directly to the server."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        request = Request(scope)
+        script_nonce = secrets.token_urlsafe(16)
+        request.state.csp_script_nonce = script_nonce
+
+        async def send_with_headers(message):
+            if message["type"] == "http.response.start":
+                _set_security_headers(request, MutableHeaders(scope=message), script_nonce)
+            await send(message)
+
+        await self.app(scope, receive, send_with_headers)
+
+
+app.add_middleware(_SecurityHeadersMiddleware)
 
 
 # ----- browser-extension CORS gate (extensions/browser) -----
@@ -1771,25 +1818,23 @@ def _allowed_extension_origin(request: Request) -> str | None:
     return None
 
 
-@app.middleware("http")
-async def tenant_pinning(request: Request, call_next):
-    """Reset any per-request tenant pin established by authentication.
+class _TenantPinningMiddleware:
+    """Restore any HTTP request tenant pin after the response or cancellation."""
 
-    The actual pin is set inside ``require_principal`` after FastAPI has resolved
-    the verified caller but before route handlers run. This outer middleware owns
-    cleanup so the ContextVar token never leaks across requests/tasks.
-    """
-    try:
-        return await call_next(request)
-    finally:
-        token = getattr(request.state, "tenant_pin_token", None)
-        if token is not None:
-            try:
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            if scope["type"] == "http" and (token := scope.get("state", {}).get("tenant_pin_token")) is not None:
                 from maverick.paths import reset_tenant
 
                 reset_tenant(token)
-            except Exception:  # pragma: no cover
-                pass
+
+
+app.add_middleware(_TenantPinningMiddleware)
 
 
 @app.get("/external-agents", response_class=HTMLResponse)
