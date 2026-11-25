@@ -78,7 +78,7 @@ nearing its quota, and log queries on the app's own warnings that people would o
 unavailable). Plain-language alert names and descriptions. Document each alert and what to do
 when it fires in `docs/deploy-azure.md`.
 
-## 5. A check to run right after each deployment
+## 5. A check to run right after each deployment (merged in PR #12)
 
 Branch `codex/post-deploy-check`. `deploy/azure/check-deployment.sh <public origin>`: the
 health endpoints answer; sign-in redirects to the tenant's Entra login; the public agent schema
