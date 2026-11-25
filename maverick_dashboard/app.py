@@ -931,6 +931,11 @@ async def _bounded_external_body(request: Request) -> bytes:
         raise HTTPException(408, "external request body timed out") from exc
 
 
+def _gateway_busy() -> HTTPException:
+    return HTTPException(503, "external request capacity is busy",
+                         headers={"Retry-After": "1", "X-Second-Shift-Admission": "busy"})
+
+
 async def _take_external_body_slot(needs_body_to_authenticate: bool):
     from .worker_coordination import active_root, take_slot
 
@@ -941,14 +946,14 @@ async def _take_external_body_slot(needs_body_to_authenticate: bool):
         deadline = time.monotonic() + 1.0
         while (slot := take_slot(root, namespace, limit)) is None:
             if time.monotonic() >= deadline:
-                raise HTTPException(503, "external request capacity is busy")
+                raise _gateway_busy()
             await asyncio.sleep(0.02)
         return slot
     limiter = _external_body_limiter(needs_body_to_authenticate)
     try:
         await asyncio.wait_for(limiter.acquire(), timeout=1.0)
     except TimeoutError as exc:
-        raise HTTPException(503, "external request capacity is busy") from exc
+        raise _gateway_busy() from exc
     return limiter
 
 

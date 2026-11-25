@@ -12,7 +12,9 @@ it only when an OIDC token is actually verified.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import os
+from contextlib import contextmanager
 
 from fastapi import HTTPException, Request, WebSocket
 from starlette.concurrency import run_in_threadpool
@@ -673,6 +675,19 @@ def role_for_principal(principal: str | None, *, request: Request | None = None,
     return global_role_for_principal(principal, request=request, directory=directory)
 
 
+_DISPLAY_ROLES = contextvars.ContextVar("second_shift_display_roles", default=None)
+
+
+@contextmanager
+def display_role_reads():
+    """Share each display role for one template render."""
+    token = _DISPLAY_ROLES.set({})
+    try:
+        yield
+    finally:
+        _DISPLAY_ROLES.reset(token)
+
+
 def _role_of_caller(lookup, request: Request, principal: str | None) -> str | None:
     """``lookup(principal)`` for the caller of ``request``, where ``lookup`` is
     :func:`role_for_principal` or :func:`global_role_for_principal`.
@@ -682,9 +697,17 @@ def _role_of_caller(lookup, request: Request, principal: str | None) -> str | No
     with the principal alone, exactly as before."""
     from . import sign_in_roles
 
+    roles = _DISPLAY_ROLES.get()
+    key = (id(request), lookup, principal)
+    if roles is not None and key in roles:
+        return roles[key]
     if sign_in_roles.carried(request, principal) is None:
-        return lookup(principal)
-    return lookup(principal, request=request)
+        role = lookup(principal)
+    else:
+        role = lookup(principal, request=request)
+    if roles is not None:
+        roles[key] = role
+    return role
 
 
 def caller_role(request: Request) -> str | None:

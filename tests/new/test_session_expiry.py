@@ -166,3 +166,58 @@ def test_the_timer_script_calls_only_the_three_session_addresses():
     script = (Path(maverick_dashboard.__file__).parent / "static" / "second-shift-session.js").read_text(encoding="utf-8")
     assert sorted(set(re.findall(r"mvFetchJSON\('([^']+)'", script))) == [
         "/auth/session/activity", "/auth/session/renew", "/auth/session/status"]
+
+
+def test_render_reads_the_session_once_but_the_next_request_observes_revocation(client, monkeypatch):
+    from maverick.web_session import verify_session
+    from maverick_dashboard import oidc_login, session_registry
+
+    _signed_in(client)
+    sid = verify_session(client.cookies.get(oidc_login.SESSION_COOKIE), SESSION_SECRET)["sid"]
+    checks = []
+    current = session_registry.current
+
+    def recorded(sid, *, principal):
+        checks.append(sid)
+        return current(sid, principal=principal)
+
+    monkeypatch.setattr(session_registry, "current", recorded)
+    page = client.get("/external-agents")
+    assert page.status_code == 200
+    assert _meta(page.text, "second-shift-session-expires")
+    assert checks == [sid]
+
+    session_registry.revoke(sid, by="test")
+    assert client.get("/auth/session/status").status_code == 401
+    assert checks == [sid, sid]
+
+
+def test_render_reads_global_role_only_for_its_two_display_scopes(client, monkeypatch):
+    from maverick_dashboard import rbac, template_runtime
+
+    rendered = False
+    observed = []
+    get_role = rbac.get_stored_role
+    reply = template_runtime._Templates.TemplateResponse
+
+    def tracked_render(self, *args, **kwargs):
+        nonlocal rendered
+        rendered = True
+        try:
+            return reply(self, *args, **kwargs)
+        finally:
+            rendered = False
+
+    def tracked_role(principal):
+        if rendered:
+            observed.append(principal)
+        return get_role(principal)
+
+    monkeypatch.setattr(template_runtime._Templates, "TemplateResponse", tracked_render)
+    monkeypatch.setattr(rbac, "get_stored_role", tracked_role)
+    _signed_in(client)
+    assert client.get("/external-agents").status_code == 200
+    assert 0 < len(observed) <= 2
+    observed.clear()
+    assert client.get("/external-agents").status_code == 200
+    assert 0 < len(observed) <= 2

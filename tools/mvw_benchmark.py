@@ -35,7 +35,8 @@ class _StartupPipe:
 
 def inside():
     """Run only inside the local benchmark container. Credentials travel over pipes."""
-    dsn, people, pool_size, profile, expected_cpu, expected_memory, workers = json.loads(sys.stdin.readline())
+    (dsn, people, pool_size, profile, expected_cpu, expected_memory, workers,
+     population, recorders) = json.loads(sys.stdin.readline())
     quota, period = Path("/sys/fs/cgroup/cpu.max").read_text().split()
     memory = Path("/sys/fs/cgroup/memory.max").read_text().strip()
     if quota == "max" or int(quota) / int(period) != expected_cpu or memory != str(expected_memory):
@@ -45,7 +46,7 @@ def inside():
         with TemporaryDirectory(prefix="second-shift-mvw-") as directory:
             if profile:
                 recorder.enable()
-            run_app(_StartupPipe(), directory, dsn, people, pool_size, workers)
+            run_app(_StartupPipe(), directory, dsn, people, pool_size, workers, population, recorders)
     finally:
         if profile:
             recorder.disable()
@@ -74,11 +75,27 @@ class Workload:
         self.team_token = team_token
         self.timings = defaultdict(list)
         self.errors = defaultdict(Counter)
+        self.retries = Counter()
 
-    async def request(self, name, method, path, headers, payload=None):
+    def report(self, target):
+        result = summary(self.timings, self.errors, target)
+        for name, item in result.items():
+            if self.retries[name]:
+                item["retried"] = self.retries[name]
+        return result
+
+    async def request(self, name, method, path, headers, payload=None, *, retry_busy=False):
         began = time.perf_counter()
         try:
-            reply = await self.client.request(method, path, headers=headers, json=payload)
+            for attempt in range(3):
+                reply = await self.client.request(method, path, headers=headers, json=payload)
+                marked_busy = (reply.status_code == 503
+                               and reply.headers.get("X-Second-Shift-Admission") == "busy"
+                               and reply.headers.get("Retry-After") == "1")
+                if not retry_busy or not marked_busy or attempt == 2:
+                    break
+                self.retries[name] += 1
+                await asyncio.sleep(1)
             expected = 201 if name == "Report run" else 200
             if reply.status_code != expected:
                 code = str(reply.status_code)
@@ -89,6 +106,10 @@ class Workload:
                 self.errors[name]["screen refused"] += 1
             elif name == "Teams card" and "Rejected by" not in reply.text:
                 self.errors[name]["decision not recorded"] += 1
+            elif name == "Recorder instructions" and reply.json().get("record") is not True:
+                self.errors[name]["recording not active"] += 1
+            elif name == "Recorder hand-over" and reply.json().get("accepted") != 1:
+                self.errors[name]["activity not accepted"] += 1
         except (ValueError, httpx.HTTPError) as error:
             self.errors[name][type(error).__name__] += 1
         finally:
@@ -99,11 +120,12 @@ class Workload:
         await self.request(name, "GET", path, {"Cookie": f"ss_session={cookie}"})
 
     async def agent(self, headers, key):
-        await self.request("Screen", "POST", "/api/v1/external/screen", headers, {"tool": "load_read", "risk": "low"})
+        await self.request("Screen", "POST", "/api/v1/external/screen", headers, {"tool": "load_read", "risk": "low"},
+                           retry_busy=True)
         await self.request("Report run", "POST", "/api/v1/external/runs", headers, {
             "title": "Local MVW load check", "outcome": "success", "tools": ["load_read"],
             "tool_calls": 1, "idempotency_key": key,
-        })
+        }, retry_busy=True)
 
     async def teams(self, card):
         await self.request("Teams card", "POST", "/webhook/teams", {"Authorization": f"Bearer {self.team_token}"}, card)
@@ -127,18 +149,19 @@ async def serial(client, token, person, key, cards):
             await work.page(person, index)
         await work.agent(key, f"serial-{sequence}")
         await work.teams(card)
-    return summary(work.timings, work.errors, 200)
+    return work.report(200)
 
 
 async def burst(client, token, people, size):
     work = Workload(client, token)
     await asyncio.gather(*(work.page(person, index) for index, person in enumerate(people[:size])))
-    return summary(work.timings, work.errors, 2000)
+    return work.report(2000)
 
 
 async def steady(client, token, people, keys, cards, seconds):
     work = Workload(client, token)
     period = 30
+    run_id = uuid.uuid4().hex
     loop = asyncio.get_running_loop()
     starts = loop.time()
 
@@ -158,27 +181,79 @@ async def steady(client, token, people, keys, cards, seconds):
     await asyncio.gather(
         *(every(index, len(people), lambda turn, p=person, i=index: work.page(p, i + turn))
           for index, person in enumerate(people)),
-        *(every(index, len(keys), lambda turn, h=key, i=index: work.agent(h, f"steady-{i}-{turn}"))
+        *(every(index, len(keys), lambda turn, h=key, i=index: work.agent(h, f"steady-{run_id}-{i}-{turn}"))
           for index, key in enumerate(keys)),
         *(card_request(index, card) for index, card in enumerate(cards)),
     )
-    return summary(work.timings, work.errors, 1000)
+    return work.report(1000)
+
+
+async def recorder_hour(client, token, recorders, seconds):
+    """Replay the recorder's five-second poll and its 30-second flush."""
+    from recorder.second_shift_recorder import FLUSH_SECONDS
+
+    work = Workload(client, token)
+    poll = 5.0  # docs/ekko.md default recorder poll
+    loop = asyncio.get_running_loop()
+    starts = loop.time()
+    wall_start = time.time()
+
+    async def recorder(index, key, session):
+        offset = index * poll / len(recorders)
+        headers = {"Authorization": f"Bearer {key}"}
+        for turn in range(math.ceil(seconds / poll)):
+            when = offset + turn * poll
+            if when >= seconds:
+                break
+            await asyncio.sleep(max(0, starts + when - loop.time()))
+            await work.request("Recorder instructions", "GET", "/api/v1/external/ekko/instructions", headers)
+            if turn and turn % round(FLUSH_SECONDS / poll) == 0:
+                await work.request("Recorder hand-over", "POST", "/api/v1/external/ekko/handover", headers, {
+                    "session_id": session, "batch_id": f"batch-{turn:04d}", "account": f"{index:064x}",
+                    "activities": [{"app": "excel" if turn % 12 else "word", "action": "switch",
+                                    "duration_seconds": FLUSH_SECONDS, "occurred_at": wall_start + when}],
+                })
+
+    await asyncio.gather(*(recorder(index, *item) for index, item in enumerate(recorders)))
+    return work.report(1000)
+
+
+def client_for(origin, *, connections=800):
+    return httpx.AsyncClient(base_url=origin, trust_env=False, timeout=60,
+                             limits=httpx.Limits(max_connections=connections, max_keepalive_connections=connections))
+
+
+async def measure_steady(payload, args):
+    origin, administrator, people, token = payload[:4]
+    async with client_for(origin) as client:
+        await wait_for_ready(client)
+        if args.recorders:
+            return {"recorder": await recorder_hour(client, token, payload[4], args.seconds)}
+        keys, cards = await prepare(client, origin, administrator, args.agents, args.cards)
+        return {"steady": await steady(client, token, people, keys, cards, args.seconds)}
 
 
 async def measure(payload, args):
-    origin, administrator, people, token = payload
-    async with httpx.AsyncClient(base_url=origin, trust_env=False, timeout=180,
-                                 limits=httpx.Limits(max_connections=800, max_keepalive_connections=150)) as client:
+    origin, administrator, people, token = payload[:4]
+    async with client_for(origin) as client:
         await wait_for_ready(client)
+        if args.recorders:
+            return {"recorder": await recorder_hour(client, token, payload[4], args.seconds)}
         agents = 1 if args.profile else args.agents
-        card_count = 4 if args.profile else 14
+        card_count = 4 if args.profile else 24 if args.mvw else 14
         keys, cards = await prepare(client, origin, administrator, agents, card_count)
         for _, path in PAGES:
             expect(await client.get(path, headers={"Cookie": f"ss_session={people[0]}"}), 200, "Page warm-up")
         result = {"serial": await serial(client, token, people[0], keys[0], cards[:4])}
         if not args.profile:
             result["burst"] = await burst(client, token, people, args.burst)
-            result["steady"] = await steady(client, token, people, keys, cards[4:], args.seconds)
+            result["steady"] = await steady(client, token, people, keys, cards[4:14], args.seconds)
+            if args.mvw:
+                result["burst500"] = await burst(client, token, people, 500)
+                result["steady25"] = await steady(client, token, people, keys[:25], cards[14:], args.seconds)
+                overload = Workload(client, token)
+                await asyncio.gather(*(overload.agent(headers, f"overload-{index}") for index, headers in enumerate(keys)))
+                result["overload"] = overload.report(2000)
     return result
 
 
@@ -194,10 +269,17 @@ def main():
     parser.add_argument("--burst", type=int, default=100)
     parser.add_argument("--seconds", type=int, default=60)
     parser.add_argument("--profile", action="store_true")
+    parser.add_argument("--mvw", action="store_true", help="also measure 500 arrivals and 25 agents")
+    parser.add_argument("--population", type=int, default=0)
+    parser.add_argument("--recorders", type=int, default=0)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if not 1 <= args.burst <= args.people or min(args.agents, args.pool_size, args.seconds, args.workers) < 1:
         parser.error("Choose positive workload counts and a burst no larger than the number of people.")
+    if (not 0 <= args.population <= 50_000 or not 0 <= args.recorders <= 2_500 or args.seconds > 3600
+            or (args.mvw and (args.people < 500 or args.agents < 25))
+            or (args.profile and (args.mvw or args.recorders))):
+        parser.error("Use realistic workload counts and run the profiler and recorder load separately.")
     dsn = os.environ.get("SECOND_SHIFT_LOAD_DSN")
     if not dsn:
         parser.error("Set SECOND_SHIFT_LOAD_DSN for the disposable loopback PostgreSQL service.")
@@ -210,14 +292,14 @@ def main():
             "--cpus", str(args.cpus), "--memory", f"{args.memory_gib}g", "--memory-swap", f"{args.memory_gib}g",
             "--volume", f"{Path.cwd()}:/checkout:ro",
             "--volume", f"{output.parent}:/benchmark",
-            "--workdir", "/checkout", "--user", "0:0", "--entrypoint", "python", args.image,
+            "--workdir", "/checkout", *(("--user", "0:0") if args.profile else ()), "--entrypoint", "python", args.image,
             "-c", "from tools.mvw_benchmark import inside; inside()",
         ]
         with subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True) as process:
             try:
                 process.stdin.write(json.dumps([
                     isolated_dsn, 1 if args.profile else args.people, args.pool_size, args.profile,
-                    args.cpus, args.memory_gib * 1024 ** 3, args.workers,
+                    args.cpus, args.memory_gib * 1024 ** 3, args.workers, args.population, args.recorders,
                 ]) + "\n")
                 process.stdin.close()
                 startup = process.stdout.readline()

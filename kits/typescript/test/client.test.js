@@ -104,3 +104,13 @@ test("starts, checks stop, finishes, and reports the complete run", async t => {
   assert.deepEqual(requests[3][3], { ...result, tool_calls: 2 });
   assert.deepEqual(requests[4][3], { title: "Check item", ...result, tool_calls: 2 });
 });
+
+test("retries only a marked gateway capacity refusal", async t => {
+  const [client, requests] = await mock(t,
+    [503, {}, { "X-Second-Shift-Admission": "busy", "Retry-After": "0" }],
+    [200, { allowed: true }],
+    [503, {}, { "Retry-After": "0" }]);
+  assert.equal(await client.screen("lookup", "", "low"), true);
+  assert.equal(await client.screen("lookup", "", "low"), false);
+  assert.equal(requests.length, 3);
+});

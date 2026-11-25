@@ -22,7 +22,7 @@ concurrency:
 jobs:
   benchmark:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 85
     services:
       postgres:
         image: postgres:16
@@ -48,6 +48,7 @@ jobs:
       - run: docker build -f deploy/azure/Dockerfile -t second-shift:benchmark .
       - name: Measure and profile the app at the Azure CPU and memory limits
         env:
+          BENCHMARK_TITLE: ${{ github.event.head_commit.message }}
           SECOND_SHIFT_LOAD_DSN: postgresql://postgres:local-benchmark-only@127.0.0.1:${{ job.services.postgres.ports['5432'] }}/postgres
         run: |
           mkdir -p "$RUNNER_TEMP/second-shift-benchmark"
@@ -56,8 +57,16 @@ jobs:
           memory=$(sed -nE "s/.*memory: '([0-9]+)Gi'.*/\1/p" deploy/azure/app.bicep)
           workers=$(sed -nE 's/^param dashboardWorkers int = ([0-9]+)$/\1/p' deploy/azure/app.bicep)
           pool=$(sed -nE "s/.*SECOND_SHIFT_PG_POOL_SIZE: '([0-9]+)'.*/\1/p" deploy/azure/app.bicep)
+          args=()
+          if [ "$GITHUB_REF_NAME" = codex/load-check-mvw ]; then
+            args=(--mvw --population 20000 --seconds 120)
+            case "$BENCHMARK_TITLE" in
+              *"Measure recorder hour"*) args=(--recorders 2000 --population 20000 --seconds 3600) ;;
+              *"Measure recorder pilot"*) args=(--recorders 2000 --population 20000 --seconds 65) ;;
+            esac
+          fi
           python -m tools.mvw_benchmark --cpus "$cpu" --memory-gib "$memory" \
-            --workers "$workers" --pool-size "$pool" --output "$out/measure.json"
+            --workers "$workers" --pool-size "$pool" "${args[@]}" --output "$out/measure.json"
           OUT="$out" python - <<'PY'
           import json
           import os
