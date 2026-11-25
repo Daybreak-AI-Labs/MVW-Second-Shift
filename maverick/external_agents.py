@@ -1153,7 +1153,8 @@ def _meter_spend(meta: dict, gid: int, *, cost: float, idem: str,
     return over_budget
 
 
-def start_run(agent_id: str, run: dict, *, shield: Any | None = None, world_factory=None) -> dict:
+def start_run(agent_id: str, run: dict, *, shield: Any | None = None, world_factory=None,
+              halt_world_factory=None) -> dict:
     """Open a LIVE external run on the Operating Record.
 
     The goal lands ``active`` under ``agent:<id>`` so Oversight sees the work
@@ -1163,7 +1164,7 @@ def start_run(agent_id: str, run: dict, *, shield: Any | None = None, world_fact
     with a restart marker. Schema: ``{title, summary?, department?}``."""
     if not enabled():
         raise ExternalAgentsError("external agents plane is disabled")
-    if _emergency_stop_on():
+    if _emergency_stop_on(halt_world_factory):
         raise ExternalAgentsError("denied: the emergency stop is on; nothing is allowed until an administrator lifts it")
     from .agent_trust import decide_inbound, record_denied
     decision = decide_inbound(agent_id, enforced=True)
@@ -1215,7 +1216,7 @@ def start_run(agent_id: str, run: dict, *, shield: Any | None = None, world_fact
             "heartbeat_seconds": heartbeat_seconds}
 
 
-def heartbeat(agent_id: str, goal_id: int, *, world_factory=None) -> dict:
+def heartbeat(agent_id: str, goal_id: int, *, world_factory=None, halt_world_factory=None) -> dict:
     """Keep a live run alive AND ask permission to continue.
 
     Returns ``{"continue": bool, "reason": str}``. ``continue: false`` is
@@ -1225,7 +1226,7 @@ def heartbeat(agent_id: str, goal_id: int, *, world_factory=None) -> dict:
     refreshing its liveness anyway and gets reclaimed."""
     if not enabled():
         return {"continue": False, "reason": "external agents plane disabled"}
-    if _emergency_stop_on():
+    if _emergency_stop_on(halt_world_factory):
         return {"continue": False, "reason": "the emergency stop is on; nothing is allowed until an administrator lifts it"}
     from .agent_trust import decide_inbound
     decision = decide_inbound(agent_id, enforced=True)
@@ -1366,12 +1367,12 @@ def _observe_drift_run(agent_id: str, run: dict, *, outcome: str, cost: float) -
 
 
 def screen(agent_id: str, tool: str, *, detail: str = "", risk: str | None = None,
-           shield: Any | None = None, world_factory=None) -> dict:
+           shield: Any | None = None, world_factory=None, halt_world_factory=None) -> dict:
     """Decide one proposed external action BEFORE the agent takes it (see
     :func:`_screen_decision`), then pass the verdict to drift observation:
     once per call, whichever path produced it."""
     verdict = _screen_decision(agent_id, tool, detail=detail, risk=risk, shield=shield,
-                               world_factory=world_factory)
+                               world_factory=world_factory, halt_world_factory=halt_world_factory)
     _observe_drift_screen(agent_id, tool, verdict)
     return verdict
 
@@ -1382,7 +1383,7 @@ def _screen_decision(
     *,
     detail: str = "",
     risk: str | None = None,
-    shield: Any | None = None, world_factory=None,
+    shield: Any | None = None, world_factory=None, halt_world_factory=None,
 ) -> dict:
     """Decide one proposed external action BEFORE the agent takes it.
 
@@ -1402,7 +1403,7 @@ def _screen_decision(
     if not enabled():
         return _screen_verdict(agent_id, tool, False, "disabled",
                                "external agents plane is disabled")
-    if _emergency_stop_on():
+    if _emergency_stop_on(halt_world_factory):
         return _screen_verdict(agent_id, tool, False, "halted",
                                "the emergency stop is on; nothing is allowed until an administrator lifts it")
     from .safety.tool_risk import risk_rank
@@ -1689,13 +1690,16 @@ def _organisation_approval_floor() -> str:
         return "high"
 
 
-def _emergency_stop_on() -> bool:
+def _emergency_stop_on(world_factory=None) -> bool:
     """Whether the emergency stop is on. A stop that cannot be read counts as
     on: an outside agent is refused, never waved through."""
     from . import killswitch
 
     try:
-        killswitch.check(fail_closed=True)
+        if world_factory is None:
+            killswitch.check(fail_closed=True)
+        else:
+            killswitch.check(fail_closed=True, world_factory=world_factory)
     except killswitch.Halted:
         return True
     except Exception:

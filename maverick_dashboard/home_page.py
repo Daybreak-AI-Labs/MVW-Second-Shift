@@ -215,9 +215,8 @@ def _platforms(section: dict) -> None:
 
     if not _agents_enabled() or not agent_watch.enabled():
         return
-    status = agent_watch.status()
+    status, found = agent_watch.dashboard_snapshot()
     claimed = {str(agent.get("external_ref") or "").casefold() for agent in _roster()} - {""}
-    found = agent_watch.unenrolled()
     waiting = [entry for entry in found if entry["external_ref"].casefold() not in claimed]
     link = f"{_AGENTS_PAGE}#platform-checks"
     items = []

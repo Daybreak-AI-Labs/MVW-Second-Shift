@@ -341,7 +341,8 @@ def external_run_start(
     _rate_limit(agent_id, "runs")
     from maverick import external_agents as xa
     try:
-        out = xa.start_run(agent_id, payload.model_dump(), shield=_shield(), world_factory=_world)
+        out = xa.start_run(agent_id, payload.model_dump(), shield=_shield(),
+                           world_factory=_world, halt_world_factory=_world)
     except xa.ExternalAgentsError as e:
         raise HTTPException(status_code=403, detail=str(e)) from e
     return {"ok": True, **out}
@@ -355,7 +356,7 @@ def external_run_heartbeat(
     false`` is the kill switch reaching mid-flight work."""
     _rate_limit(agent_id, "heartbeat")
     from maverick import external_agents as xa
-    return xa.heartbeat(agent_id, goal_id, world_factory=_world)
+    return xa.heartbeat(agent_id, goal_id, world_factory=_world, halt_world_factory=_world)
 
 
 @router.post("/runs/{goal_id}/finish")
@@ -383,7 +384,8 @@ def external_screen(
     from maverick import external_agents as xa
 
     return xa.screen(agent_id, payload.tool, detail=payload.detail,
-                     risk=payload.risk or None, shield=_shield(), world_factory=_world)
+                     risk=payload.risk or None, shield=_shield(),
+                     world_factory=_world, halt_world_factory=_world)
 
 
 @router.get("/approvals/{approval_id}")

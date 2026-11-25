@@ -4,19 +4,21 @@
   {#- What needs the signed-in person today. The page only shows: every item
       links to the page where it is dealt with. A section whose source could
       not be read says so in one line; the others still show. -#}
-  <h1 class="page-title">Home</h1>
-  <p class="page-subtitle">What needs you today, most serious first. Each item opens the place where you deal with it.</p>
-
-  <div class="panel" id="home-summary">
-    <p style="margin: 0;">
+  <header class="home-hero" id="home-summary">
+    <div class="home-hero__art" aria-hidden="true"></div>
+    <div class="home-hero__content">
+      <h1 class="page-title" id="home-title">Home</h1>
+      <p class="home-hero__subtitle">What needs your attention today.</p>
       {% if home.attention %}<span class="badge failure">{{ home.attention }} {{ 'item needs' if home.attention == 1 else 'items need' }} you</span>
       {% elif home.all_clear %}<span class="badge active">All clear</span>
       {% else %}<span class="badge pending">Some things could not be read</span>{% endif %}
-      {% if home.can_approve %}<a class="btn btn--ghost" href="/approvals">Approvals</a>{% endif %}
-      <a class="btn btn--ghost" href="/external-agents">Outside agents</a>
-      {% if home.can_audit %}<a class="btn btn--ghost" href="/audit">Audit trail</a>{% endif %}
-    </p>
-  </div>
+      <div class="home-hero__actions">
+        {% if home.can_approve %}<a class="btn btn--primary" href="/approvals">Approvals</a>{% endif %}
+        {% if can_open_page('/external-agents') %}<a class="btn{% if not home.can_approve %} btn--primary{% endif %}" href="/external-agents">Outside agents</a>{% endif %}
+        {% if home.can_audit %}<a class="btn btn--ghost" href="/audit">Audit trail</a>{% endif %}
+      </div>
+    </div>
+  </header>
 
   {% for line in home.failed %}
   <div class="panel" role="status"><p style="margin: 0;"><span class="badge pending">Not shown</span> {{ line }} An administrator should look at the server log.</p></div>
@@ -31,22 +33,24 @@
   </div>
   {% endif %}
 
+  <div class="home-queue">
   {% for section in home.sections if section.lines %}
-  <div class="section-head"><h2 id="home-{{ section.key }}-title">{{ section.title }}</h2></div>
-  <div class="panel" id="home-{{ section.key }}" aria-labelledby="home-{{ section.key }}-title">
-    <ul style="list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-3);">
+  <section class="panel home-queue__card" id="home-{{ section.key }}" aria-labelledby="home-{{ section.key }}-title">
+    <h2 id="home-{{ section.key }}-title">{{ section.title }}</h2>
+    <ul class="home-queue__items">
       {% for item in section.lines %}
       <li data-severity="{{ item.severity }}">
         <a href="{{ item.href }}"><strong>{{ item.text }}</strong></a>
         <span class="badge {{ 'failure' if item.severity == 'high' else 'pending' }}">{{ 'Serious' if item.severity == 'high' else 'Needs a look' }}</span>
-        {% if item.detail %}<br><span class="muted" style="font-size: var(--text-sm);">{{ item.detail }}</span>{% endif %}
+        {% if item.detail %}<p class="home-queue__detail">{{ item.detail }}</p>{% endif %}
       </li>
       {% endfor %}
     </ul>
-    <p style="margin: var(--space-3) 0 0;">
+    <p class="home-queue__footer">
       {% if section.count > section.lines | length %}<span class="muted">Showing {{ section.lines | length }} of {{ section.count }}. </span>{% endif %}
       <a href="{{ section.link }}">{{ section.link_label }}</a>
     </p>
-  </div>
+  </section>
   {% endfor %}
+  </div>
 {% endblock %}

@@ -373,7 +373,7 @@ def _file_halt_active(
 
 
 def _shared_halt_active(
-    min_interval: float = 2.0, *, fail_closed: bool = False,
+    min_interval: float = 2.0, *, fail_closed: bool = False, world_factory=None,
 ) -> tuple[str, str] | None:
     """Read the cluster-wide halt with caller-selected outage posture.
 
@@ -413,11 +413,14 @@ def _shared_halt_active(
             _last_shared_halt = None
             _last_shared_strict_ok = fail_closed
             return None
-        with _shared_world_lock:
-            if _shared_world is None:
-                from .world_model import open_world
-                _shared_world = open_world()
-            world = _shared_world
+        if world_factory is not None:
+            world = world_factory()
+        else:
+            with _shared_world_lock:
+                if _shared_world is None:
+                    from .world_model import open_world
+                    _shared_world = open_world()
+                world = _shared_world
         state = world.active_halt()
         current = (
             (state.get("reason") or "cluster halt", state.get("source") or "shared")
@@ -428,9 +431,10 @@ def _shared_halt_active(
         return current
     except Exception as exc:  # reconnect next time; posture is caller-selected
         close = None
-        with _shared_world_lock:
-            if world is not None and world is _shared_world:
-                close, _shared_world = _shared_world, None
+        if world_factory is None:
+            with _shared_world_lock:
+                if world is not None and world is _shared_world:
+                    close, _shared_world = _shared_world, None
         if close is not None:
             with suppress(Exception):
                 close.close()
@@ -441,7 +445,7 @@ def _shared_halt_active(
     return _last_shared_halt
 
 
-def check(*, force_refresh: bool = False, fail_closed: bool = False) -> None:
+def check(*, force_refresh: bool = False, fail_closed: bool = False, world_factory=None) -> None:
     """Raise ``Halted`` if any halt source is active.
 
     Hot agent boundaries use the normal one/two-second file/shared caches.
@@ -467,7 +471,7 @@ def check(*, force_refresh: bool = False, fail_closed: bool = False) -> None:
     ):
         raise Halted(f"HALT file present at {_halt_file_path()}", "file")
     shared = _shared_halt_active(
-        min_interval=shared_interval, fail_closed=fail_closed,
+        min_interval=shared_interval, fail_closed=fail_closed, world_factory=world_factory,
     )
     if shared is not None:
         raise Halted(shared[0], shared[1])

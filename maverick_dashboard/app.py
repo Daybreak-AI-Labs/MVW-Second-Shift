@@ -131,7 +131,7 @@ templates.env.globals.setdefault("font", "default")
 templates.env.globals.setdefault("lang", "en")
 templates.env.globals.setdefault("page_lang", "en")
 templates.env.globals.setdefault("density", "comfortable")
-templates.env.globals.setdefault("glass", "off")
+templates.env.globals.setdefault("glass", "on")
 templates.env.globals.setdefault("custom_theme_css", "")
 templates.env.globals.setdefault("custom_theme_names", [])
 templates.env.globals.setdefault("dir", "ltr")
@@ -170,7 +170,7 @@ def _theme_context(request: Request) -> dict:
         "theme_color": "#04050A",
         "font": "default",
         "density": "comfortable",
-        "glass": "off",
+        "glass": "on",
         "custom_theme_css": "",
         "custom_theme_names": [],
         "lang": "en",
@@ -1906,8 +1906,7 @@ def _platform_checks_view(claimed: frozenset[str]) -> dict | None:
     try:
         from maverick import agent_watch
 
-        status = agent_watch.status()
-        found = agent_watch.unenrolled()
+        status, found = agent_watch.dashboard_snapshot()
         waiting = [entry for entry in found if entry["external_ref"].casefold() not in claimed]
         status["not_enrolled_count"] = max(0, status["not_enrolled_count"] - (len(found) - len(waiting)))
         return {"status": status, "not_enrolled": waiting}
