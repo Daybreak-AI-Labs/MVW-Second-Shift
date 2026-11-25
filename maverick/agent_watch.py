@@ -1039,8 +1039,10 @@ def status() -> dict:
     its settings can be used, and if not why), its last attempt, last success
     and last error, and the counts from its last successful run. Reads only;
     raises :class:`AgentWatchStoreError` when the record cannot be read."""
-    cfg = settings()
-    store = _load_store()
+    return _status(settings(), _load_store())
+
+
+def _status(cfg: dict, store: dict) -> dict:
     active = _active(cfg)
     rows = [_platform_row(name, store) for name in cfg["platforms"]]
     reason = "" if active else (_OFF_REASON if not cfg["enable"] else _GOVERNANCE_OFF_REASON)
@@ -1078,9 +1080,18 @@ def unenrolled() -> list[dict]:
     is the value to give an agent at enrollment to claim it. Each platform's
     part is as of its last successful run and holds at most a fixed number of
     entries (``status`` gives the full count). Reads only."""
-    store = _load_store()
+    return _unenrolled(settings(), _load_store())
+
+
+def dashboard_snapshot() -> tuple[dict, list[dict]]:
+    """Read platform counts and their displayed entries from one snapshot."""
+    cfg, store = settings(), _load_store()
+    return _status(cfg, store), _unenrolled(cfg, store)
+
+
+def _unenrolled(cfg: dict, store: dict) -> list[dict]:
     rows = []
-    for name in settings()["platforms"]:
+    for name in cfg["platforms"]:
         for external_id, entry in _dict(store["unenrolled"].get(name)).items():
             state = entry.get("state")
             rows.append({"platform": name, "external_id": external_id,

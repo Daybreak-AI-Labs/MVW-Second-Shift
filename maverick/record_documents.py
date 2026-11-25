@@ -223,8 +223,9 @@ def _transaction(*, read_statement: bool = False) -> Iterator[Any]:
             with store.transaction() as cursor:
                 _ensure_table(cursor)
             _SCHEMA_READY.add(dsn)
-        use_connection = store.read_statement if read_statement else store.transaction
-        with use_connection() as cursor:
+        # Only the fixed SELECTs for named and indexed records use this path.
+        lease = store.read_statement(stateless=True) if read_statement else store.transaction()
+        with lease as cursor:
             yield cursor
     except RecordDocumentError:
         raise

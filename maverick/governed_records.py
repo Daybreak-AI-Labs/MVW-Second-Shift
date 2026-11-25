@@ -929,10 +929,13 @@ class PostgresGovernedRecordBackend:
                    relation.oid = to_regclass('governed_records'),
                    c.relrowsecurity, c.relforcerowsecurity,
                    ARRAY(
-                       SELECT ARRAY[column_name::text, data_type::text, is_nullable::text]
-                       FROM information_schema.columns
-                       WHERE table_schema = current_schema() AND table_name = 'governed_records'
-                       ORDER BY ordinal_position
+                       SELECT ARRAY[a.attname::text, pg_catalog.format_type(a.atttypid, NULL),
+                                    CASE WHEN a.attnotnull THEN 'NO' ELSE 'YES' END]
+                       FROM pg_catalog.pg_attribute a
+                       WHERE a.attrelid = relation.oid AND a.attnum > 0 AND NOT a.attisdropped
+                             AND (pg_has_role(c.relowner, 'USAGE') OR
+                                  has_column_privilege(c.oid, a.attnum, 'SELECT, INSERT, UPDATE, REFERENCES'))
+                       ORDER BY a.attnum
                    ),
                    ARRAY(
                        SELECT a.attname::text

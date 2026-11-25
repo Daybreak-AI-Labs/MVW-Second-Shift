@@ -111,7 +111,8 @@ class ScopedStore:
 
     @contextlib.contextmanager
     def transaction(self, scope: str, *, lookup: str = "", writing: str | None = None,
-                    legacy: tuple[Path, str, Callable] | None = None) -> Iterator[_Queries]:
+                    legacy: tuple[Path, str, Callable] | None = None,
+                    pipeline: bool = False) -> Iterator[_Queries]:
         try:
             dsn = _dsn()
             transactions = _store(dsn)
@@ -119,12 +120,19 @@ class ScopedStore:
             if legacy:
                 path, partition, import_records = legacy
                 self._import(transactions, dsn, path, partition, import_records)
-            with transactions.transaction() as cursor:
-                bind(cursor, scope, lookup)
-                if writing is not None:
-                    _lock(cursor, f"{self.name}:{writing}")
-                cursor.row_factory = _rows
-                yield _Queries(cursor)
+            if pipeline:
+                from psycopg import Pipeline
+
+                pipeline = Pipeline.is_supported()
+            with transactions.transaction(local_settings_only=pipeline) as cursor:
+                # The browser-session check can send its scope bind and lookup
+                # together. PostgreSQL executes the bind before the RLS read.
+                with cursor.connection.pipeline() if pipeline else contextlib.nullcontext():
+                    bind(cursor, scope, lookup)
+                    if writing is not None:
+                        _lock(cursor, f"{self.name}:{writing}")
+                    cursor.row_factory = _rows
+                    yield _Queries(cursor)
         except Exception as exc:
             if _is_database_error(exc):
                 raise ScopedStoreError("The saved record could not be read or updated in PostgreSQL.") from None

@@ -53,6 +53,9 @@ def validate_pool_min_size(min_size: object, size: int) -> int:
 
 def _reset_connection(connection: Any) -> None:
     """Remove any accidental session tenant binding before another lease."""
+    if getattr(connection, "_second_shift_clean_read", False) is True:
+        connection._second_shift_clean_read = False
+        return
     # SET LOCAL in the authority transaction is the primary boundary. Reset the
     # session value as well; a failed reset makes psycopg_pool discard the socket.
     previous = connection.autocommit
@@ -84,7 +87,8 @@ def _shared_pool(dsn: str, kwargs: dict, size: int, timeout: float, io_timeout: 
                 dsn, min_size=min_size, max_size=size, max_waiting=64,
                 timeout=timeout, reconnect_timeout=timeout,
                 connection_class=BoundedConnection,
-                kwargs={**kwargs, "io_timeout_seconds": io_timeout}, reset=_reset_connection,
+                kwargs={**kwargs, "io_timeout_seconds": io_timeout},
+                configure=_reset_connection, reset=_reset_connection,
                 name="governed-" + key[:12], open=True,
             ))
             _POOLS[key] = entry
@@ -170,8 +174,10 @@ class PostgresTransactions:
                     entry.active -= 1
 
     @contextlib.contextmanager
-    def read_statement(self) -> Iterator[Any]:
-        """Use one statement snapshot for a stand-alone read."""
+    def read_statement(self, *, stateless: bool = False) -> Iterator[Any]:
+        """Read in autocommit mode. Opt out of the pool reset only for static SELECTs
+        that cannot change session settings, such as the named-record lookups.
+        """
         with self._connection() as connection:
             previous = connection.autocommit
             connection.autocommit = True
@@ -180,9 +186,16 @@ class PostgresTransactions:
                     yield cursor
             finally:
                 connection.autocommit = previous
+            if stateless and self._size:
+                connection._second_shift_clean_read = True
 
     @contextlib.contextmanager
-    def transaction(self) -> Iterator[Any]:
+    def transaction(self, *, local_settings_only: bool = False) -> Iterator[Any]:
+        """Own a transaction and return its connection after cleanup.
+
+        ``local_settings_only`` is for fixed SQL whose settings cannot survive
+        commit or rollback. Other transactions scrub the pooled session.
+        """
         with self._connection() as connection:
             cursor = None
             try:
@@ -196,6 +209,8 @@ class PostgresTransactions:
                     raise TransactionAborted(
                         "the transaction was aborted by an earlier error; nothing was committed")
                 connection.commit()
+                if local_settings_only and self._size:
+                    connection._second_shift_clean_read = True
             except BaseException:
                 try:
                     connection.rollback()

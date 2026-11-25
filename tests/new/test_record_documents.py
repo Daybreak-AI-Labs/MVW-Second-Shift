@@ -4,10 +4,34 @@ from __future__ import annotations
 import json
 import stat
 import threading
+from contextlib import contextmanager
+from unittest.mock import MagicMock
 
 import pytest
 
 from tests.new.conftest import saved_records
+
+
+def test_stateless_record_reads_skip_only_their_own_pool_reset(monkeypatch):
+    from maverick import postgres_transactions as pg
+
+    connection = MagicMock(autocommit=False)
+    cursor = connection.cursor.return_value.__enter__.return_value
+    transactions = pg.PostgresTransactions("synthetic", pool_size=1)
+
+    @contextmanager
+    def leased():
+        yield connection
+        pg._reset_connection(connection)
+
+    monkeypatch.setattr(transactions, "_connection", leased)
+    with transactions.read_statement(stateless=True) as read:
+        read.execute("SELECT body FROM second_shift_records WHERE key=%s", ("example",))
+    assert cursor.execute.call_count == 1
+    assert connection.autocommit is False
+    with transactions.read_statement():
+        pass
+    assert cursor.execute.call_args.args == ("SELECT set_config('maverick.tenant', '', false)",)
 
 
 @pytest.fixture

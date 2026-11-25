@@ -300,20 +300,20 @@ def test_rls_enforces_tenant_isolation_at_db_level(monkeypatch):
         finally:
             reset_tenant(tok)
 
-        # RAW count (no _tenant_scope) under alpha -> RLS must hide beta's row.
-        tok = set_tenant("rls_alpha")
-        try:
-            with w._tx() as cur:
-                cur.execute("SELECT count(*) FROM goals WHERE id IN (%s, %s)", (a, b))
-                visible = int(cur.fetchone()[0])
-        finally:
-            reset_tenant(tok)
-        assert visible == 1, "RLS should expose only the active tenant's row"
+        for pipeline in (False, True):
+            # The database hides beta's row without an application predicate.
+            tok = set_tenant("rls_alpha")
+            try:
+                with w._tx(pipeline=pipeline) as cur:
+                    cur.execute("SELECT id FROM goals WHERE id IN (%s, %s)", (a, b))
+                    assert cur.fetchall() == [(a,)]
+            finally:
+                reset_tenant(tok)
 
-        # No active tenant gets an impossible GUC sentinel, so RLS fails closed.
-        with w._tx() as cur:
-            cur.execute("SELECT count(*) FROM goals WHERE id IN (%s, %s)", (a, b))
-            assert int(cur.fetchone()[0]) == 0
+            # An unbound read on the same connection fails closed.
+            with w._tx(pipeline=pipeline) as cur:
+                cur.execute("SELECT id FROM goals WHERE id IN (%s, %s)", (a, b))
+                assert cur.fetchall() == []
     finally:
         w.close()
         _disable_rls(_DSN)

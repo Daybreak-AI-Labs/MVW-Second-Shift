@@ -181,12 +181,12 @@ def _open_store(path: Path) -> sqlite3.Connection:
 
 
 @contextmanager
-def _connect():
+def _connect(*, pipeline: bool = False):
     if record_documents.using_postgres():
         try:
             scope = _session_workspace()
             with _PG.transaction(scope, legacy=(_path(), "all", lambda source, cursor: _import_sessions(
-                    source, cursor, scope))) as conn:
+                    source, cursor, scope)), pipeline=pipeline) as conn:
                 yield conn
         except (OSError, ValueError) as exc:
             raise SessionStoreError("The browser session could not be checked. Try signing in again.") from exc
@@ -322,7 +322,7 @@ def _rows(conn, where: str, params: tuple) -> list[SessionRecord]:
 
 def current(sid: str, *, principal: str) -> SessionRecord | None:
     """Read current own authority and retain an observed time-limit expiry."""
-    with _connect() as conn:
+    with _connect(pipeline=True) as conn:
         rows = _rows(conn, "WHERE sid = ? AND principal = ?", (sid, principal))
         if not rows:
             return None

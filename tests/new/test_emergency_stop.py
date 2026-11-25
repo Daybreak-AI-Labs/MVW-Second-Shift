@@ -140,3 +140,30 @@ def test_concurrent_fresh_halt_checks_use_one_connection_pool(monkeypatch):
     with ThreadPoolExecutor(max_workers=8) as workers:
         assert list(workers.map(check, range(8))) == [None] * 8
     assert len(opened) == 1
+
+
+def test_fresh_agent_halt_check_borrows_without_closing_the_dashboard_world(monkeypatch):
+    from maverick import killswitch, world_model, world_model_backends
+
+    class World:
+        def active_halt(self):
+            if unavailable:
+                raise OSError("test store unavailable")
+            return {"reason": "Operator stop", "source": "dashboard"}
+
+        def close(self):
+            pytest.fail("A borrowed world must stay open")
+
+    unavailable = False
+    handle = World()
+    monkeypatch.setattr(killswitch, "_last_shared_check_ts", 0.0)
+    monkeypatch.setattr(killswitch, "_last_shared_halt", None)
+    monkeypatch.setattr(killswitch, "_last_shared_strict_ok", False)
+    monkeypatch.setattr(world_model, "open_world", lambda: pytest.fail("Reopened the dashboard world"))
+    monkeypatch.setattr(world_model_backends, "is_postgres_configured", lambda: True)
+    options = {"min_interval": 0, "fail_closed": True, "world_factory": lambda: handle}
+    assert killswitch._shared_halt_active(**options) == ("Operator stop", "dashboard")
+    unavailable = True
+    with pytest.raises(killswitch.Halted) as failure:
+        killswitch._shared_halt_active(**options)
+    assert failure.value.source == "shared-error"
