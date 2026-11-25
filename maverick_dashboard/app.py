@@ -492,7 +492,7 @@ async def _lifespan(app: FastAPI):
     from maverick.postgres_transactions import close_postgres_pools, open_postgres_pools
     from maverick.servicenow_incidents import delivery_loop
 
-    from .worker_coordination import active_root, guard_supervisor, lead_timers, timers
+    from .worker_coordination import active_root, close_recorder_rate_connections, guard_supervisor, lead_timers, timers
 
     root = active_root()
     owns_lease = root is None and current() is None
@@ -535,6 +535,8 @@ async def _lifespan(app: FastAPI):
                 with suppress(asyncio.CancelledError):
                     await leader
     finally:
+        if root is not None:
+            close_recorder_rate_connections()
         await run_in_threadpool(partial(close_postgres_pools, timeout=5))
         if owns_lease:
             release()
@@ -572,7 +574,7 @@ def enforce_page_visibility(
 async def _page_visibility(request: Request = None) -> None:  # type: ignore[assignment]
     """The app-level page-policy dependency: the check reads the settings, so
     it runs in the worker pool, except for a probe, which is no page."""
-    if request is None or probe_path(request.scope):
+    if request is None or probe_path(request.scope) or route_path(request).startswith("/api/v1/external/ekko/"):
         return
     await run_in_threadpool(enforce_page_visibility, request)
 
@@ -1005,6 +1007,16 @@ async def bound_public_governance_body(request: Request, call_next):
         credential = None
         recorder = path.startswith("/api/v1/external/ekko/")
         if recorder:
+            # A bodyless poll authenticates in its route's blocking worker.
+            # Keep the authenticated body-read path for requests with framing.
+            if (request.method == "GET" and path == "/api/v1/external/ekko/instructions"
+                    and request.headers.get("content-length", "") in ("", "0")
+                    and "transfer-encoding" not in request.headers):
+                admitted = await _take_external_body_slot(False, recorder=True)
+                try:
+                    return await call_next(request)
+                finally:
+                    admitted.release()
             from .ekko_handover_api import _known_key
 
             key = await run_in_threadpool(_known_key, request)

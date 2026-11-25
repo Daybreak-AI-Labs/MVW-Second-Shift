@@ -65,7 +65,6 @@ def settings(tmp_path, monkeypatch, request):
 
     write()
     handover._rate_times.clear()
-    handover._lease_renewed.clear()
     yield write
     killswitch.clear()
     signing._reset_injected_keypair_cache()
@@ -674,6 +673,76 @@ def test_a_different_computer_account_is_refused_and_recorded_once(app, recordin
     moved = replaced.post(HANDOVER, json=_batch(session, [_switch("excel")], batch_id="batch-0006", account=OTHER_ACCOUNT))
     assert moved.json()["accepted"] == 1
     assert replaced.post(HANDOVER, json=_batch(session, [_switch("excel")], batch_id="batch-0007")).status_code == 403
+
+
+def test_instruction_poll_uses_the_recorders_own_credential_in_one_worker(recording, monkeypatch):
+    from maverick_dashboard import app as dashboard
+    from maverick_dashboard import auth
+
+    offloads = []
+    run = dashboard.run_in_threadpool
+    verify = auth._verify_off_loop
+
+    async def track(func, *args, **kwargs):
+        offloads.append(func.__name__)
+        return await run(func, *args, **kwargs)
+
+    async def track_browser(request, websocket):
+        offloads.append("browser authentication")
+        return await verify(request, websocket)
+
+    monkeypatch.setattr(dashboard, "run_in_threadpool", track)
+    monkeypatch.setattr(auth, "_verify_off_loop", track_browser)
+    response = recording.recorder.get(INSTRUCTIONS)
+    assert response.status_code == 200 and response.json()["record"] is True
+    assert offloads == []
+
+
+def test_polls_only_renew_an_existing_due_lease(recording, monkeypatch):
+    from maverick.work_discovery_store import WorkDiscoveryStore
+    from maverick_dashboard import ekko_handover_api as handover
+
+    clock = SimpleNamespace(now=time.time())
+    monkeypatch.setattr(handover, "_now", lambda: clock.now)
+    heartbeat = WorkDiscoveryStore.heartbeat_collector
+    renewals = []
+
+    def track(self, *args, **kwargs):
+        renewals.append(clock.now)
+        return heartbeat(self, *args, **kwargs)
+
+    monkeypatch.setattr(WorkDiscoveryStore, "heartbeat_collector", track)
+    assert recording.recorder.get(INSTRUCTIONS).json()["record"] is True
+    assert renewals == []
+    sent = recording.recorder.post(HANDOVER, json=_batch(recording.session, [_switch("excel", clock.now)]))
+    assert sent.json()["accepted"] == 1
+    renewals.clear()
+    clock.now += 5
+    assert recording.recorder.get(INSTRUCTIONS).json()["record"] is True
+    assert renewals == []
+    clock.now += 20
+    assert recording.recorder.get(INSTRUCTIONS).json()["record"] is True
+    assert recording.recorder.get(INSTRUCTIONS).json()["record"] is True
+    assert renewals == [clock.now]
+
+
+def test_instruction_poll_resolves_each_tenant_key_policy_once(recording, monkeypatch):
+    from collections import Counter
+
+    from maverick.tenant import kms
+
+    reads = Counter()
+    lookup = kms._dek_cache_ttl
+
+    def track(tenant=None):
+        reads[tenant] += 1
+        return lookup(tenant)
+
+    monkeypatch.setattr(kms, "_dek_cache_ttl", track)
+    for _ in range(2):
+        reads.clear()
+        assert recording.recorder.get(INSTRUCTIONS).json()["record"] is True
+        assert reads and set(reads.values()) == {1}
 
 
 def test_a_recorder_that_keeps_asking_stays_attached(recording, monkeypatch):

@@ -76,8 +76,6 @@ _RATE_LIMITS = {"instructions": 120, "handover": 60, "refused": 30}
 _RATE_BUCKET_CAP = 10_000
 _rate_times: dict[tuple[str, str], deque[float]] = {}
 _rate_lock = threading.Lock()
-# When this process last renewed each device's recorder lease.
-_lease_renewed: dict[str, float] = {}
 
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{7,63}$")
 _ACCOUNT_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -416,24 +414,20 @@ def _lease_seconds(policy: CapturePolicy) -> float:
 def _renew_lease(device: _Device, session_id: str, policy: CapturePolicy) -> None:
     """Keep the recorder lease alive between hand-overs. Never takes one:
     attaching to a session happens only on a hand-over, with its audit row."""
-    renewed = _lease_renewed.get(device.key.key_id)
-    if renewed is not None and 0 <= _now() - renewed < _lease_seconds(policy) / 3.0:
-        return
     try:
         device.store.heartbeat_collector(session_id, device.collector_id, policy=policy,
                                          ttl_seconds=_lease_seconds(policy))
     except Exception:
         return  # no lease to renew, or not this recorder's; the next hand-over decides
-    if len(_lease_renewed) >= _RATE_BUCKET_CAP:
-        _lease_renewed.clear()
-    _lease_renewed[device.key.key_id] = _now()
 
 
 def _instructions(device: _Device) -> dict:
     _settings_readable()
     on, policy, current = _enrolled_policy(device)
+    now = _now()
     try:
-        session = device.store.latest_session()
+        session, due = device.store.recorder_session(
+            device.collector_id, now=now, renew_before=now - _lease_seconds(policy) / 3.0)
     except WorkDiscoveryStoreError as exc:
         raise _not_accepted("The session") from exc
     state = "none"
@@ -441,7 +435,7 @@ def _instructions(device: _Device) -> dict:
         state = {SessionState.RUNNING: "running", SessionState.PAUSED: "paused"}.get(session.state, "stopped")
     stopped = _stopped()
     record = on and current and state == "running" and not stopped
-    if session is not None and on and current and not stopped and state in {"running", "paused"}:
+    if due and session is not None and on and current and not stopped and state in {"running", "paused"}:
         _renew_lease(device, session.session_id, policy)
     _heard(device.key)
     reason = ("recording" if record else "ekko_off" if not on else "enrollment_not_current" if not current
@@ -461,7 +455,10 @@ def _instructions(device: _Device) -> dict:
 @router.get("/api/v1/external/ekko/instructions")
 def recorder_instructions(request: Request) -> JSONResponse:
     """What the recorder on this device should do now: observe, or wait."""
-    with _device(request, "instructions") as device:
+    from maverick.config import single_read
+    from maverick.tenant.kms import dek_cache_policy_scope
+
+    with single_read(fresh=True), dek_cache_policy_scope(), _device(request, "instructions") as device:
         return JSONResponse(_instructions(device), headers={"Cache-Control": "no-store"})
 
 
@@ -594,7 +591,6 @@ def _attach(device: _Device, session_id: str, policy: CapturePolicy) -> None:
                     policy_digest=policy.fingerprint(), observer="device_recorder")
         device.store.claim_collector(session_id, device.collector_id, policy=policy,
                                      ttl_seconds=_lease_seconds(policy))
-    _lease_renewed[device.key.key_id] = _now()
 
 
 def _different_account(device: _Device) -> HTTPException:
@@ -687,7 +683,9 @@ def _accept(device: _Device, batch: _Batch) -> dict:
 
 
 def _hand_over(request: Request, raw: bytes) -> dict:
-    with _device(request, "handover") as device:
+    from maverick.tenant.kms import dek_cache_policy_scope
+
+    with dek_cache_policy_scope(), _device(request, "handover") as device:
         if len(raw) > MAX_BODY_BYTES:
             raise _refusal(413, "too_large", "The hand-over is too large. Nothing was accepted.")
         return _accept(device, _parse_batch(raw))

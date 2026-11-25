@@ -1211,8 +1211,11 @@ async def require_principal_in_request_context(
     lifecycle are checked on every verification; tenant selection/membership is
     resolved at binding, so cached keys never become an authorization grant.
     """
-    if request is not None and probe_path(getattr(request, "scope", None) or {}):
-        return None  # a probe answers for the process, never for a caller
+    if request is not None and (
+        probe_path(getattr(request, "scope", None) or {})
+        or route_path(request).startswith("/api/v1/external/ekko/")
+    ):
+        return None  # probes and recorder routes have no browser principal
     principal = await _verify_off_loop(request, websocket)
     connection = request if request is not None else websocket
     pin_choice: object = _UNDECIDED

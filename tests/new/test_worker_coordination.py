@@ -189,6 +189,33 @@ def test_shared_rate_caps_count_active_buckets_and_only_recent_hits(monkeypatch)
         assert not coordination.rate_allowed(root, "ekko", first, 2, 1, count_hit=False)
 
 
+def test_recorder_counter_reuses_a_connection_and_sees_other_connections(monkeypatch):
+    from maverick import control_plane_lease, world_model_backends
+    from maverick_dashboard import worker_coordination as coordination
+
+    monkeypatch.setattr(world_model_backends, "is_postgres_configured", lambda: True)
+    monkeypatch.setattr(control_plane_lease, "acquire", lambda **_: object())
+    monkeypatch.setattr(control_plane_lease, "release", lambda: None)
+    calls = []
+    connect = coordination.sqlite3.connect
+
+    def track(file, *args, **kwargs):
+        calls.append(file)
+        return connect(file, *args, **kwargs)
+
+    bucket = ("instructions", "device")
+    with coordination.supervisor(4):
+        root = coordination.active_root()
+        monkeypatch.setattr(coordination.sqlite3, "connect", track)
+        assert coordination.rate_allowed(root, "ekko", bucket, 2, 10_000)
+        assert coordination.rate_allowed(root, "ekko", bucket, 2, 10_000, count_hit=False)
+        assert len(calls) == 1
+        with connect(calls[0]) as other:
+            other.execute("DELETE FROM rate_windows")
+        assert coordination.rate_allowed(root, "ekko", bucket, 1, 10_000)
+        assert not coordination.rate_allowed(root, "ekko", bucket, 1, 10_000)
+
+
 def test_recorder_counters_can_write_while_the_agent_counter_is_busy(monkeypatch):
     from maverick import control_plane_lease, world_model_backends
     from maverick_dashboard import worker_coordination as coordination

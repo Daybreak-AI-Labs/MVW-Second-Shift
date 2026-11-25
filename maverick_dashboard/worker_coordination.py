@@ -14,6 +14,7 @@ import os
 import signal
 import sqlite3
 import sys
+import threading
 import time
 from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import asynccontextmanager, contextmanager, suppress
@@ -28,6 +29,8 @@ WORKER_ROOT = DASHBOARD_WORKER_ROOT
 _WORKER_PARENT = "MAVERICK_DASHBOARD_WORKER_PARENT"
 _PR_SET_PDEATHSIG = 1
 _RECORDER_RATE_SHARDS = 32
+_RECORDER_RATES_LOCK = threading.Lock()
+_RECORDER_RATES = {}
 
 
 def worker_count() -> int:
@@ -64,6 +67,7 @@ def supervisor(count: int) -> Iterator[None]:
             try:
                 yield
             finally:
+                close_recorder_rate_connections()
                 os.environ.pop(WORKER_ROOT, None)
                 os.environ.pop(_WORKER_PARENT, None)
     finally:
@@ -135,6 +139,40 @@ def _initialize_rates(root: Path) -> None:
             )
 
 
+@contextmanager
+def _recorder_rate_connection(root: Path, shard: int):
+    """Reuse one local handle per shard while SQLite coordinates the workers."""
+    key = (os.getpid(), root, shard)
+    with _RECORDER_RATES_LOCK:
+        entry = _RECORDER_RATES.get(key)
+        if entry is None and len(_RECORDER_RATES) < _RECORDER_RATE_SHARDS:
+            conn = sqlite3.connect(root / f"recorder-rates-{shard}.sqlite3", timeout=1, check_same_thread=False)
+            try:
+                conn.execute("PRAGMA synchronous=NORMAL")
+            except BaseException:
+                conn.close()
+                raise
+            entry = _RECORDER_RATES[key] = (threading.Lock(), conn)
+    if entry is None:
+        with _rate_connection(root, shard) as conn:
+            conn.execute("PRAGMA synchronous=NORMAL")
+            yield conn
+        return
+    lock, conn = entry
+    with lock, conn:
+        yield conn
+
+
+def close_recorder_rate_connections() -> None:
+    """Close this process's local handles after it stops receiving requests."""
+    with _RECORDER_RATES_LOCK:
+        entries = tuple(_RECORDER_RATES.values())
+        _RECORDER_RATES.clear()
+    for lock, conn in entries:
+        with lock:
+            conn.close()
+
+
 def rate_allowed(root: Path, namespace: str, bucket: tuple[str, str], limit: int, max_buckets: int, *,
                  count_hit: bool = True) -> bool:
     """Check and spend one hit in a rolling minute across all the workers."""
@@ -147,13 +185,10 @@ def rate_allowed(root: Path, namespace: str, bucket: tuple[str, str], limit: int
         shard = int.from_bytes(digest, "big") % _RECORDER_RATE_SHARDS
         capacity, remainder = divmod(max_buckets, _RECORDER_RATE_SHARDS)
         max_buckets = capacity + int(shard < remainder)
-    with _rate_connection(root, shard) as conn:
+    connection = _rate_connection(root) if shard is None else _recorder_rate_connection(root, shard)
+    with connection as conn:
         # A preflight can inspect the latest committed window while another
         # worker spends a hit. Counted requests still update atomically.
-        if count_hit and shard is not None:
-            # Counters live for the lifetime of the worker group. WAL commits
-            # remain visible across workers without a disk flush on every call.
-            conn.execute("PRAGMA synchronous=NORMAL")
         conn.execute("BEGIN IMMEDIATE" if count_hit else "BEGIN")
         now = time.monotonic()
         cutoff = now - 60

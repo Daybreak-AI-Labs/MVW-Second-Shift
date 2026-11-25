@@ -27,6 +27,8 @@ import os
 import secrets
 import threading
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Protocol
 
@@ -281,6 +283,17 @@ _dek_cache: dict[str, tuple[bytes, float | None]] = {}
 # slow or hung BYOK KMS cannot block every other tenant's seal and unseal.
 _dek_lock = threading.Lock()
 _dek_tenant_locks: dict[str, threading.Lock] = {}
+_DEK_CACHE_POLICY: ContextVar[dict[str | None, float] | None] = ContextVar("dek_cache_policy", default=None)
+
+
+@contextmanager
+def dek_cache_policy_scope():
+    """Share resolved KMS cache durations for one request or result set."""
+    token = _DEK_CACHE_POLICY.set({})
+    try:
+        yield
+    finally:
+        _DEK_CACHE_POLICY.reset(token)
 
 
 def _dek_cache_ttl(tenant_id: str | None = None) -> float | None:
@@ -362,7 +375,13 @@ def _cached_dek(cache_key: str, tenant_id: str | None) -> bytes | None:
     if cached is None:
         return None
     dek, cached_at = cached
-    ttl = _dek_cache_ttl(tenant_id)  # reads config: outside the lock
+    policy = _DEK_CACHE_POLICY.get()
+    if policy is None or tenant_id not in policy:
+        ttl = _dek_cache_ttl(tenant_id)  # reads config: outside the lock
+        if policy is not None and ttl is not None:
+            policy[tenant_id] = ttl
+    else:
+        ttl = policy[tenant_id]
     if ttl is not None and (ttl <= 0 or cached_at + ttl > _now()):
         return dek
     with _dek_lock:
@@ -429,6 +448,7 @@ def _clear_cache() -> None:
 __all__ = [
     "KMS",
     "LocalKMS",
+    "dek_cache_policy_scope",
     "get_kms",
     "tenant_dek",
     "seal_for_tenant",
