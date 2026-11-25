@@ -293,14 +293,17 @@ def _shield():
 
 
 @router.post("/runs", status_code=201)
-async def external_run_report(
+def external_run_report(
     payload: ExternalRunIn, agent_id: str = Depends(_require_agent),
 ) -> dict:
     """Ingest one completed external run onto the Operating Record."""
     _rate_limit(agent_id, "runs")
     from maverick import external_agents as xa
+
+    from ._shared import _world
+
     try:
-        out = xa.record_run(agent_id, payload.model_dump(), shield=_shield())
+        out = xa.record_run(agent_id, payload.model_dump(), shield=_shield(), world_factory=_world)
     except xa.ExternalAgentsError as e:
         raise HTTPException(status_code=403, detail=str(e)) from e
     return {"ok": True, **out}
@@ -350,14 +353,17 @@ async def external_run_finish(
 
 
 @router.post("/screen")
-async def external_screen(
+def external_screen(
     payload: ExternalScreenIn, agent_id: str = Depends(_require_agent),
 ) -> dict:
     """Decide a proposed action before the external agent takes it."""
     _rate_limit(agent_id, "screen")
     from maverick import external_agents as xa
+
+    from ._shared import _world
+
     return xa.screen(agent_id, payload.tool, detail=payload.detail,
-                     risk=payload.risk or None, shield=_shield())
+                     risk=payload.risk or None, shield=_shield(), world_factory=_world)
 
 
 @router.get("/approvals/{approval_id}")

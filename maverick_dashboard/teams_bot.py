@@ -594,7 +594,7 @@ class TeamsBot:
         world = self._world()
         try:
             approval = world.get_approval(int(approval_id))
-            return approval is not None and principal in decisions.channel_approvers(world, approval)
+            return approval is not None and principal in decisions.channel_approvers(world, approval, among={principal})
         except Exception:  # noqa: BLE001 -- what cannot be checked is not shown
             log.warning("teams: could not check who may see approval #%s", approval_id, exc_info=True)
             return False

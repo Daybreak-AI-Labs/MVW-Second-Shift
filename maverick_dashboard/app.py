@@ -1716,7 +1716,7 @@ async def tenant_pinning(request: Request, call_next):
 
 
 @app.get("/external-agents", response_class=HTMLResponse)
-async def external_agents_page(
+def external_agents_page(
     request: Request, level: str = "", platform: str = "", add: str = "", connect: str = "",
 ) -> HTMLResponse:
     """Outside-agent console: one roster of agents found on other platforms,
@@ -1730,7 +1730,7 @@ async def external_agents_page(
     enabled = xa.enabled()
     agents = xa.roster()
     claimed = frozenset(str(agent.get("external_ref") or "").casefold() for agent in agents) - {""}
-    checks = await run_in_threadpool(_platform_checks_view, claimed) if enabled else None
+    checks = _platform_checks_view(claimed) if enabled else None
     found = (checks or {}).get("not_enrolled") or []
     roster = outside_roster.build(agents, found, level=level, platform=platform)
     for row in roster["rows"]:
@@ -1738,14 +1738,15 @@ async def external_agents_page(
     prefill = next((entry for entry in found if entry["external_ref"] == add), None)
     connect_agent = next((dict(a, gate=connect_guide.gate_for(a["platform"], str(a.get("external_ref") or "")))
                           for a in agents if a["id"] == connect), None)
+    can_manage = enabled and has_permission(request, "admin")
     return templates.TemplateResponse(
         request,
         "external_agents.html",
         {
             "enabled": enabled,
-            "external_agents_can_manage": enabled and has_permission(request, "admin"),
-            "owner_search": enabled and has_permission(request, "admin") and entra_directory.enabled(),
-            "status": xa.status(),
+            "external_agents_can_manage": can_manage,
+            "owner_search": can_manage and entra_directory.enabled(),
+            "status": xa.status(rows=agents),
             "agents": agents,
             "roster": roster,
             "level_filter": level if level in outside_roster.LEVELS else "",
@@ -1760,7 +1761,7 @@ async def external_agents_page(
             "outside_agent_tabs": None,
             "platform_checks": checks,
             "platform_checks_shown": enabled,
-            "alert_delivery": await run_in_threadpool(_alert_delivery_view),
+            "alert_delivery": _alert_delivery_view(),
         },
     )
 
@@ -1904,30 +1905,29 @@ def _approval_progress(approvals: list, request: Request) -> dict:
     """
     if not has_permission(request, "approve"):
         return {}
-    from maverick.safety.dual_control import allow_self_approval
+    from maverick.safety.dual_control import allow_self_approval, distinct_people, includes_person
 
     from .api import _supervisor
     from .approval_decisions import own_request_note
 
     who = _supervisor(request)
     world = _world()
+    try:
+        signoffs = world.pending_approval_signoffs([approval.id for approval in approvals])
+    except Exception:  # noqa: BLE001 - the card keeps its server-side checks
+        return {}
     progress = {}
     for approval in approvals:
-        try:
-            state = world.approval_state(approval.id)
-        except Exception:  # noqa: BLE001 - the card keeps its server-side checks
+        if approval.id not in signoffs:
             continue
-        if not state or state.get("status") != "pending":
-            continue
-        required = int(state.get("approvals_required") or 1)
+        approvers = signoffs[approval.id]
+        required = int(approval.approvals_required or 1)
         words = ["One approval is needed." if required <= 1
-                 else f"{state.get('approved_count', 0)} of {required} required approvals received."]
-        from maverick.safety.dual_control import includes_person
-
-        recorded = includes_person(state.get("approvers") or [], who)
+                 else f"{distinct_people(approvers)} of {required} required approvals received."]
+        recorded = includes_person(approvers, who)
         if recorded:
             words.append("Your approval is recorded.")
-        elif state.get("requested_by") and state.get("requested_by") == who:
+        elif approval.requested_by and approval.requested_by == who:
             # The words follow what is enforced: one approver may be the person
             # who asked; under two-person approval their vote may not count.
             # When another approver must decide, the card already says why.
@@ -2023,11 +2023,11 @@ def approvals_page(request: Request) -> HTMLResponse:
     as the API the page calls.
     """
     require_permission(request, "approve")
-    from .content_access import can_read_approval
+    from .content_access import readable_approvals
 
     world = _world()
     pending = list(world.pending_approvals())
-    approvals = [row for row in pending if can_read_approval(request, row, world)]
+    approvals = readable_approvals(request, pending, world)
     return templates.TemplateResponse(
         request,
         "approvals.html",

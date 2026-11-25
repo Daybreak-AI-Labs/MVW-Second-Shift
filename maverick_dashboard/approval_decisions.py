@@ -395,12 +395,12 @@ def decide_from_channel(*, approval_id: int, status: str, principal: str, bindin
     }
 
 
-def channel_approvers(world, approval) -> set[str]:
+def channel_approvers(world, approval, *, among=None) -> set[str]:
     """Who a chat app may show this request to and take a decision from: the
     people who can open it on the Approvals page and hold ``approve`` now."""
     from .content_access import approval_readers
 
-    return {person for person in approval_readers(approval, world) if _may_decide(person)}
+    return {person for person in approval_readers(approval, world, among=among) if _may_decide(person)}
 
 
 def approval_view(approval_id: int, *, world=None) -> dict | None:

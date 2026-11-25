@@ -241,3 +241,21 @@ def test_calls_the_queue_does_not_offer_are_not_served(client, world):
     approval_id = world.create_approval("records.update", risk="low", scope="x", detail="y")
     for action in ("undo", "revise", "claim", "release"):
         assert client.post(f"/api/v1/approvals/{approval_id}/{action}", json={}).status_code in (404, 405)
+
+
+def test_pending_progress_does_not_load_each_approval_again(client, world, monkeypatch):
+    for index in range(4):
+        world.create_approval(f"external:helpdesk:work_{index}", risk="medium",
+                              provenance="external_agents", requested_by="agent:helpdesk")
+    original = world.approval_state
+    reads = []
+
+    def counted(approval_id):
+        reads.append(approval_id)
+        return original(approval_id)
+
+    monkeypatch.setattr(world, "approval_state", counted)
+    result = client.get("/approvals")
+    assert result.status_code == 200
+    assert result.text.count("One approval is needed.") == 4
+    assert not reads

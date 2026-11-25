@@ -330,3 +330,33 @@ def test_keys_ending_soon_count_each_agent_once_and_sort_the_soonest_first(perso
     keys = _home(boss).split('id="home-keys"', 1)[1].split("</ul>", 1)[0]
     assert keys.index("gone") < keys.index("near") < keys.index("far")
     assert "access ended on" in keys
+
+
+def test_page_reuses_a_roster_once_and_reads_another_process_update(person, installation, monkeypatch):
+    import subprocess
+    import sys
+
+    from maverick import external_agents
+
+    admin = person("admin")
+    enrolled = admin.post("/api/v1/external-agents", json={
+        "id": "process-test", "platform": "custom", "description": "Process test agent",
+    })
+    assert enrolled.status_code == 201
+    original = external_agents.roster
+    reads = []
+
+    def counted(*args, **kwargs):
+        reads.append(True)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(external_agents, "roster", counted)
+    assert "Process test agent is blocked for breaking rules" not in _home(admin)
+    assert len(reads) == 1
+    subprocess.run(
+        [sys.executable, "-c", "from maverick.external_agents import contain; "
+         "assert contain('process-test', contained_by='user:admin')"],
+        check=True, timeout=15, capture_output=True,
+    )
+    assert "Process test agent is blocked for breaking rules" in _home(admin)
+    assert len(reads) == 2

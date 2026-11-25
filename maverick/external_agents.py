@@ -940,7 +940,7 @@ def _entry_from_agent(agent) -> dict:
     }
 
 
-def record_run(agent_id: str, run: dict, *, shield: Any | None = None) -> dict:
+def record_run(agent_id: str, run: dict, *, shield: Any | None = None, world_factory=None) -> dict:
     """Ingest one COMPLETED external run as a governed Operating Record row.
 
     ``run`` schema: ``{title, outcome: success|failure, summary?, steps?:
@@ -976,7 +976,7 @@ def record_run(agent_id: str, run: dict, *, shield: Any | None = None) -> dict:
     idem = str(run.get("idempotency_key") or "").strip()[:128]
     if idem:
         prior_gid = (sidecar[agent_id].get("run_keys") or {}).get(idem)
-        if prior_gid is not None and _run_goal_finished(prior_gid):
+        if prior_gid is not None and _run_goal_finished(prior_gid, world_factory=world_factory):
             return {"goal_id": prior_gid, "over_budget":
                     bool(sidecar[agent_id].get("over_budget")),
                     "duplicate": True}
@@ -999,7 +999,7 @@ def record_run(agent_id: str, run: dict, *, shield: Any | None = None) -> dict:
     meta = sidecar[agent_id]
     principal = f"agent:{agent_id}"
     from .world_model import open_world
-    w = open_world()
+    w = (world_factory or open_world)()
     gid, _ = _create_run_goal(
         w, agent_id, idem, title, summary or "", owner=principal,
         domain=str(run.get("department") or meta.get("department") or ""))
@@ -1059,12 +1059,12 @@ def record_run(agent_id: str, run: dict, *, shield: Any | None = None) -> dict:
 _RUN_ORIGIN = "external_run"
 
 
-def _run_goal_finished(gid: Any) -> bool:
+def _run_goal_finished(gid: Any, *, world_factory=None) -> bool:
     """Whether a remembered run's goal has left ``pending`` (or is gone). An
     unfinished one goes on to the locked completion path."""
     from .world_model import open_world
     try:
-        goal = open_world().get_goal(int(gid))
+        goal = (world_factory or open_world)().get_goal(int(gid))
     except (TypeError, ValueError):
         return True
     return goal is None or goal.status != "pending"
@@ -1366,11 +1366,12 @@ def _observe_drift_run(agent_id: str, run: dict, *, outcome: str, cost: float) -
 
 
 def screen(agent_id: str, tool: str, *, detail: str = "", risk: str | None = None,
-           shield: Any | None = None) -> dict:
+           shield: Any | None = None, world_factory=None) -> dict:
     """Decide one proposed external action BEFORE the agent takes it (see
     :func:`_screen_decision`), then pass the verdict to drift observation:
     once per call, whichever path produced it."""
-    verdict = _screen_decision(agent_id, tool, detail=detail, risk=risk, shield=shield)
+    verdict = _screen_decision(agent_id, tool, detail=detail, risk=risk, shield=shield,
+                               world_factory=world_factory)
     _observe_drift_screen(agent_id, tool, verdict)
     return verdict
 
@@ -1381,7 +1382,7 @@ def _screen_decision(
     *,
     detail: str = "",
     risk: str | None = None,
-    shield: Any | None = None,
+    shield: Any | None = None, world_factory=None,
 ) -> dict:
     """Decide one proposed external action BEFORE the agent takes it.
 
@@ -1452,7 +1453,7 @@ def _screen_decision(
         # acted on count; execution approvals have their own cap.
         with _sidecar_locked():
             try:
-                world = open_world()
+                world = (world_factory or open_world)()
                 pending = _live_screening_approvals(
                     world, agent_id,
                     window=float(approval_card["expires_at"]) - time.time())
@@ -3567,9 +3568,9 @@ def agent_detail(agent_id: str) -> dict:
     return row
 
 
-def status() -> dict:
+def status(*, rows: list[dict] | None = None) -> dict:
     """Counts for the health surface and the dashboard header."""
-    rows = roster()
+    rows = roster() if rows is None else rows
     return {
         "enabled": enabled(),
         "enrolled": len(rows),

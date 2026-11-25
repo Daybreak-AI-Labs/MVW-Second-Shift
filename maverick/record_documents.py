@@ -70,6 +70,19 @@ def at(path: str | Path) -> RecordDocument:
     return RecordDocument(Path(path))
 
 
+def read_texts(*paths: Path) -> tuple[str | None, ...]:
+    """Read related records in one database snapshot, retaining caller order."""
+    if not paths:
+        return ()
+    if not using_postgres() or _HELD.get():
+        return tuple(at(path).read_text() for path in paths)
+    keys = [_key(path) for path in paths]
+    with _transaction() as cursor:
+        _run(cursor, f"SELECT key, body FROM {TABLE} WHERE key = ANY(%s)", (keys,))
+        saved = dict(cursor.fetchall())
+    return tuple(saved.get(key) for key in keys)
+
+
 class RecordDocument:
     """One named record. Cheap to make; holds no connection or open file."""
 
@@ -260,4 +273,4 @@ def _reset_for_tests() -> None:
     _SCHEMA_READY.clear()
 
 
-__all__ = ["RecordDocument", "RecordDocumentError", "TABLE", "at", "using_postgres"]
+__all__ = ["RecordDocument", "RecordDocumentError", "TABLE", "at", "read_texts", "using_postgres"]

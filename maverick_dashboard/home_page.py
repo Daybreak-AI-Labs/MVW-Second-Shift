@@ -91,11 +91,11 @@ def _approvals(section: dict, request: Request) -> None:
     from maverick.safety.secret_detector import redact
 
     from ._shared import _world
-    from .content_access import can_read_approval
+    from .content_access import readable_approvals
     from .identity_format import humanize
 
     world = _world()
-    waiting = [row for row in world.pending_approvals() if can_read_approval(request, row, world)]
+    waiting = readable_approvals(request, world.pending_approvals(), world)
     items = []
     for row in waiting:
         action = " ".join(str(row.action or "").split())
@@ -122,13 +122,21 @@ def _agents_enabled() -> bool:
     return bool(external_agents.enabled())
 
 
+def _roster() -> list[dict]:
+    from maverick.external_agents import roster
+
+    from ._request_memo import memoized
+
+    return memoized("home.agent_roster", roster)
+
+
 def _drift(section: dict) -> None:
-    from maverick import agent_drift, external_agents
+    from maverick import agent_drift
 
     if not _agents_enabled() or not agent_drift.enabled():
         return
     try:
-        names = {row["id"]: _agent_name(row) for row in external_agents.roster()}
+        names = {row["id"]: _agent_name(row) for row in _roster()}
     except Exception:  # noqa: BLE001 - names are a convenience; the findings do not depend on them
         names = {}
     rows = [row for row in agent_drift.roster_view() if row["findings_count"] > 0]
@@ -170,11 +178,11 @@ def _drift_and_models(section: dict) -> None:
 
 
 def _blocked_agents(section: dict) -> None:
-    from maverick import external_agents, revocation
+    from maverick import revocation
 
     if not _agents_enabled():
         return
-    roster = external_agents.roster()
+    roster = _roster()
     paused = set(revocation.shared().revoked())
     items = []
     for agent in roster:
@@ -202,12 +210,12 @@ def _blocked_agents(section: dict) -> None:
 
 
 def _platforms(section: dict) -> None:
-    from maverick import agent_watch, external_agents
+    from maverick import agent_watch
 
     if not _agents_enabled() or not agent_watch.enabled():
         return
     status = agent_watch.status()
-    claimed = {str(agent.get("external_ref") or "").casefold() for agent in external_agents.roster()} - {""}
+    claimed = {str(agent.get("external_ref") or "").casefold() for agent in _roster()} - {""}
     found = agent_watch.unenrolled()
     waiting = [entry for entry in found if entry["external_ref"].casefold() not in claimed]
     link = f"{_AGENTS_PAGE}#platform-checks"
@@ -242,11 +250,11 @@ def _platform_label(name: str) -> str:
 
 
 def _keys(section: dict) -> None:
-    from maverick import agent_trust, external_agents
+    from maverick import agent_trust
 
     if not _agents_enabled():
         return
-    roster = {agent["id"]: agent for agent in external_agents.roster()}
+    roster = {agent["id"]: agent for agent in _roster()}
     registry = agent_trust.load_registry(strict=True)
     from maverick.expiry_reminders import key_warning_days
 

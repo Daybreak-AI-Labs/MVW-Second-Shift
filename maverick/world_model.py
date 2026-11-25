@@ -2653,6 +2653,23 @@ class WorldModel:
         )
         return _approval_state_view(appr, approvers, audit_pending)
 
+    def pending_approval_signoffs(self, approval_ids: list[int]) -> dict[int, list[str]]:
+        """Approved votes for the requested rows that are still pending."""
+        result: dict[int, list[str]] = {}
+        for chunk in self._chunks(approval_ids):
+            placeholders = ", ".join("?" for _ in chunk)
+            rows = self._read_all(
+                "SELECT a.id, s.approver FROM approvals a LEFT JOIN approval_signoffs s "
+                "ON s.approval_id = a.id AND s.decision = 'approved' "
+                f"WHERE a.status = 'pending' AND a.id IN ({placeholders}) "
+                "ORDER BY a.id, s.decided_at, s.approver", tuple(chunk),
+            )
+            for approval_id, approver in rows:
+                votes = result.setdefault(approval_id, [])
+                if approver is not None:
+                    votes.append(approver)
+        return result
+
     @staticmethod
     def _chunks(values: list[int], size: int = 500) -> Iterator[list[int]]:
         for index in range(0, len(values), size):

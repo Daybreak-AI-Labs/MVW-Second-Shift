@@ -138,3 +138,24 @@ def test_account_names_stay_encrypted_in_postgres_when_encryption_is_on(records_
     stored = saved_records(records_in_postgres)["account-profiles.json"]
     assert "Ada Lovelace" not in stored and crypto_at_rest.is_sealed_str(stored)
     assert account_profiles._read()["user:u1"]["name"] == "Ada Lovelace"
+
+
+def test_postgres_roster_reads_roles_and_presence_together(records_in_postgres, monkeypatch):
+    from maverick import record_documents
+    from maverick_dashboard import rbac
+
+    _put(rbac.store_path(), {"alice": "operator"})
+    assert rbac.list_users() == {"alice": "operator"}  # write the existing presence marker
+    run = record_documents._run
+    selects = []
+
+    def counted(cursor, statement, parameters):
+        if statement.startswith("SELECT"):
+            selects.append(statement)
+        return run(cursor, statement, parameters)
+
+    monkeypatch.setattr(record_documents, "_run", counted)
+    assert rbac.get_stored_role("alice") == "operator"
+    assert len(selects) == 1
+    assert not rbac.store_path().exists()
+    assert "dashboard-users.json" in saved_records(records_in_postgres)
