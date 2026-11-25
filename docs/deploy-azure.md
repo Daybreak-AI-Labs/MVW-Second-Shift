@@ -120,41 +120,61 @@ unset value
 
 ## 3. Register sign-in and platform checks
 
-In the Entra admin center, create a **single-tenant** application registration
-with a **Web** redirect URI of `$origin/auth/callback`. Use the tenant of the
-selected Azure subscription. Record its Application (client) ID as
-`entra_client`, create a client secret, and use the helper to store its
-**value** as `oidc-client-secret`. Configure the enterprise application's
-**Assignment required?** setting to **Yes**. Assign the first administrator
-before testing sign-in.
+Run the registration tool in the subscription's tenant after the vault and
+public origin exist. Use an operator allowed to manage the app registration
+and enterprise application and list and set secrets in the deployment vault.
+On Linux, the tool passes the password to Azure CLI over standard input. It
+prints the IDs and the admin consent link. It reuses the registration and
+its existing vault secret on rerun.
 
-Create these user/group app role values and assign them through **Enterprise
-applications → Users and groups**. The image includes the matching
-`[auth.oidc.role_map]` from [Sign-in roles](sign-in-roles.md).
+```bash
+deploy/azure/register-entra.sh "$origin" --vault "$vault"
+# Copy the printed Application (client) ID for the app deployment below.
+entra_client='<Application (client) ID>'
+```
 
-| Entra app role value | Second Shift role |
+The registration is single-tenant and assignment is required. In Entra,
+assign the first administrator `SecondShift.Admin` under **Enterprise
+applications → Users and groups**. The same registration contains the seven
+app roles listed in [Sign-in roles](sign-in-roles.md). To update a registration
+the script did not create, supply `--app-id "$entra_client"`. If the sign-in
+secret was previously set by hand, verify that it still belongs to that
+registration before tagging the existing secret with `entra-app-id` in the
+vault. [Application updates](https://learn.microsoft.com/en-us/graph/api/application-update?view=graph-rest-1.0)
+and [enterprise app assignments](https://learn.microsoft.com/en-us/entra/identity/enterprise-apps/assign-user-or-group-access-portal)
+
+Add only the permission flags your deployment needs. Reruns preserve
+previously requested permissions. Review and remove obsolete requests and
+grants in Entra. The script requests permissions and prints a link. A tenant
+administrator must grant consent.
+[Admin consent](https://learn.microsoft.com/en-us/entra/identity-platform/v2-admin-consent)
+
+| Flag | Graph application permission |
 | --- | --- |
-| `SecondShift.Admin` | `admin` |
-| `SecondShift.GovernanceLead` | `governance_lead` |
-| `SecondShift.Operator` | `operator` |
-| `SecondShift.Approver` | `approver` |
-| `SecondShift.Responder` | `responder` |
-| `SecondShift.Auditor` | `auditor` |
-| `SecondShift.Viewer` | `viewer` |
+| `--read-app-assignments` | [`Application.Read.All`](https://learn.microsoft.com/en-us/graph/api/serviceprincipal-list-approleassignedto?view=graph-rest-1.0) |
+| `--read-group-members` | [`GroupMember.ReadBasic.All`](https://learn.microsoft.com/en-us/graph/api/group-list-members?view=graph-rest-1.0) |
+| `--search-people` | [`User.Read.All`](https://learn.microsoft.com/en-us/graph/api/user-list?view=graph-rest-1.0) for the owner picker |
+| `--read-agent-identities` | [`AgentIdentity.Read.All`](https://learn.microsoft.com/en-us/graph/api/agentidentity-list?view=graph-rest-1.0) for Entra Agent ID discovery |
+| `--manage-agent-identities` | [`AgentIdentity.EnableDisable.All`](https://learn.microsoft.com/en-us/graph/api/agentidentity-update?view=graph-rest-1.0) for switching off an agent identity |
 
-For Microsoft platform checks, use a **separate** single-tenant app
-registration with client credentials. For Entra Agent IDs, add Microsoft
-Graph **application** permission `AgentIdentity.Read.All` and have a tenant
-administrator grant admin consent. If you explicitly enable Entra Agent ID
-switch-off, separately grant `AgentIdentity.EnableDisable.All` with admin
-consent. That permission can disable any agent identity in the tenant.
-For Foundry, assign **Foundry User** at the
-intended project or resource (or a custom read role you have verified). For
-Copilot Studio, create a Dataverse application user in each environment with
-organization-wide read access to the Agent table. Configure the ServiceNow
-and Workday integration users only if those checks are needed.
-[Platform checks](platform-checks.md) lists the required vendor roles and
-the configuration for each check.
+For [Microsoft 365 Copilot](m365-copilot.md), complete the Microsoft Entra SSO
+registration in the Teams developer portal and rerun the script with
+`--copilot-uri '<Application ID URI from the Teams developer portal>'`.
+This configures the URI, the `SecondShift.Copilot.Read` scope, v2 access
+tokens, the Teams consent redirect, and the authorized Enterprise token
+store client. [Microsoft Entra SSO for Copilot](https://learn.microsoft.com/en-us/microsoft-365/copilot/extensibility/plugin-authentication-entra-sso)
+
+To use the same registration for [Entra directory](entra-directory.md) or
+Entra Agent ID checks, reference the printed tenant and client IDs and map
+the corresponding credential environment variables to `oidc-client-secret`
+in the vault. For other platforms, configure their separate access grants
+only if you use those checks. [Platform checks](platform-checks.md) lists
+the vendor roles and configuration. The factory's SharePoint permission
+belongs on its separate runtime identity.
+
+The script has been tested with a local Graph and vault mock. A tenant
+administrator still needs to verify Graph permission availability, the
+consent link, sign-in, and the Copilot token exchange with the registered URI.
 
 Put the selected `[agent_watch.*]` tables in `config.toml` in the Azure Files
 data folder using a controlled admin connection. These tables contain only

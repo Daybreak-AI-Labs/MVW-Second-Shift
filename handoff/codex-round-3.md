@@ -19,7 +19,7 @@ several copies.
 
 ---
 
-## 1. Continuous integration (do this first)
+## 1. Continuous integration (merged in PR #8)
 
 Branch `codex/ci`. `.github/workflows/ci.yml`, on pull requests and pushes to
 `claude/friendly-shannon-e8jwva`:
@@ -39,7 +39,7 @@ Pin every third-party action to a full commit SHA. No secrets in the workflow. P
 If a test fails only in CI, find out why before changing it; never skip or loosen a test to get
 green.
 
-## 2. Register Second Shift in Entra ID with one script
+## 2. Register Second Shift in Entra ID with one script (merged in PR #9)
 
 Branch `codex/entra-registration`. `deploy/azure/register-entra.sh` (Azure CLI and `az rest`
 to Microsoft Graph), safe to run again, that creates or updates the single-tenant app
