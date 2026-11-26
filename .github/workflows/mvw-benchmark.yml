@@ -15,6 +15,7 @@ on:
       - codex/debug-platform
       - codex/second-debug-pass
       - codex/burst-and-glass
+      - codex/release-audit
     paths-ignore:
       - 'docs/**'
       - 'handoff/**'
@@ -32,7 +33,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        scenario: ${{ fromJSON(github.ref_name == 'codex/burst-latency' && '["requested","mixed-live","mixed-live-500"]' || (github.ref_name == 'codex/debug-platform' || github.ref_name == 'codex/second-debug-pass' || github.ref_name == 'codex/burst-and-glass') && '["requested","mixed-live-500"]' || github.ref_name == 'codex/platform-speed' && '["requested","mixed-live"]' || contains(github.event.head_commit.message, 'paired app comparison') && '["requested","comparison","sustained"]' || contains(github.event.head_commit.message, 'Measure final recorder hour') && '["requested","comparison"]' || '["requested"]') }}
+        scenario: ${{ fromJSON(github.ref_name == 'codex/burst-latency' && '["requested","mixed-live","mixed-live-500"]' || (github.ref_name == 'codex/debug-platform' || github.ref_name == 'codex/second-debug-pass' || github.ref_name == 'codex/burst-and-glass' || github.ref_name == 'codex/release-audit') && '["requested","mixed-live-500"]' || github.ref_name == 'codex/platform-speed' && '["requested","mixed-live"]' || contains(github.event.head_commit.message, 'paired app comparison') && '["requested","comparison","sustained"]' || contains(github.event.head_commit.message, 'Measure final recorder hour') && '["requested","comparison"]' || '["requested"]') }}
     timeout-minutes: 85
     services:
       postgres:
@@ -72,7 +73,7 @@ jobs:
           pool=$(sed -nE "s/.*SECOND_SHIFT_PG_POOL_SIZE: '([0-9]+)'.*/\1/p" deploy/azure/app.bicep)
           args=()
           recorder_seconds=0
-          if [[ "$GITHUB_REF_NAME" =~ ^codex/(load-check-mvw|ekko-throughput|platform-speed|burst-latency|approval-read-speed|debug-platform|second-debug-pass|burst-and-glass)$ ]]; then
+          if [[ "$GITHUB_REF_NAME" =~ ^codex/(load-check-mvw|ekko-throughput|platform-speed|burst-latency|approval-read-speed|debug-platform|second-debug-pass|burst-and-glass|release-audit)$ ]]; then
             args=(--mvw --population 20000 --seconds 120 --require-targets)
             case "$BENCHMARK_SCENARIO:$BENCHMARK_TITLE" in
               mixed-live:*) args=(--mixed-live --population 20000 --agents 25 --burst 100) ;;
@@ -103,6 +104,8 @@ jobs:
               baseline_ref=453c93abe6cc8c7b72cbcda88db14be4665f18c8
             elif [ "$GITHUB_REF_NAME" = codex/burst-and-glass ]; then
               baseline_ref=63dfe9d395e0dafc87e404d864a88e38ba31b565
+            elif [ "$GITHUB_REF_NAME" = codex/release-audit ]; then
+              baseline_ref=5ffd5f220b77b6c09563dd4d7fa930ff47ea1dd8
             fi
             mkdir -p "$baseline"
             curl --fail --silent --show-error --location --retry 2 --max-time 45 \

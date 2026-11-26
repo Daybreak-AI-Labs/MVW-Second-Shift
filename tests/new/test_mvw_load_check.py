@@ -15,10 +15,17 @@ def _sample(count, under, maximum=1, errors=None):
 
 
 def _report():
+    steady_pages = {name: _sample(count, under) for name, count, under in zip(
+        OP_NAMES[:3], (667, 667, 666), (634, 633, 633), strict=True,
+    )}
     return {
         "serial": {name: _sample(4, 4, 199) for name in OP_NAMES},
-        "burst": {name: _sample(100, 95) for name in OP_NAMES[:3]},
-        "steady": {name: _sample(500, 480) for name in OP_NAMES},
+        "burst": {name: _sample(count, under) for name, count, under in zip(
+            OP_NAMES[:3], (34, 33, 33), (32, 32, 31), strict=True,
+        )},
+        "steady": {**steady_pages, "Screen": _sample(400, 400), "Report run": _sample(400, 400), "Teams card": _sample(10, 10)},
+        "burst500": {name: _sample(count, count) for name, count in zip(OP_NAMES[:3], (167, 167, 166), strict=True)},
+        "steady25": {**steady_pages, "Screen": _sample(100, 100), "Report run": _sample(100, 100), "Teams card": _sample(10, 10)},
         "overload": {"Screen": _sample(100, 95), "Report run": _sample(100, 95)},
     }
 
@@ -27,7 +34,7 @@ def test_exact_thresholds_and_transport_failures_are_failures():
     report = _report()
     assert target_failures(report) == []
     report["serial"]["Screen"]["max_ms"] = 200
-    report["burst"]["Home"]["under_target"] = 94
+    report["burst"]["Home"]["under_target"] -= 1
     report["steady"]["Teams card"]["errors"] = {"TransportError": 1}
     report["overload"]["Report run"]["errors"] = {"503 gateway busy": 1}
     assert len(target_failures(report)) == 4
@@ -37,7 +44,17 @@ def test_steady_agent_failures_and_missing_reports_fail_the_gate():
     report = _report()
     report["steady"]["Screen"]["errors"] = {"screen refused": 1}
     del report["steady"]["Report run"]
-    assert target_failures(report) == ["An agent screen or run report failed during steady traffic."]
+    assert target_failures(report) == [
+        "The steady workload did not record every scheduled request.",
+        "A request failed during the steady workload.",
+    ]
+
+
+def test_an_incomplete_run_cannot_pass_the_release_targets():
+    report = _report()
+    report["burst"]["Home"]["count"] -= 1
+
+    assert target_failures(report) == ["The burst workload did not record every scheduled request."]
 
 
 @pytest.mark.asyncio
@@ -71,8 +88,8 @@ async def test_successful_status_without_a_run_receipt_fails_the_load_check():
 
 @pytest.mark.asyncio
 async def test_quick_error_does_not_count_as_a_page_under_target():
-    replies = iter([200, 503])
-    transport = httpx.MockTransport(lambda request: httpx.Response(next(replies)))
+    replies = iter([httpx.Response(200, text="<title>Home · Second Shift</title>"), httpx.Response(503)])
+    transport = httpx.MockTransport(lambda request: next(replies))
     async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
         workload = Workload(client, "")
         await workload.page("test-session", 0)
@@ -81,6 +98,21 @@ async def test_quick_error_does_not_count_as_a_page_under_target():
     assert result["count"] == 2
     assert result["errors"] == {"503": 1}
     assert result["under_target"] == 1
+
+
+@pytest.mark.asyncio
+async def test_a_browser_error_page_with_status_200_is_not_a_success():
+    def error_page(_request):
+        return httpx.Response(200, text="<title>Sign in · Second Shift</title>")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(error_page), base_url="http://127.0.0.1") as client:
+        work = Workload(client, "")
+        await work.page("synthetic-session", 0)
+
+    result = work.report(2000)["Home"]
+    assert result["count"] == 1
+    assert result["under_target"] == 0
+    assert result["errors"] == {"wrong page": 1}
 
 
 @pytest.mark.asyncio

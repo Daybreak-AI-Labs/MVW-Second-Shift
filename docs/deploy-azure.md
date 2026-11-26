@@ -33,8 +33,8 @@ requests until it can read the database again.
 
 ## 1. Prepare the subscription and vault
 
-Use Azure public cloud, Azure CLI with Bicep, Docker with BuildKit, OpenSSL
-and a PostgreSQL 17+ client. Use a deployment identity that can create role
+Use Azure public cloud, Azure CLI with Bicep, Docker with BuildKit, OpenSSL,
+Python 3, and a PostgreSQL 17+ client. Use a deployment identity that can create role
 assignments and retrieve deployment parameters from Key Vault
 (`Microsoft.KeyVault/vaults/deploy/action`). For the database bootstrap, have
 a workstation or jump host in or peered to the deployment virtual network.
@@ -86,16 +86,54 @@ random_secret() {
   printf '%s' "$value" | store_secret "$1"
 }
 
+store_encryption_key_digest() {
+  local digest
+  digest=$(python3 -c '
+import base64, hashlib, sys
+raw = sys.stdin.read().strip()
+try:
+    key = bytes.fromhex(raw) if len(raw) == 64 else base64.b64decode(raw, validate=True)
+    if len(key) != 32:
+        raise ValueError()
+except ValueError:
+    sys.exit("The deployment encryption key must be 32 bytes in hex or base64.")
+print("sha256:" + hashlib.sha256(key).hexdigest(), end="")
+') || return
+  printf '%s' "$digest" | store_secret deployment-encryption-key-digest
+}
+
+create_deployment_key() {
+  local key
+  key=$(openssl rand -hex 32) || return
+  printf '%s' "$key" | store_secret deployment-encryption-key || return
+  printf '%s' "$key" | store_encryption_key_digest
+}
+
 # Use a strong mixed-character PostgreSQL administrator password.
 read -rsp 'PostgreSQL administrator password: ' value
 printf '\n'
 printf '%s' "$value" | store_secret postgres-admin-password
 unset value
 
-for name in oidc-session-secret dashboard-token deployment-encryption-key audit-signing-key; do
+for name in oidc-session-secret dashboard-token audit-signing-key; do
   random_secret "$name" || break
 done
+create_deployment_key
 ```
+
+On an existing installation, keep the existing deployment encryption key.
+If the digest is missing, create it from the exact Key Vault version the app
+will use. The helper reads the key from standard input and stores the digest
+in a separate secret.
+
+```bash
+deployment_key_version='<version of the existing deployment encryption key>'
+az keyvault secret show --vault-name "$vault" --name deployment-encryption-key \
+  --version "$deployment_key_version" --query value --output tsv --only-show-errors |
+  store_encryption_key_digest
+```
+
+[Read a Key Vault secret version](https://learn.microsoft.com/en-us/cli/azure/keyvault/secret#az-keyvault-secret-show)
 
 ## 2. Create the network, database server, and registry
 
@@ -230,8 +268,9 @@ deployment, wait for any newly assigned identity roles to propagate and
 retry the deployment if Key Vault or registry access is denied.
 
 For production, record the Key Vault version IDs in an app parameter file as
-the `secretVersions` map (keys are vault secret names). Use explicit versions
-for the deployment encryption key and audit signing key. Versionless
+the `secretVersions` map (keys are vault secret names). Pin the matching
+`deployment-encryption-key` and `deployment-encryption-key-digest` versions
+and the `audit-signing-key` version. Versionless
 references may cause Container Apps to restart the running revision
 automatically after a rotation. Keep previous versions needed for recovery.
 
@@ -247,11 +286,14 @@ curl --fail "$origin/readyz"
 
 `/livez` checks that the service responds. `/readyz` rejects a PostgreSQL
 connection in recovery or marked read-only. With row-level security on, it
-also requires a workspace ID and a login subject to the row policies. A
-readiness check that cannot finish within three seconds returns HTTP 503.
+also requires a workspace ID and a login subject to the row policies.
+PostgreSQL governed records require the encryption key to match the deployment
+digest. A readiness check that cannot finish within three seconds returns
+HTTP 503.
 Repeated probes share any database check still in progress on the same
 worker. If readiness returns HTTP 503, check the database endpoint, its
-read-only status, the workspace binding and the database login.
+read-only status, the workspace binding, the database login, and the
+encryption key and digest versions.
 
 Include `--parameters @<parameter-file.json>` when supplying the versions or
 platform settings. The template uses `prefix` as `SECOND_SHIFT_CLIENT_ID`

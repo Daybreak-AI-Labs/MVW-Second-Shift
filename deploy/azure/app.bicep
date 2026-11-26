@@ -38,6 +38,7 @@ var references = union(platformVaultReferences, teamsVaultReferences, {
   SECOND_SHIFT_OIDC_SESSION_SECRET: 'oidc-session-secret'
   SECOND_SHIFT_DASHBOARD_TOKEN: 'dashboard-token'
   SECOND_SHIFT_ENCRYPTION_KEY: 'deployment-encryption-key'
+  SECOND_SHIFT_ENCRYPTION_KEY_DIGEST: 'deployment-encryption-key-digest'
   SECOND_SHIFT_AUDIT_SIGNING_KEY: 'audit-signing-key'
 })
 var secretNames = union(map(items(references), reference => reference.value), [])

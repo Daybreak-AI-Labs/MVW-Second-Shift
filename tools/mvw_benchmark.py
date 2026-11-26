@@ -23,6 +23,7 @@ import httpx
 from tools.load_check import OP_NAMES, expect, prepare, run_app, test_database
 
 PAGES = tuple(zip(OP_NAMES[:3], ("/", "/external-agents", "/approvals"), strict=True))
+_PAGE_TITLES = {name: f"<title>{name} · Second Shift</title>".encode() for name, _ in PAGES}
 # Retire idle sockets before Uvicorn's five-second keepalive expires.
 _CLIENT_IDLE_SECONDS = 3
 
@@ -118,6 +119,8 @@ class Workload:
                 if code == "503" and b"external request capacity is busy" in reply.content:
                     code = "503 gateway busy"
                 self.errors[name][code] += 1
+            elif name in _PAGE_TITLES and _PAGE_TITLES[name] not in reply.content:
+                self.errors[name]["wrong page"] += 1
             elif name == "Screen" and not _screen_allowed(reply.json()):
                 self.errors[name]["screen refused"] += 1
             elif name == "Teams card" and "Rejected by" not in reply.text:
@@ -436,27 +439,37 @@ async def measure_resources(payload, args, monitor_connection, database_name):
     return result
 
 
-def target_failures(report):
+def target_failures(report, *, seconds=120):
     """Apply the round's strict latency and availability limits."""
     failures = []
-    if any(name not in report["serial"] or report["serial"][name]["max_ms"] >= 200
-           or report["serial"][name]["errors"] for name in OP_NAMES):
+    serial_results = report.get("serial", {})
+    if any(name not in serial_results or serial_results[name]["count"] != 4
+           or serial_results[name]["max_ms"] >= 200 or serial_results[name]["errors"] for name in OP_NAMES):
         failures.append("A serial operation took 200 ms or more, or failed.")
     pages = OP_NAMES[:3]
+    intervals = seconds // 30
+    for name, page_count, agent_count, teams_count in (
+        ("burst", 100, 0, 0),
+        ("steady", 500 * intervals, 100 * intervals, 10),
+        ("burst500", 500, 0, 0),
+        ("steady25", 500 * intervals, 25 * intervals, 10),
+        ("overload", 0, 100, 0),
+    ):
+        case = report.get(name, {})
+        if (sum(case.get(page, {}).get("count", 0) for page in pages) != page_count
+                or (page_count and not all(case.get(page, {}).get("count") for page in pages))
+                or any(case.get(operation, {}).get("count", 0) != count for operation, count in (
+                    ("Screen", agent_count), ("Report run", agent_count), ("Teams card", teams_count),
+                ))):
+            failures.append(f"The {name} workload did not record every scheduled request.")
+        if agent_count and any(item["errors"] for item in case.values()):
+            failures.append(f"A request failed during the {name} workload.")
     for name, threshold in (("steady", "one second"), ("burst", "two seconds")):
-        case = report[name]
+        case = report.get(name, {})
         total = sum(case.get(page, {}).get("count", 0) for page in pages)
         under = sum(case.get(page, {}).get("under_target", 0) for page in pages)
         if not total or under * 100 < total * 95:
             failures.append(f"Fewer than 95% of {name} page requests finished under {threshold}.")
-        if name == "steady" and any(not case.get(operation) or case[operation]["errors"]
-                                    for operation in (*pages, "Teams card")):
-            failures.append("A page or Teams request failed during steady traffic.")
-    if any(item["errors"] for item in report.get("overload", {}).values()):
-        failures.append("An agent still failed after the bounded retry.")
-    if any(not report["steady"].get(operation) or report["steady"][operation]["errors"]
-           for operation in ("Screen", "Report run")):
-        failures.append("An agent screen or run report failed during steady traffic.")
     return failures
 
 
@@ -485,9 +498,13 @@ def main():
     if (not 0 <= args.population <= 50_000 or not 0 <= args.recorders <= 2_500 or args.seconds > 3600
             or (args.mvw and (args.people < 500 or args.agents < 25))
             or (args.profile and (args.mvw or args.recorders))
-            or (args.mixed_live and (args.mvw or args.quick or args.profile or args.recorders))
-            or (args.require_targets and (not args.mvw or args.quick or args.recorders))):
+            or (args.mixed_live and (args.mvw or args.quick or args.profile or args.recorders))):
         parser.error("Use realistic workload counts and run the profiler and recorder load separately.")
+    if args.require_targets and (not args.mvw or args.quick or args.recorders
+                                 or (args.people, args.agents, args.burst) != (500, 100, 100)
+                                 or args.population < 20000 or args.seconds < 120 or args.seconds % 30):
+        parser.error("Release targets need 20,000 accounts, 500 people, 100 agents, a 100-person burst, "
+                     "and at least 120 seconds in 30-second increments.")
     dsn = os.environ.get("SECOND_SHIFT_LOAD_DSN")
     if not dsn:
         parser.error("Set SECOND_SHIFT_LOAD_DSN for the disposable loopback PostgreSQL service.")
@@ -518,7 +535,7 @@ def main():
                 print(output)
             finally:
                 subprocess.run(["docker", "stop", "--time", "10", name], check=False, stdout=subprocess.DEVNULL)
-    failures = target_failures(report) if args.require_targets else []
+    failures = target_failures(report, seconds=args.seconds) if args.require_targets else []
     for message in failures:
         print(message, file=sys.stderr)
     return int(bool(failures))
