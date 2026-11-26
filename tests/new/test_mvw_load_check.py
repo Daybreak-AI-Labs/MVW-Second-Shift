@@ -4,10 +4,32 @@ from __future__ import annotations
 import asyncio
 
 import httpx
+import psycopg
 import pytest
 
 from tools.load_check import OP_NAMES
+from tools.load_check import test_database as load_database
 from tools.mvw_benchmark import Workload, _TrafficClient, target_failures
+
+
+@pytest.mark.parametrize("workload_fails", [False, True])
+def test_cleanup_reconnects_after_losing_the_monitor(records_in_postgres, workload_fails):
+    class WorkloadFailed(Exception):
+        pass
+
+    with psycopg.connect(records_in_postgres, autocommit=True) as admin:
+        try:
+            with load_database(records_in_postgres) as (monitor, name, _):
+                assert admin.execute("SELECT pg_terminate_backend(%s)", (monitor.info.backend_pid,)).fetchone() == (True,)
+                if workload_fails:
+                    raise WorkloadFailed
+        except WorkloadFailed:
+            assert workload_fails
+        else:
+            assert not workload_fails
+
+        assert admin.execute("SELECT 1 FROM pg_database WHERE datname = %s", (name,)).fetchone() is None
+        assert admin.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (name,)).fetchone() is None
 
 
 def _sample(count, under, maximum=1, errors=None):
