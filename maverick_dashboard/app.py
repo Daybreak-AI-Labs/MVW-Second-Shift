@@ -2186,6 +2186,10 @@ def _database_probe_response(ok: bool) -> JSONResponse:
 async def _database_probe(*, require_workspace: bool = False) -> JSONResponse:
     def check() -> bool:
         try:
+            if require_workspace:
+                from maverick.governed_records import check_readiness
+
+                check_readiness()
             return _world().ping(require_workspace=require_workspace)
         except Exception:
             return False

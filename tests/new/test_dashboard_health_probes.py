@@ -2,10 +2,21 @@
 
 import asyncio
 from contextlib import contextmanager
+from hashlib import sha256
 from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
+
+
+@pytest.fixture
+def postgres_encryption(monkeypatch):
+    key = bytes(range(32))
+    digest = "sha256:" + sha256(key).hexdigest()
+    monkeypatch.setenv("MAVERICK_ENCRYPT_AT_REST", "1")
+    monkeypatch.setenv("MAVERICK_ENCRYPTION_KEY", key.hex())
+    monkeypatch.setenv("MAVERICK_ENCRYPTION_KEY_DIGEST", digest)
+    return digest
 
 
 @pytest.mark.parametrize(
@@ -46,7 +57,7 @@ def test_postgres_readiness_requires_a_usable_workspace(monkeypatch, rls, tenant
     assert response.json() == {"status": "ok" if expected == 200 else "degraded"}
 
 
-def test_postgres_read_only_session_is_not_ready(records_in_postgres, monkeypatch):
+def test_postgres_read_only_session_is_not_ready(records_in_postgres, postgres_encryption, monkeypatch):
     import importlib
 
     from maverick.world_model_backends.postgres import PostgresWorldModel
@@ -62,6 +73,26 @@ def test_postgres_read_only_session_is_not_ready(records_in_postgres, monkeypatc
             cursor.execute("SET default_transaction_read_only = on")
         assert client.get("/healthz").status_code == 200
         assert client.get("/readyz").status_code == 503
+
+
+def test_postgres_without_the_expected_encryption_key_is_not_ready(records_in_postgres, postgres_encryption, monkeypatch):
+    import importlib
+
+    from maverick.world_model_backends.postgres import PostgresWorldModel
+
+    dashboard = importlib.import_module("maverick_dashboard.app")
+    with PostgresWorldModel(dsn=records_in_postgres) as world:
+        monkeypatch.setattr(dashboard, "_world", lambda: world)
+        client = TestClient(dashboard.app, base_url="http://127.0.0.1", headers={"Origin": "http://127.0.0.1"})
+
+        assert client.get("/readyz").status_code == 200
+        monkeypatch.delenv("MAVERICK_ENCRYPTION_KEY_DIGEST")
+        assert client.get("/livez").status_code == 200
+        assert client.get("/readyz").status_code == 503
+        monkeypatch.setenv("MAVERICK_ENCRYPTION_KEY_DIGEST", "sha256:" + "0" * 64)
+        assert client.get("/readyz").status_code == 503
+        monkeypatch.setenv("MAVERICK_ENCRYPTION_KEY_DIGEST", postgres_encryption)
+        assert client.get("/readyz").status_code == 200
 
 
 @pytest.mark.asyncio

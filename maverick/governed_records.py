@@ -1862,6 +1862,14 @@ def _selection() -> _BackendSelection:
     return _BackendSelection("local", "", False)
 
 
+def check_readiness() -> None:
+    """Verify the deployment key required by the selected PostgreSQL authority."""
+    if _selection().kind == "postgres":
+        from .crypto_at_rest import require_shared_deployment_key_identity
+
+        require_shared_deployment_key_identity()
+
+
 class GovernedRecordStore:
     """A product-neutral governed record collection.
 
