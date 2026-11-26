@@ -12,6 +12,7 @@ import os
 import secrets
 import socket
 import statistics
+import sys
 import time
 import uuid
 from collections import Counter
@@ -41,17 +42,31 @@ def test_database(dsn):
     dsn = make_conninfo(dsn, hostaddr="127.0.0.1", connect_timeout=5)
     name = "ss_load_" + uuid.uuid4().hex
     password = secrets.token_urlsafe(32)
-    with psycopg.connect(dsn, autocommit=True) as conn:
-        conn.execute(sql.SQL("CREATE ROLE {} LOGIN NOSUPERUSER NOBYPASSRLS PASSWORD {}").format(
-            sql.Identifier(name), sql.Literal(password)))
-        try:
+    role_created = database_created = failed = False
+    try:
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            conn.execute(sql.SQL("CREATE ROLE {} LOGIN NOSUPERUSER NOBYPASSRLS PASSWORD {}").format(
+                sql.Identifier(name), sql.Literal(password)))
+            role_created = True
             conn.execute(sql.SQL("CREATE DATABASE {} OWNER {}").format(sql.Identifier(name), sql.Identifier(name)))
+            database_created = True
+            yield conn, name, make_conninfo(dsn, dbname=name, user=name, password=password, options="")
+    except BaseException:
+        failed = True
+        raise
+    finally:
+        if role_created:
             try:
-                yield conn, name, make_conninfo(dsn, dbname=name, user=name, password=password, options="")
-            finally:
-                conn.execute(sql.SQL("DROP DATABASE {} WITH (FORCE)").format(sql.Identifier(name)))
-        finally:
-            conn.execute(sql.SQL("DROP ROLE {}").format(sql.Identifier(name)))
+                # The monitor connection may have been lost during the run.
+                with psycopg.connect(dsn, autocommit=True) as cleanup:
+                    if database_created:
+                        cleanup.execute(sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(sql.Identifier(name)))
+                    cleanup.execute(sql.SQL("DROP ROLE IF EXISTS {}").format(sql.Identifier(name)))
+            except psycopg.Error:
+                message = f"Could not remove local load-check resources named {name}. Check PostgreSQL and remove them."
+                if not failed:
+                    raise RuntimeError(message) from None
+                print(message, file=sys.stderr)
 
 
 def configure_app(directory, origin, dsn, pool_size, recorders=0):
