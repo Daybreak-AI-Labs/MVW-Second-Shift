@@ -11,6 +11,10 @@ from fastapi.testclient import TestClient
 
 @pytest.fixture
 def postgres_encryption(monkeypatch):
+    from maverick import crypto_at_rest
+
+    monkeypatch.setattr(crypto_at_rest, "_SHARED_KEY_BYTES", None)
+    monkeypatch.setattr(crypto_at_rest, "_SHARED_KEY_IDENTITY_DIGEST", None)
     key = bytes(range(32))
     digest = "sha256:" + sha256(key).hexdigest()
     monkeypatch.setenv("MAVERICK_ENCRYPT_AT_REST", "1")
